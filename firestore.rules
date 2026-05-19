@@ -1,0 +1,90 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validations ---
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.email.size() <= 256;
+    }
+
+    function isValidPDFFile(data) {
+      return data.keys().hasAll(['id', 'name', 'ownerId', 'text']) &&
+             data.id is string &&
+             data.name is string && data.name.size() <= 512 &&
+             data.ownerId == request.auth.uid &&
+             data.text is string;
+    }
+
+    function isValidPageData(data) {
+      return data.keys().hasAll(['fileId', 'pageNumber', 'text']) &&
+             data.fileId is string &&
+             data.pageNumber is int &&
+             data.text is string;
+    }
+
+    // --- Match Rules ---
+
+    // Connection Test Document
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if false; 
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      allow update: if isOwner(userId) && isValidUser(incoming()) && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL']);
+      allow delete: if false;
+    }
+
+    // Files collection
+    match /files/{fileId} {
+      allow get: if isSignedIn() && (existing().ownerId == request.auth.uid || existing().isPublic == true);
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || resource.data.isPublic == true);
+      allow create: if isSignedIn() && isValidId(fileId) && isValidPDFFile(incoming());
+      allow update: if isSignedIn() && isOwner(existing().ownerId) && (
+        // Allow updating nearly everything if owner (for AI updates and metadata)
+        incoming().ownerId == existing().ownerId &&
+        isValidPDFFile(incoming())
+      );
+      allow delete: if isSignedIn() && isOwner(existing().ownerId);
+
+      // Sub-collection for lazy loading/OCR results per page
+      match /pages/{pageNumber} {
+        allow get: if isSignedIn() && (get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == request.auth.uid);
+        allow write: if isSignedIn() && (get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == request.auth.uid) && isValidPageData(incoming());
+      }
+    }
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Thông tin người dùng hệ thống",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email"]
+    },
+    "PDFFile": {
+      "title": "Tài liệu PDF",
+      "description": "Metadata và nội dung của tệp PDF",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "text": { "type": "string" },
+        "numpages": { "type": "integer" },
+        "size": { "type": "string" },
+        "category": { "type": "string" },
+        "url": { "type": "string" },
+        "isAIReady": { "type": "boolean" },
+        "uploadDate": { "type": "integer" },
+        "extractedData": { "type": "object" },
+        "extractionMethod": { "type": "string" },
+        "processedPages": { "type": "array" }
+      },
+      "required": ["id", "name", "ownerId", "text"]
+    },
+    "PageData": {
+      "title": "Dữ liệu trang PDF",
+      "description": "Nội dung text của từng trang đơn lẻ",
+      "type": "object",
+      "properties": {
+        "fileId": { "type": "string" },
+        "pageNumber": { "type": "integer" },
+        "text": { "type": "string" },
+        "processedDate": { "type": "integer" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Collection người dùng"
+    },
+    "/files/{fileId}": {
+      "schema": "PDFFile",
+      "description": "Collection tài liệu PDF"
+    },
+    "/files/{fileId}/pages/{pageNumber}": {
+      "schema": "PageData",
+      "description": "Dữ liệu text của từng trang (Lazy OCR)"
+    }
+  }
+}
