@@ -49,6 +49,16 @@ service cloud.firestore {
              data.fileId is string &&
              data.pageNumber is int &&
              data.text is string;
+     }
+
+    function isValidNote(data) {
+      return data.keys().hasAll(['id', 'content', 'fileId', 'fileName', 'ownerId', 'createdAt']) &&
+             data.id is string &&
+             data.content is string &&
+             data.fileId is string &&
+             data.fileName is string &&
+             data.ownerId == request.auth.uid &&
+             data.createdAt is int;
     }
 
     // --- Match Rules ---
@@ -85,6 +95,16 @@ service cloud.firestore {
         allow get: if isSignedIn() && (get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == request.auth.uid);
         allow write: if isSignedIn() && (get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == request.auth.uid) && isValidPageData(incoming());
       }
+    }
+
+    // Notes collection
+    match /notes/{noteId} {
+      allow get: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(noteId) && isValidNote(incoming());
+      allow update: if isSignedIn() && existing().ownerId == request.auth.uid && isValidNote(incoming()) &&
+                    incoming().ownerId == existing().ownerId;
+      allow delete: if isSignedIn() && existing().ownerId == request.auth.uid;
     }
   }
 }

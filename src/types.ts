@@ -41,6 +41,9 @@ export interface PDFFile {
   ownerId?: string;
   extractedData?: any;
   processedPages?: number[]; // Track which pages have been OCR'd
+  geminiFileUri?: string;
+  geminiFileName?: string;
+  textUrl?: string;
 }
 
 export interface PageData {
@@ -67,3 +70,13 @@ export interface ExtractionSchema {
   name: string;
   fields: ExtractionField[];
 }
+
+export interface Note {
+  id: string;
+  content: string;
+  fileId: string;
+  fileName: string;
+  ownerId: string;
+  createdAt: number;
+}
+

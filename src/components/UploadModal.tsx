@@ -14,10 +14,12 @@ interface UploadModalProps {
 
 const CATEGORIES = [
   { id: "kientruc", name: "Kiến trúc" },
-  { id: "ketcau", name: "Kết cấu" },
+  { id: "ketcau_tcvn", name: "Kết cấu - TCVN" },
+  { id: "ketcau_tcnn", name: "Kết cấu - TCNN" },
   { id: "mep", name: "MEP" },
   { id: "qckt", name: "Quy chuẩn kỹ thuật" },
   { id: "vbhh", name: "Văn bản hiện hành" },
+  { id: "banve", name: "Bản vẽ thiết kế" },
 ];
 
 export function UploadModal({ 
@@ -28,7 +30,7 @@ export function UploadModal({
   progress = 0,
   stage = "idle"
 }: UploadModalProps) {
-  const [selectedCategory, setSelectedCategory] = useState("kientruc");
+  const [selectedCategory, setSelectedCategory] = useState("banve");
 
   const formatSize = (bytes: number) => {
     return (bytes / (1024 * 1024)).toFixed(2) + " MB";
@@ -195,22 +197,33 @@ export function UploadModal({
                       return (
                         <button
                           key={cat.id}
-                          onClick={() => setSelectedCategory(cat.id)}
+                          type="button"
+                          onClick={() => {
+                            console.log("Selecting category:", cat.id);
+                            setSelectedCategory(cat.id);
+                          }}
                           className={cn(
-                            "flex items-center gap-4 p-5 rounded-3xl border-2 transition-all text-left",
+                            "flex items-center gap-4 p-5 rounded-3xl border-2 transition-all text-left relative",
                             isSelected
-                              ? "border-indigo-600 bg-indigo-50/50 shadow-xl shadow-indigo-600/5 ring-1 ring-indigo-600"
-                              : "border-gray-100 bg-white hover:border-indigo-200"
+                              ? "border-indigo-600 bg-indigo-600 text-white shadow-xl shadow-indigo-600/20 scale-[1.02]"
+                              : "border-gray-100 bg-white hover:border-indigo-200 text-gray-600"
                           )}
                         >
                           <Folder className={cn(
-                            "w-6 h-6 transition-colors",
-                            isSelected ? "text-indigo-600 fill-indigo-100" : "text-gray-300"
+                            "w-6 h-6 shrink-0 transition-colors",
+                            isSelected ? "text-white fill-white/20" : "text-gray-300"
                           )} />
                           <span className={cn(
                             "text-[13px] font-black uppercase tracking-wider truncate",
-                            isSelected ? "text-indigo-600" : "text-gray-600"
+                            isSelected ? "text-white" : "text-gray-600"
                           )}>{cat.name}</span>
+                          {isSelected && (
+                            <motion.div 
+                              layoutId="active-cat"
+                              className="absolute inset-0 border-2 border-indigo-600 rounded-3xl"
+                              initial={false}
+                            />
+                          )}
                         </button>
                       );
                     })}

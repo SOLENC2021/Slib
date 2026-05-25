@@ -8,6 +8,8 @@ import {
 } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
+import { withFirestoreRetry } from '../lib/firestoreUtils';
+import { OperationType } from '../types';
 
 interface AuthContextType {
   user: User | null;
@@ -23,22 +25,34 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        // Sync user to Firestore
-        const userRef = doc(db, 'users', user.uid);
-        const userSnap = await getDoc(userRef);
-        
-        if (!userSnap.exists()) {
-          await setDoc(userRef, {
-            uid: user.uid,
-            email: user.email,
-            displayName: user.displayName,
-            photoURL: user.photoURL,
-            createdAt: new Date().toISOString()
-          });
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      if (firebaseUser) {
+        try {
+          // Sync user to Firestore using the retry mechanism
+          const userRef = doc(db, 'users', firebaseUser.uid);
+          const userSnap = await withFirestoreRetry(
+            () => getDoc(userRef),
+            OperationType.GET,
+            `users/${firebaseUser.uid}`
+          );
+          
+          if (!userSnap.exists()) {
+            await withFirestoreRetry(
+              () => setDoc(userRef, {
+                uid: firebaseUser.uid,
+                email: firebaseUser.email,
+                displayName: firebaseUser.displayName,
+                photoURL: firebaseUser.photoURL,
+                createdAt: new Date().toISOString()
+              }),
+              OperationType.CREATE,
+              `users/${firebaseUser.uid}`
+            );
+          }
+        } catch (syncError) {
+          console.warn("Gracefully bypassed non-blocking user sync to Firestore due to transient database service unavailability:", syncError);
         }
-        setUser(user);
+        setUser(firebaseUser);
       } else {
         setUser(null);
       }

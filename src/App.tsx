@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { PDFViewer } from "./components/PDFViewer";
 import { ChatPanel } from "./components/ChatPanel";
 import { UploadModal } from "./components/UploadModal";
-import { PDFFile, Message, ExtractionField, OperationType, PageData } from "./types";
+import { PDFFile, Message, ExtractionField, OperationType, PageData, Note } from "./types";
 import { chatWithDocument, extractDataFromText } from "./lib/gemini";
-import { LayoutGrid, Sparkles, LogOut, Loader2, X } from "lucide-react";
+import { LayoutGrid, Sparkles, LogOut, Loader2, X, FileText } from "lucide-react";
 import { useAuth } from "./components/FirebaseProvider";
 import { db } from "./lib/firebase";
 import { cn } from "./lib/utils";
@@ -33,7 +33,7 @@ import {
   getDownloadURL,
   deleteObject
 } from "firebase/storage";
-import { handleFirestoreError } from "./lib/firestoreUtils";
+import { handleFirestoreError, withFirestoreRetry } from "./lib/firestoreUtils";
 import { storage } from "./lib/firebase";
 import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { EditFileModal } from "./components/EditFileModal";
@@ -41,8 +41,10 @@ import { EditFileModal } from "./components/EditFileModal";
 export default function App() {
   const { user, loading, login, logout } = useAuth();
   const [files, setFiles] = useState<PDFFile[]>([]);
-  const [activeFile, setActiveFile] = useState<PDFFile | null>(null);
+  const [activeFileId, setActiveFileId] = useState<string | null>(null);
+  const activeFile = files.find(f => f.id === activeFileId) || null;
   const [messages, setMessages] = useState<Message[]>([]);
+  const [generalMessages, setGeneralMessages] = useState<Message[]>([]);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -50,9 +52,69 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<PDFFile | null>(null);
-  const [fileToEdit, setFileToEdit] = useState<PDFFile | null>(null);
-  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
+   const [fileToEdit, setFileToEdit] = useState<PDFFile | null>(null);
+  const [isAiPanelOpen, setIsAiPanelOpen] = useState(true);
+  const [isPdfMaximized, setIsPdfMaximized] = useState(false);
   const [isActionPending, setIsActionPending] = useState(false);
+  const [openedFileIds, setOpenedFileIds] = useState<string[]>([]);
+  const [targetPage, setTargetPage] = useState<number | null>(null);
+  const [isPdfViewerOpen, setIsPdfViewerOpen] = useState(false);
+
+  // Resizable Slider layout states
+  const [chatWidthPercent, setChatWidthPercent] = useState<number>(45); // default 45% for Chat Panel, 55% for PDF Viewer
+  const [isDragging, setIsDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDragging || !containerRef.current) return;
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const newPercent = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+      
+      // Keep it within reasonable bounds (e.g., 20% to 80%)
+      if (newPercent >= 20 && newPercent <= 80) {
+        setChatWidthPercent(newPercent);
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+
+    if (isDragging) {
+      window.addEventListener("mousemove", handleMouseMove);
+      window.addEventListener("mouseup", handleMouseUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    }
+
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging]);
+
+  // Keep activeFileId and files in sync with openedFileIds
+  useEffect(() => {
+    if (activeFileId && !openedFileIds.includes(activeFileId)) {
+      setOpenedFileIds(prev => {
+        if (prev.includes(activeFileId)) return prev;
+        return [...prev, activeFileId];
+      });
+    }
+  }, [activeFileId, openedFileIds]);
+
+  // Remove files that were deleted or no longer exist in the raw files list
+  useEffect(() => {
+    if (files.length > 0) {
+      const fileIds = files.map(f => f.id);
+      setOpenedFileIds(prev => prev.filter(id => fileIds.includes(id)));
+    } else {
+      setOpenedFileIds([]);
+    }
+  }, [files]);
 
   // Sync files from Firestore
   useEffect(() => {
@@ -80,10 +142,41 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
+  const [notes, setNotes] = useState<Note[]>([]);
+
+  // Sync notes from Firestore
+  useEffect(() => {
+    if (!user) {
+      setNotes([]);
+      return;
+    }
+
+    const q = query(
+      collection(db, "notes"),
+      where("ownerId", "==", user.uid),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const fetchedNotes = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id
+      })) as Note[];
+      setNotes(fetchedNotes);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, "notes");
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
   const getCategoryLabel = (id: string) => {
     switch (id) {
+      case "banve": return "Bản vẽ thiết kế";
       case "kientruc": return "Kiến trúc";
       case "ketcau": return "Kết cấu";
+      case "ketcau_tcvn": return "TCVN";
+      case "ketcau_tcnn": return "TCNN";
       case "mep": return "MEP";
       case "qckt": return "Quy chuẩn kỹ thuật";
       default: return "Văn bản hiện hành";
@@ -123,13 +216,36 @@ export default function App() {
         body: JSON.stringify({ fileUrl: url }),
       });
       
-      await updateDoc(doc(db, "files", fileId), {
-        text: extractionData.text || "", 
-        numpages: extractionData.numpages,
-        isAIReady: true,
-        extractionMethod: extractionData.extractionMethod,
-        processedPages: extractionData.extractionMethod === "pdf-parse" ? Array.from({length: extractionData.numpages}, (_, i) => i + 1) : []
-      });
+      let textUrl = "";
+      if (extractionData.text && user) {
+        try {
+          console.log("Uploading full plain text to Firebase Storage...");
+          const textBlob = new Blob([extractionData.text], { type: "text/plain;charset=utf-8" });
+          const textStorageRef = ref(storage, `pdfs/${user.uid}/${fileId}-text.txt`);
+          await uploadBytes(textStorageRef, textBlob);
+          textUrl = await getDownloadURL(textStorageRef);
+          console.log("Uploaded full text to Firebase Storage under URL:", textUrl);
+        } catch (storageErr) {
+          console.error("Failed to upload full text to Storage:", storageErr);
+        }
+      }
+
+      await withFirestoreRetry(
+        () => updateDoc(doc(db, "files", fileId), {
+          text: (extractionData.text || "").substring(0, 100000), 
+          textUrl: textUrl || null,
+          numpages: extractionData.numpages,
+          isAIReady: true,
+          extractionMethod: extractionData.extractionMethod,
+          geminiFileUri: extractionData.geminiFileUri || null,
+          geminiFileName: extractionData.geminiFileName || null,
+          // Only mark all pages as processed if we got a good amount of text (at least 150 chars per page on average)
+          processedPages: (extractionData.extractionMethod === "pdf-parse" && (extractionData.text?.length || 0) > extractionData.numpages * 150) 
+            ? Array.from({length: extractionData.numpages}, (_, i) => i + 1) : []
+        }),
+        OperationType.UPDATE,
+        `files/${fileId}`
+      );
       console.log(`Đã hoàn tất phân tích metadata cho file ${fileId}.`);
     } catch (error: any) {
       console.error(`Lỗi trích xuất file ${fileId}:`, error);
@@ -137,49 +253,69 @@ export default function App() {
   };
 
   const processSpecificPage = async (fileId: string, url: string, pageNumber: number) => {
-    if (!activeFile || activeFile.processedPages?.includes(pageNumber)) return;
+    if (!activeFile) return;
     
-    try {
-      console.log(`Lazy loading OCR for page ${pageNumber}...`);
-      const data = await safeFetch("/api/extract-pages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileUrl: url, pages: [pageNumber] }),
-      });
+    // Check if both pageNumber and pageNumber + 1 need processing
+    const pagesToProcess = [pageNumber];
+    if (pageNumber + 1 <= (activeFile.numpages || 0)) {
+      pagesToProcess.push(pageNumber + 1);
+    }
 
-      const pageResult = data.pages[0];
-
-      if (pageResult && pageResult.text) {
-        // 1. Save to sub-collection
-        const pageId = `${fileId}_p${pageNumber}`;
-        const pageData: PageData = {
-          fileId,
-          pageNumber,
-          text: pageResult.text,
-          processedDate: Date.now()
-        };
-        await setDoc(doc(db, "files", fileId, "pages", pageNumber.toString()), pageData);
-
-        // 2. Update processedPages array in main doc
-        const updatedProcessed = [...(activeFile.processedPages || []), pageNumber];
-        await updateDoc(doc(db, "files", fileId), {
-          processedPages: updatedProcessed,
-          // Accumulate some text for global search if needed
-          text: (activeFile.text + "\n\n" + pageResult.text).substring(0, 50000) 
+    for (const p of pagesToProcess) {
+      // Re-check Firestore state for each page to avoid double processing
+      if (activeFile.processedPages?.includes(p)) continue;
+      
+      try {
+        console.log(`Lazy loading OCR for page ${p}...`);
+        const data = await safeFetch("/api/extract-pages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileUrl: url, pages: [p] }),
         });
-        
-        console.log(`Page ${pageNumber} OCR completed.`);
+
+        const pageResult = data.pages[0];
+
+        if (pageResult && pageResult.text) {
+          // 1. Save to sub-collection with retry
+          const pageData: PageData = {
+            fileId,
+            pageNumber: p,
+            text: pageResult.text,
+            processedDate: Date.now()
+          };
+          await withFirestoreRetry(
+            () => setDoc(doc(db, "files", fileId, "pages", p.toString()), pageData),
+            OperationType.CREATE,
+            `files/${fileId}/pages/${p}`
+          );
+
+          // 2. Update processedPages and text in main doc with retry
+          const docRef = doc(db, "files", fileId);
+          const updatedProcessed = [...(activeFile.processedPages || []), p];
+          
+          await withFirestoreRetry(
+            () => updateDoc(docRef, {
+              processedPages: updatedProcessed,
+              // Appending with markers. Note: This still has race condition risk but better than before.
+              text: (activeFile.text + `\n\n--- [BẮT ĐẦU TRANG ${p}] ---\n\n` + pageResult.text + `\n\n--- [KẾT THÚC TRANG ${p}] ---\n\n`).substring(0, 1000000) 
+            }),
+            OperationType.UPDATE,
+            `files/${fileId}`
+          );
+          
+          console.log(`Page ${p} OCR completed.`);
+        }
+      } catch (error) {
+        console.error(`Error processing page ${p}:`, error);
       }
-    } catch (error) {
-      console.error(`Error processing page ${pageNumber}:`, error);
     }
   };
 
   const handlePageChange = useCallback((pageNumber: number) => {
-    if (activeFile && activeFile.extractionMethod === "hybrid-lazy") {
+    if (activeFile && (activeFile.extractionMethod === "hybrid-lazy" || !activeFile.processedPages?.includes(pageNumber))) {
       processSpecificPage(activeFile.id, activeFile.url, pageNumber);
     }
-  }, [activeFile]);
+  }, [activeFile, activeFileId]);
 
   const handleConfirmUpload = async (category: string) => {
     if (!pendingFile || !user) return;
@@ -230,7 +366,11 @@ export default function App() {
       };
 
       console.log("Đang lưu thông tin ban đầu vào Firestore...");
-      await setDoc(doc(db, "files", fileId), newFile);
+      await withFirestoreRetry(
+        () => setDoc(doc(db, "files", fileId), newFile),
+        OperationType.CREATE,
+        `files/${fileId}`
+      );
       
       setUploadStage("done");
       setUploadProgress(100);
@@ -240,11 +380,12 @@ export default function App() {
         setPendingFile(null);
         setIsUploading(false);
         setUploadStage("idle");
-        setActiveFile(newFile);
+        setActiveFileId(newFile.id);
         setMessages([]);
         
         // Trigger background processing
         processFile(fileId, downloadURL);
+        processSpecificPage(fileId, downloadURL, 1);
       }, 1000);
 
       console.log("Tải lên thành công. Hệ thống đang tiến hành phân tích nội dung.");
@@ -256,7 +397,109 @@ export default function App() {
     }
   };
 
-  const handleSendMessage = useCallback(async (content: string, image?: string) => {
+  const handleSendMessage = useCallback(async (content: string, image?: string, isGeneral?: boolean, referencedFileIds?: string[]) => {
+    if (isGeneral) {
+      const userMsg: Message = {
+        id: Date.now().toString(),
+        role: "user",
+        content,
+        timestamp: Date.now(),
+        image,
+      };
+
+      setGeneralMessages((prev) => [...prev, userMsg]);
+      setIsProcessing(true);
+
+      try {
+        const history = generalMessages.map(m => ({
+          role: m.role === "user" ? "user" : "model",
+          parts: [{ text: m.content }]
+        }));
+
+        let referencedFilesPayload: any[] = [];
+        const targetIds = (referencedFileIds && referencedFileIds.length > 0)
+          ? referencedFileIds
+          : files.map(f => f.id);
+
+        if (targetIds && targetIds.length > 0) {
+          referencedFilesPayload = files
+            .filter((f) => targetIds.includes(f.id))
+            .map((f) => {
+              const isExpired = f.uploadDate && (Date.now() - f.uploadDate > 40 * 60 * 60 * 1000);
+              return {
+                id: f.id,
+                geminiFileUri: (f.geminiFileUri && !isExpired) ? f.geminiFileUri : null,
+                text: f.text || "",
+                textUrl: f.textUrl || null,
+                name: f.name,
+                url: f.url,
+                uploadDate: f.uploadDate
+              };
+            });
+        }
+
+        const result = await chatWithDocument("", content, history, image, undefined, true, referencedFilesPayload);
+        const aiResponse = result?.text;
+
+        if (result?.upgradedReferencedFiles && Array.isArray(result.upgradedReferencedFiles)) {
+          console.log("[Auto Self-Healing] Received upgraded referenced files. Storing in Firestore...");
+          result.upgradedReferencedFiles.forEach((upRef: any) => {
+            updateDoc(doc(db, "files", upRef.id), {
+              geminiFileUri: upRef.geminiFileUri,
+              geminiFileName: upRef.geminiFileName
+            }).catch((e) => console.error("Auto self-healing database write failed:", e));
+          });
+        }
+        
+        const aiMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "ai",
+          content: aiResponse || "Xin lỗi, tôi gặp trục trặc khi suy nghĩ.",
+          timestamp: Date.now(),
+        };
+
+        setGeneralMessages((prev) => [...prev, aiMsg]);
+      } catch (error: any) {
+        console.error("Lỗi AI Chung:", error);
+        
+        const isPermError = 
+          error.message?.includes("hết hạn lưu trữ") ||
+          error.message?.includes("You do not have permission to access the File") ||
+          error.message?.includes("PERMISSION_DENIED") ||
+          error.message?.includes("403") ||
+          error.message?.includes("permission");
+
+        if (isPermError) {
+          const targetIds = (referencedFileIds && referencedFileIds.length > 0)
+            ? referencedFileIds
+            : files.map(f => f.id);
+          
+          if (targetIds && targetIds.length > 0) {
+            targetIds.forEach(id => {
+              updateDoc(doc(db, "files", id), {
+                geminiFileUri: null,
+                geminiFileName: null
+              }).catch(err => console.error(`Failed to clear geminiFileUri for fileId ${id} in Firestore:`, err));
+            });
+            setFiles(prev => prev.map(f => targetIds.includes(f.id) ? { ...f, geminiFileUri: undefined } : f));
+          }
+        }
+
+        const errorMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: "ai",
+          content: isPermError 
+            ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
+            : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
+          timestamp: Date.now(),
+        };
+        setGeneralMessages((prev) => [...prev, errorMsg]);
+      } finally {
+        setIsProcessing(false);
+      }
+      return;
+    }
+
     if (!activeFile) return;
 
     const userMsg: Message = {
@@ -276,7 +519,54 @@ export default function App() {
         parts: [{ text: m.content }]
       }));
 
-      const aiResponse = await chatWithDocument(activeFile.text, content, history, image);
+      // On-demand registration if geminiFileUri is missing or expired (> 40h)
+      const isExpired = activeFile.uploadDate && (Date.now() - activeFile.uploadDate > 40 * 60 * 60 * 1000);
+      let fileUri = (activeFile.geminiFileUri && !isExpired) ? activeFile.geminiFileUri : null;
+      if (!fileUri && activeFile.url) {
+        try {
+          console.log("File is missing or expired Gemini File API representation. Registering/refreshing on-demand...");
+          const registration = await safeFetch("/api/register-gemini-file", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fileUrl: activeFile.url, filename: activeFile.name })
+          });
+          if (registration && registration.uri) {
+            fileUri = registration.uri;
+            // Background update firestore
+            updateDoc(doc(db, "files", activeFile.id), {
+              geminiFileUri: registration.uri,
+              geminiFileName: registration.name || null
+            }).catch(e => console.error("Failed to update firestore with registered gemini files uri:", e));
+          }
+        } catch (regErr) {
+          console.warn("Failed to register file with Gemini Files API, falling back to text representation:", regErr);
+        }
+      }
+
+      const result = await chatWithDocument(
+        activeFile.text,
+        content,
+        history,
+        image,
+        fileUri,
+        false,
+        undefined,
+        activeFile.url,
+        activeFile.name,
+        activeFile.id,
+        activeFile.textUrl
+      );
+      
+      const aiResponse = result?.text;
+
+      if (result?.upgradedFile) {
+        console.log("[Auto Self-Healing] Received upgraded active file. Storing in Firestore...");
+        const up = result.upgradedFile;
+        updateDoc(doc(db, "files", up.fileId), {
+          geminiFileUri: up.geminiFileUri,
+          geminiFileName: up.geminiFileName
+        }).catch(e => console.error("Auto self-healing database write failed:", e));
+      }
       
       const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
@@ -288,32 +578,89 @@ export default function App() {
       setMessages((prev) => [...prev, aiMsg]);
     } catch (error: any) {
       console.error("Lỗi AI:", error);
+
+      const isPermError = 
+        error.message?.includes("hết hạn lưu trữ") ||
+        error.message?.includes("You do not have permission to access the File") ||
+        error.message?.includes("PERMISSION_DENIED") ||
+        error.message?.includes("403") ||
+        error.message?.includes("permission");
+
+      if (isPermError && activeFile) {
+        updateDoc(doc(db, "files", activeFile.id), {
+          geminiFileUri: null,
+          geminiFileName: null
+        }).catch(err => console.error(`Failed to clear geminiFileUri for single fileId ${activeFile.id} in Firestore:`, err));
+
+        setFiles(prev => prev.map(f => f.id === activeFile.id ? { ...f, geminiFileUri: undefined } : f));
+      }
+
       const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "ai",
-        content: `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
+        content: isPermError 
+          ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
+          : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
         timestamp: Date.now(),
       };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setIsProcessing(false);
     }
-  }, [activeFile, messages]);
+  }, [activeFile, messages, generalMessages, files]);
 
   const handleExtract = useCallback(async (fields: ExtractionField[]) => {
     if (!activeFile) return null;
-    return await extractDataFromText(activeFile.text, fields);
+
+    // On-demand registration if geminiFileUri is missing or expired (> 40h)
+    const isExpired = activeFile.uploadDate && (Date.now() - activeFile.uploadDate > 40 * 60 * 60 * 1000);
+    let fileUri = (activeFile.geminiFileUri && !isExpired) ? activeFile.geminiFileUri : null;
+    if (!fileUri && activeFile.url) {
+      try {
+        console.log("File is missing or expired Gemini File API representation during extraction. Registering/refreshing on-demand...");
+        const registration = await safeFetch("/api/register-gemini-file", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ fileUrl: activeFile.url, filename: activeFile.name })
+        });
+        if (registration && registration.uri) {
+          fileUri = registration.uri;
+          // Background update firestore
+          updateDoc(doc(db, "files", activeFile.id), {
+            geminiFileUri: registration.uri,
+            geminiFileName: registration.name || null
+          }).catch(e => console.error("Failed to update firestore with registered gemini files uri:", e));
+        }
+      } catch (regErr) {
+        console.warn("Failed to register file with Gemini Files API for extraction, falling back to text:", regErr);
+      }
+    }
+
+    const result = await extractDataFromText(activeFile.text, fields, fileUri, activeFile.id, activeFile.url, activeFile.name);
+    if (result && result.upgradedFile) {
+      console.log("[Auto Self-Healing] Received upgraded active file during extract. Storing in Firestore...");
+      const up = result.upgradedFile;
+      updateDoc(doc(db, "files", up.fileId), {
+        geminiFileUri: up.geminiFileUri,
+        geminiFileName: up.geminiFileName
+      }).catch(e => console.error("Auto self-healing database write failed:", e));
+    }
+    return result?.data || result;
   }, [activeFile]);
 
   const handleSync = useCallback(async (data: any) => {
     if (!activeFile || !user) return;
     setIsSyncing(true);
     try {
-      // Update data in Firestore
+      // Update data in Firestore with retry
       const fileRef = doc(db, "files", activeFile.id);
-      await updateDoc(fileRef, {
-        extractedData: data
-      });
+      await withFirestoreRetry(
+        () => updateDoc(fileRef, {
+          extractedData: data
+        }),
+        OperationType.UPDATE,
+        `files/${activeFile.id}`
+      );
 
       // Also call internal API if needed for secondary systems
       await safeFetch("/api/sync-internal", {
@@ -335,12 +682,86 @@ export default function App() {
     }
   }, [activeFile, user]);
 
+  const handleRegisterGeminiFile = useCallback(async (geminiFileUri: string, geminiFileName: string) => {
+    if (!activeFileId) return;
+    try {
+      await withFirestoreRetry(
+        () => updateDoc(doc(db, "files", activeFileId), {
+          geminiFileUri,
+          geminiFileName,
+          isAIReady: true
+        }),
+        OperationType.UPDATE,
+        `files/${activeFileId}`
+      );
+      console.log(`Đã cập nhật Gemini File API URI thành công cho file ${activeFileId}`);
+    } catch (err) {
+      console.error("Lỗi cập nhật Firestore Gemini File API URI:", err);
+    }
+  }, [activeFileId]);
+
+  const handleUpdateFile = useCallback(async (fileId: string, data: Partial<PDFFile>) => {
+    try {
+      await withFirestoreRetry(
+        () => updateDoc(doc(db, "files", fileId), data as any),
+        OperationType.UPDATE,
+        `files/${fileId}`
+      );
+      console.log(`Đã cập nhật trạng thái đồng bộ cho file ${fileId}`);
+    } catch (err) {
+      console.error("Lỗi cập nhật Firestore cho file:", err);
+    }
+  }, []);
+
+  const handleSaveNote = useCallback(async (content: string) => {
+    if (!user || !activeFile) return;
+    const noteId = "note_" + Date.now();
+    try {
+      const noteData: Note = {
+        id: noteId,
+        content,
+        fileId: activeFile.id,
+        fileName: activeFile.name,
+        ownerId: user.uid,
+        createdAt: Date.now()
+      };
+      await withFirestoreRetry(
+        () => setDoc(doc(db, "notes", noteId), noteData),
+        OperationType.CREATE,
+        `notes/${noteId}`
+      );
+      console.log(`Đã lưu ghi chú thành công: ${noteId}`);
+    } catch (err: any) {
+      console.error("Lỗi khi lưu ghi chú vào Firestore:", err);
+      handleFirestoreError(err, OperationType.CREATE, `notes/${noteId}`);
+    }
+  }, [user, activeFile]);
+
+  const handleDeleteNote = useCallback(async (noteId: string) => {
+    if (!user) return;
+    try {
+      await withFirestoreRetry(
+        () => deleteDoc(doc(db, "notes", noteId)),
+        OperationType.DELETE,
+        `notes/${noteId}`
+      );
+      console.log(`Đã xóa ghi chú thành công: ${noteId}`);
+    } catch (err: any) {
+      console.error("Lỗi khi xóa ghi chú trong Firestore:", err);
+      handleFirestoreError(err, OperationType.DELETE, `notes/${noteId}`);
+    }
+  }, [user]);
+
   const handleDeleteFile = async () => {
     if (!fileToDelete || !user) return;
     setIsActionPending(true);
     try {
-      // 1. Delete from Firestore
-      await deleteDoc(doc(db, "files", fileToDelete.id));
+      // 1. Delete from Firestore with retry
+      await withFirestoreRetry(
+        () => deleteDoc(doc(db, "files", fileToDelete.id)),
+        OperationType.DELETE,
+        `files/${fileToDelete.id}`
+      );
 
       // 2. Delete from Storage (if url exists and is internal)
       if (fileToDelete.url && fileToDelete.url.includes("firebasestorage.googleapis.com")) {
@@ -351,8 +772,8 @@ export default function App() {
         await deleteObject(fileRef).catch(err => console.error("Storage delete failed:", err));
       }
 
-      if (activeFile?.id === fileToDelete.id) {
-        setActiveFile(null);
+      if (activeFileId === fileToDelete.id) {
+        setActiveFileId(null);
         setMessages([]);
       }
       setFileToDelete(null);
@@ -369,13 +790,14 @@ export default function App() {
     setIsActionPending(true);
     try {
       const fileRef = doc(db, "files", fileToEdit.id);
-      await updateDoc(fileRef, {
-        name: newName
-      });
+      await withFirestoreRetry(
+        () => updateDoc(fileRef, {
+          name: newName
+        }),
+        OperationType.UPDATE,
+        `files/${fileToEdit.id}`
+      );
       
-      if (activeFile?.id === fileToEdit.id) {
-        setActiveFile({ ...activeFile, name: newName });
-      }
       setFileToEdit(null);
     } catch (error) {
       console.error("Rename error:", error);
@@ -398,8 +820,8 @@ export default function App() {
 
   if (!user) {
     return (
-      <div className="h-screen w-full flex items-center justify-center bg-[#f8f9fc] font-sans p-6">
-        <div className="max-w-md w-full bg-white rounded-[48px] shadow-2xl p-12 border border-gray-100 flex flex-col items-center text-center">
+      <div className="h-screen w-full flex items-center justify-center bg-[#ebeff4] font-sans p-6">
+        <div className="max-w-md w-full bg-white rounded-[32px] shadow-[0_25px_60px_-15px_rgba(0,0,0,0.08)] p-12 border border-gray-200/60 flex flex-col items-center text-center">
           <div className="w-20 h-20 bg-gray-900 rounded-[32px] flex items-center justify-center mb-8 shadow-xl">
             <LayoutGrid className="w-10 h-10 text-white" />
           </div>
@@ -424,9 +846,9 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen w-full bg-[#f8f9fc] overflow-hidden">
+    <div className="flex flex-col h-screen w-full bg-[#ebeff4] overflow-hidden">
       {/* Top Header */}
-      <header className="h-20 bg-white border-b border-gray-100 flex items-center justify-between px-8 shrink-0 z-30">
+      <header className="h-20 bg-white border-b border-gray-200/60 flex items-center justify-between px-8 shrink-0 z-30 shadow-[0_2px_12px_rgba(0,0,0,0.02)]">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 bg-gray-900 rounded-xl flex items-center justify-center">
             <LayoutGrid className="w-6 h-6 text-white" />
@@ -440,6 +862,20 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-6">
+          <button 
+            onClick={() => setIsAiPanelOpen(!isAiPanelOpen)}
+            className={cn(
+              "px-4 py-2 rounded-xl font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-2 transition-all duration-300 border shadow-sm cursor-pointer",
+              isAiPanelOpen 
+                ? "bg-indigo-600 border-indigo-600 text-white shadow-[0_4px_12px_rgba(79,70,229,0.18)] hover:bg-indigo-700 hover:border-indigo-700" 
+                : "bg-white border-gray-200 text-indigo-600 hover:bg-indigo-50/40"
+            )}
+            title="Bật/Tắt khung phân tích AI"
+          >
+            <Sparkles className={cn("w-4 h-4", isAiPanelOpen ? "fill-white text-white" : "fill-indigo-600 text-indigo-600")} />
+            {isAiPanelOpen ? "ẨN PHÂN TÍCH AI ✦" : "HIỂN THỊ TRUY VẤN AI ✦"}
+          </button>
+
           <div className="flex flex-col items-end mr-4">
             <div className="flex items-center gap-2">
               <span className="text-sm font-bold text-gray-700">{user.displayName}</span>
@@ -454,36 +890,10 @@ export default function App() {
               <LogOut className="w-3 h-3" /> ĐĂNG XUẤT
             </button>
           </div>
-
-          <button 
-            onClick={() => setIsAiPanelOpen(!isAiPanelOpen)}
-            className={cn(
-              "border-2 px-8 py-3.5 rounded-2xl font-black text-sm flex items-center gap-3 transition-all shadow-sm",
-              isAiPanelOpen 
-                ? "bg-indigo-600 border-indigo-600 text-white" 
-                : "bg-white border-indigo-600 text-indigo-600 hover:bg-indigo-50"
-            )}
-          >
-            <Sparkles className={cn("w-5 h-5", isAiPanelOpen ? "fill-white" : "fill-indigo-600")} />
-            PHÂN TÍCH KỸ THUẬT AI
-          </button>
         </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar
-          files={files}
-          activeFileId={activeFile?.id ?? null}
-          onSelectFile={(file) => {
-            setActiveFile(file);
-            setMessages([]);
-          }}
-          onUpload={(file) => setPendingFile(file)}
-          onDeleteFile={(file) => setFileToDelete(file)}
-          onEditFile={(file) => setFileToEdit(file)}
-          isUploading={isUploading}
-        />
-        
         {pendingFile && (
           <UploadModal
             file={pendingFile}
@@ -511,40 +921,184 @@ export default function App() {
           isSaving={isActionPending}
         />
         
-        <main className="flex-1 flex flex-row overflow-hidden p-6 pl-0 gap-6">
-          <motion.div 
-            layout
-            className="flex-1 flex flex-col overflow-hidden min-w-0"
-          >
-            <PDFViewer file={activeFile} onPageChange={handlePageChange} />
-          </motion.div>
-          
-          <AnimatePresence>
-            {isAiPanelOpen && (
-              <motion.div
-                layout
-                initial={{ width: 0, opacity: 0, x: 20 }}
-                animate={{ width: "650px", opacity: 1, x: 0 }}
-                exit={{ width: 0, opacity: 0, x: 20 }}
-                transition={{ type: "spring", damping: 25, stiffness: 200 }}
-                className="flex flex-col shrink-0 h-full"
-              >
-                <div className="flex-1 bg-white rounded-[40px] shadow-2xl border border-gray-100 flex flex-col overflow-hidden overflow-y-auto no-scrollbar">
+        <main className="flex-1 flex flex-col overflow-hidden p-6 gap-4">
+          {/* Opened Document Tabs Bar on top of main workspace */}
+          {openedFileIds.length > 0 && (
+            <div className="flex items-center gap-3 overflow-x-auto no-scrollbar pb-1 shrink-0 select-none animate-in fade-in duration-300">
+              {openedFileIds.map((fileId) => {
+                const tabFile = files.find((f) => f.id === fileId);
+                if (!tabFile) return null;
+                const isActive = activeFileId === fileId;
+                return (
+                  <div
+                    key={fileId}
+                    onClick={() => {
+                      setActiveFileId(fileId);
+                      setMessages([]);
+                      setIsPdfViewerOpen(true); // Click selects and pops open PDF
+                    }}
+                    className={cn(
+                      "flex items-center gap-2.5 px-5 py-2.5 rounded-2xl border transition-all duration-250 cursor-pointer text-xs font-bold shrink-0 shadow-sm",
+                      isActive
+                        ? "bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-600/15"
+                        : "bg-white text-gray-500 hover:text-gray-950 hover:bg-gray-50 border-gray-150"
+                    )}
+                  >
+                    <FileText className={cn("w-4 h-4 shrink-0", isActive ? "text-indigo-200" : "text-gray-400")} />
+                    <span className="max-w-[200px] truncate">{tabFile.name}</span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const index = openedFileIds.indexOf(fileId);
+                        const newOpened = openedFileIds.filter((id) => id !== fileId);
+                        setOpenedFileIds(newOpened);
+                        if (isActive) {
+                          if (newOpened.length > 0) {
+                            const nextActiveIndex = Math.min(index, newOpened.length - 1);
+                            setActiveFileId(newOpened[nextActiveIndex]);
+                          } else {
+                            setActiveFileId(null);
+                          }
+                          setMessages([]);
+                        }
+                      }}
+                      className={cn(
+                        "p-0.5 rounded-md hover:bg-black/10 transition-colors shrink-0 ml-1",
+                        isActive ? "text-indigo-200 hover:text-white" : "text-gray-400 hover:text-gray-700"
+                      )}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div ref={containerRef} className="flex-1 flex flex-row overflow-hidden min-h-0 relative">
+            <AnimatePresence>
+              {isAiPanelOpen && (
+                <motion.div
+                  layout
+                  initial={{ width: 0, opacity: 0 }}
+                  animate={{ 
+                    width: isPdfViewerOpen && activeFile ? `${chatWidthPercent}%` : "100%", 
+                    minWidth: isPdfViewerOpen && activeFile ? "280px" : "100%",
+                    opacity: 1 
+                  }}
+                  exit={{ width: 0, opacity: 0 }}
+                  transition={isDragging ? { type: "tween", duration: 0 } : { type: "spring", damping: 25, stiffness: 180 }}
+                  className="bg-white rounded-[28px] shadow-[0_24px_55px_rgba(0,0,0,0.07),0_2px_6px_rgba(0,0,0,0.02)] border border-gray-200/70 flex flex-col overflow-hidden h-full z-10"
+                >
                   <ChatPanel
                     messages={messages}
+                    generalMessages={generalMessages}
                     activeFile={activeFile}
                     onSendMessage={handleSendMessage}
                     onExtract={handleExtract}
                     isProcessing={isProcessing}
                     onSync={handleSync}
                     isSyncing={isSyncing}
+                    onRegisterGeminiFile={handleRegisterGeminiFile}
+                    notes={notes}
+                    onSaveNote={handleSaveNote}
+                    onDeleteNote={handleDeleteNote}
+                    allFiles={files}
+                    onUpdateFile={handleUpdateFile}
+                    onSelectFile={(fileId, pageNum) => {
+                      setActiveFileId(fileId);
+                      if (pageNum) {
+                        setTargetPage(pageNum);
+                      }
+                      setIsPdfViewerOpen(true); // Open inline panel on chat select or snippet click
+                    }}
                     onClose={() => setIsAiPanelOpen(false)}
+                    isPdfViewerOpen={isPdfViewerOpen}
+                    onTogglePdfViewer={() => setIsPdfViewerOpen(!isPdfViewerOpen)}
                   />
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Floating button to restore AI panel if user closed it */}
+            <AnimatePresence>
+              {!isAiPanelOpen && (
+                <motion.button
+                  initial={{ opacity: 0, scale: 0.8, x: -10 }}
+                  animate={{ opacity: 1, scale: 1, x: 0 }}
+                  exit={{ opacity: 0, scale: 0.8, x: -10 }}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setIsAiPanelOpen(true)}
+                  className="absolute bottom-6 left-6 z-40 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-3.5 rounded-2xl font-black text-[11px] uppercase tracking-widest flex items-center gap-2 shadow-xl shadow-indigo-600/30 transition-all border border-indigo-500 cursor-pointer animate-pulse"
+                  title="Mở rộng khung truy vấn AI"
+                >
+                  <Sparkles className="w-4 h-4 fill-white" />
+                  MỞ RỘNG TRUY VẤN AI ✦
+                </motion.button>
+              )}
+            </AnimatePresence>
+
+            {/* Draggable slider resizer bar between Chat and PDF */}
+            {isAiPanelOpen && isPdfViewerOpen && activeFile && (
+              <div
+                onMouseDown={() => setIsDragging(true)}
+                className={cn(
+                  "w-2 hover:w-3 bg-gray-100/50 hover:bg-indigo-400 cursor-col-resize flex items-center justify-center transition-all shrink-0 h-full rounded-2xl group select-none relative z-20 border-l border-r border-gray-100",
+                  isDragging && "bg-indigo-500 w-3"
+                )}
+                title="Kéo sang trái hoặc phải để điều chỉnh kích thước"
+              >
+                <div className="w-1.5 h-10 bg-gray-300 group-hover:bg-white rounded-full transition-colors flex flex-col items-center justify-between py-1.5 shadow-sm">
+                  <div className="w-1 h-1 bg-gray-400 group-hover:bg-indigo-500 rounded-full"></div>
+                  <div className="w-1 h-1 bg-gray-400 group-hover:bg-indigo-500 rounded-full"></div>
+                  <div className="w-1 h-1 bg-gray-400 group-hover:bg-indigo-500 rounded-full"></div>
                 </div>
-              </motion.div>
+              </div>
             )}
-          </AnimatePresence>
+
+            <AnimatePresence>
+              {isPdfViewerOpen && activeFile && (
+                <motion.div
+                  layout
+                  initial={{ width: 0, opacity: 0, x: 60 }}
+                  animate={{ 
+                    width: isAiPanelOpen ? `${100 - chatWidthPercent}%` : "100%", 
+                    opacity: 1, 
+                    x: 0 
+                  }}
+                  exit={{ width: 0, opacity: 0, x: 60 }}
+                  transition={isDragging ? { type: "tween", duration: 0 } : { type: "spring", damping: 25, stiffness: 180 }}
+                  className="h-full flex flex-col overflow-hidden min-w-[280px]"
+                >
+                  <PDFViewer 
+                    file={activeFile} 
+                    onPageChange={handlePageChange} 
+                    targetPage={targetPage}
+                    onClearTargetPage={() => setTargetPage(null)}
+                    isMaximized={!isAiPanelOpen}
+                    onToggleMaximize={() => setIsAiPanelOpen(!isAiPanelOpen)}
+                    onClose={() => setIsPdfViewerOpen(false)}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </main>
+
+        <Sidebar
+          files={files}
+          activeFileId={activeFileId}
+          onSelectFile={(file) => {
+            setActiveFileId(file.id);
+            setMessages([]);
+            setIsPdfViewerOpen(true); // Open inline screen on sidebar click
+          }}
+          onUpload={(file) => setPendingFile(file)}
+          onDeleteFile={(file) => setFileToDelete(file)}
+          onEditFile={(file) => setFileToEdit(file)}
+          isUploading={isUploading}
+        />
       </div>
     </div>
   );

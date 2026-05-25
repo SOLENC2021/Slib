@@ -44,6 +44,20 @@
         "text": { "type": "string" },
         "processedDate": { "type": "integer" }
       }
+    },
+    "Note": {
+      "title": "Ghi chú tài liệu",
+      "description": "Ghi chú lưu trữ từ cuộc hội thoại Chat với AI",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "content": { "type": "string" },
+        "fileId": { "type": "string" },
+        "fileName": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["id", "content", "fileId", "fileName", "ownerId", "createdAt"]
     }
   },
   "firestore": {
@@ -58,6 +72,10 @@
     "/files/{fileId}/pages/{pageNumber}": {
       "schema": "PageData",
       "description": "Dữ liệu text của từng trang (Lazy OCR)"
+    },
+    "/notes/{noteId}": {
+      "schema": "Note",
+      "description": "Collection ghi chú từ hội thoại AI"
     }
   }
 }
