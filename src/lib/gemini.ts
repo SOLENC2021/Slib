@@ -1,3 +1,5 @@
+import { getApiUrl } from "./utils";
+
 export interface ExtractionField {
   name: string;
   type: string;
@@ -18,7 +20,7 @@ export async function chatWithDocument(
   textUrl?: string
 ) {
   try {
-    const response = await fetch("/api/chat", {
+    const response = await fetch(getApiUrl("/api/chat"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -72,7 +74,7 @@ export async function extractDataFromText(
       required: fields.map(f => f.name),
     };
 
-    const response = await fetch("/api/extract-fields", {
+    const response = await fetch(getApiUrl("/api/extract-fields"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

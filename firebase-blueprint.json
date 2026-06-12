@@ -9,7 +9,11 @@
         "email": { "type": "string" },
         "displayName": { "type": "string" },
         "photoURL": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "createdAt": { "type": "string", "format": "date-time" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "apiLimit": { "type": "integer" },
+        "apiUsageCount": { "type": "integer" },
+        "lastRequestDate": { "type": "string" }
       },
       "required": ["uid", "email"]
     },

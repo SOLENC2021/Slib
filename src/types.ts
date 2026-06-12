@@ -44,6 +44,7 @@ export interface PDFFile {
   geminiFileUri?: string;
   geminiFileName?: string;
   textUrl?: string;
+  isPublic?: boolean;
 }
 
 export interface PageData {

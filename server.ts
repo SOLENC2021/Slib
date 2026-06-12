@@ -6,6 +6,7 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const pdf = require("pdf-parse");
 import fs from "fs";
+import os from "os";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import { PDFDocument } from "pdf-lib";
@@ -47,6 +48,15 @@ async function callAIWithRetry(fn: (aiClient: GoogleGenAI) => Promise<any>, maxR
         throw new Error("Gemini API Key đã hết hạn hoặc không hợp lệ. Vui lòng cập nhật key mới trong bảng Secrets của AI Studio và khởi động lại.");
       }
 
+      // Check for unrecoverable quota / billing limits exceeded
+      const isHardQuotaExceeded = errorMsg.includes("exceeded your current quota") || 
+                                  errorMsg.includes("billing details") || 
+                                  errorMsg.includes("check your plan") || 
+                                  errorMsg.includes("quota exceeded for metric");
+      if (isHardQuotaExceeded) {
+        throw new Error("Tài khoản của bạn đã HẾT HẠN MỨC (Quota) miễn phí của Gemini hoặc chưa cài đặt thông tin thẻ thanh toán/gia hạn gói cước bên Google AI Studio. Vui lòng kiểm tra tab 'Billing/Quota' trên AI Studio.");
+      }
+
       const isRateLimit = errorMsg.includes("429") || error?.status === 429 || error?.code === 429 || error?.error?.code === 429 || errorMsg.includes("rate limit") || errorMsg.includes("resource_exhausted") || errorMsg.includes("resource exhausted");
       const isHighDemand = errorMsg.includes("high demand") || errorMsg.includes("unavailable") || errorMsg.includes("503") || error?.status === 503 || error?.code === 503 || error?.error?.code === 503 || errorMsg.includes("overloaded") || errorMsg.includes("spikes in demand");
       const isInternalError = errorMsg.includes("500") || errorMsg.includes("internal error") || error?.status === 500 || error?.code === 500 || error?.error?.code === 500 || errorMsg.includes("internal");
@@ -80,7 +90,7 @@ Bạn là "Chuyên gia Thẩm định Tiêu chuẩn Xây dựng Việt Nam" (Sta
 Mọi câu trả lời phải được chia thành đúng 3 phần rõ rệt bằng Markdown theo cấu trúc chính xác dưới đây:
 
 ## 1. Tóm tắt câu trả lời: Trực diện, ngắn gọn.
-[Phần này chỉ nêu thông tin tổng quan (general) và câu trả lời tóm lược trực diện vào câu hỏi của người dùng, tối đa 3-5 câu ngắn gọn.]
+[Phần này chỉ nêu thông tin tổng quan (general) và câu trả lời tóm lược trực diện vào câu hỏi của người dùng, tối đa 3-5 câu ngắn gọn. TUYỆT ĐỐI KHÔNG lặp lại tiêu đề, KHÔNG viết thêm câu hay cụm từ "Trực diện, ngắn gọn" hoặc bất cứ tiền tố thừa nào ở ngay đầu nội dung trả lời, hãy trả lời thẳng vào vấn đề chính một cách tự nhiên.]
 
 ## 2. Căn cứ pháp lý: Liệt kê tên tiêu chuẩn, điều khoản và trích đoạn gốc.
 - **Tên tiêu chuẩn:** [Bắt buộc viết bôi đậm tên quy chuẩn/tiêu chuẩn viết hoa đầy đủ, ví dụ: **QCVN 06:2022/BXD** hoặc **TCVN 5574:2018** để hệ thống tạo Badge làm nổi bật]
@@ -299,6 +309,22 @@ function retrieveRelevantChunks(text: string, query: string, maxChunks = 4, chil
   }
 }
 
+// Helper to detect dynamic MIME type based on file extension
+function getMimeType(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase() || "";
+  switch (ext) {
+    case "pdf": return "application/pdf";
+    case "png": return "image/png";
+    case "jpg":
+    case "jpeg": return "image/jpeg";
+    case "webp": return "image/webp";
+    case "txt": return "text/plain";
+    case "csv": return "text/csv";
+    case "html": return "text/html";
+    default: return "application/pdf"; // safe default
+  }
+}
+
 // Cấu hình lưu trữ file upload
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -306,10 +332,7 @@ const upload = multer({
 });
 
 async function uploadToGeminiFilesAPI(buffer: Buffer, originalName: string): Promise<{ uri: string; name: string }> {
-  const tempDir = path.join(process.cwd(), "temp");
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true });
-  }
+  const tempDir = os.tmpdir();
   
   // Use a unique name to avoid naming collisions
   const safeBaseName = originalName.replace(/[^a-zA-Z0-9.-]/g, "_");
@@ -319,11 +342,12 @@ async function uploadToGeminiFilesAPI(buffer: Buffer, originalName: string): Pro
     fs.writeFileSync(tempPath, buffer);
     
     const aiClient = getAIClient();
-    console.log(`Uploading file ${tempPath} to Gemini Files API...`);
+    const mimeType = getMimeType(originalName);
+    console.log(`Uploading file ${tempPath} to Gemini Files API with mimeType: ${mimeType}...`);
     const uploadResult = await callAIWithRetry(async (client) => {
       return await client.files.upload({
         file: tempPath,
-        mimeType: "application/pdf",
+        mimeType,
       } as any);
     });
     
@@ -377,28 +401,54 @@ async function uploadToGeminiFilesAPI(buffer: Buffer, originalName: string): Pro
 function isGeminiFileError(error: any): boolean {
   if (!error) return false;
   const message = String(error.message || error.statusText || error || "").toLowerCase();
+  
+  // Prevent matching general Google API key validation or authentication errors
+  if (message.includes("api key") || message.includes("api_key") || message.includes("auth")) {
+    return false;
+  }
+  
   return (
-    message.includes("permission_denied") ||
+    (message.includes("file") && (
+      message.includes("permission") || 
+      message.includes("not found") || 
+      message.includes("exist") ||
+      message.includes("invalid") ||
+      message.includes("expired")
+    )) ||
     message.includes("do not have permission to access the file") ||
     message.includes("does not exist") ||
     message.includes("may not exist") ||
-    message.includes("not found") ||
-    message.includes("403") ||
-    message.includes("404") ||
     message.includes("deleted") ||
-    message.includes("expired") ||
-    message.includes("invalid argument") ||
-    message.includes("invalid value")
+    message.includes("expired")
   );
 }
 
 function isPermissionError(error: any): boolean {
   if (!error) return false;
   const message = String(error.message || error.statusText || error || "").toLowerCase();
+  
+  // Prevent matching general Google API key validation or authentication errors
+  if (message.includes("api key") || message.includes("api_key") || message.includes("auth")) {
+    return false;
+  }
+  
   return (
     message.includes("permission_denied") ||
     message.includes("do not have permission to access the file") ||
-    message.includes("403")
+    (message.includes("403") && message.includes("file"))
+  );
+}
+
+function isTokenLimitError(error: any): boolean {
+  if (!error) return false;
+  const message = String(error.message || error.statusText || error || "").toLowerCase();
+  return (
+    message.includes("token count exceeds") ||
+    message.includes("maximum number of tokens") ||
+    message.includes("exceeds the maximum number") ||
+    message.includes("1048576") ||
+    message.includes("token_limit_exceeded") ||
+    message.includes("limit exceeds")
   );
 }
 
@@ -414,6 +464,17 @@ async function reRegisterFileWithGemini(fileUrl: string, fileName: string): Prom
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // CORS middleware for external clients (like GitHub Pages)
+  app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, Content-Length");
+    if (req.method === "OPTIONS") {
+      return res.sendStatus(200);
+    }
+    next();
+  });
 
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "20mb", extended: true }));
@@ -449,7 +510,7 @@ async function startServer() {
       if (isGeneral) {
         console.log("Processing general chat query using gemini-3.5-flash...");
         
-        const runGeneralChat = async (currentFiles: any[]) => {
+        const runGeneralChat = async (currentFiles: any[], useFileUris = true) => {
           const userParts: any[] = [];
           let compiledContext = "";
           
@@ -485,7 +546,7 @@ async function startServer() {
               }
               
               // 2. Also reference the Gemini File URI if available as supplementary input
-              if (file.geminiFileUri) {
+              if (useFileUris && file.geminiFileUri) {
                 console.log(`General Chat: supplemented referencing PDF ${file.name} (URI: ${file.geminiFileUri})`);
                 userParts.push({
                   fileData: {
@@ -556,8 +617,7 @@ async function startServer() {
 
         if (needsPreemptiveHealing) {
           console.log("[Auto Self-Healing] Proactively detecting expired Gemini Files before general chat. Re-registering...");
-          for (let i = 0; i < finalFiles.length; i++) {
-            const file = finalFiles[i];
+          await Promise.all(finalFiles.map(async (file, i) => {
             const isExpired = file.uploadDate && (Date.now() - file.uploadDate > 40 * 60 * 60 * 1000);
             if (file.geminiFileUri && isExpired && file.url) {
               try {
@@ -572,62 +632,78 @@ async function startServer() {
                   });
                   console.log(`[Auto Self-Healing] Proactively re-registered ${file.name} -> new URI: ${newReg.uri}`);
                 }
-              } catch (reRegErr) {
-                console.error(`[Auto Self-Healing] Proactive re-registration failed for ${file.name}:`, reRegErr);
+              } catch (reRegErr: any) {
+                console.error(`[Auto Self-Healing] Proactive re-registration failed for ${file.name}:`, reRegErr.message || reRegErr);
                 // Clear state URI so direct text/RAG query is used instead of failing
                 finalFiles[i].geminiFileUri = undefined;
               }
             }
-          }
+          }));
         }
 
         try {
           response = await runGeneralChat(finalFiles);
         } catch (genErr: any) {
-          if (isGeminiFileError(genErr)) {
+          if (isTokenLimitError(genErr)) {
+            console.log("[Auto Self-Healing] Token limit exceeded in general chat. Falling back to text-only (RAG) mode immediately...");
+            try {
+              response = await runGeneralChat(finalFiles, false);
+            } catch (limitFallbackErr: any) {
+              throw limitFallbackErr;
+            }
+          } else if (isGeminiFileError(genErr)) {
             console.log("[Auto Self-Healing] Gemini File error in general chat. Attempting to on-the-fly re-register referenced files...");
             try {
-              const healedFiles = [...finalFiles];
-              for (let i = 0; i < healedFiles.length; i++) {
-                const file = healedFiles[i];
-                if (file.geminiFileUri) {
+              const healedFiles = await Promise.all(finalFiles.map(async (file) => {
+                const healed = { ...file };
+                if (healed.geminiFileUri) {
                   let reRegistered = false;
-                  if (file.url) {
+                  if (healed.url) {
                     try {
-                      const newReg = await reRegisterFileWithGemini(file.url, file.name);
+                      const newReg = await reRegisterFileWithGemini(healed.url, healed.name);
                       if (newReg && newReg.uri) {
-                        healedFiles[i].geminiFileUri = newReg.uri;
-                        healedFiles[i].geminiFileName = newReg.name;
+                        healed.geminiFileUri = newReg.uri;
+                        healed.geminiFileName = newReg.name;
                         reRegistered = true;
                         
                         newlyReRegistered.push({
-                          id: file.id,
+                          id: healed.id,
                           geminiFileUri: newReg.uri,
                           geminiFileName: newReg.name
                         });
-                        console.log(`[Auto Self-Healing] Successfully re-registered ${file.name} -> new URI: ${newReg.uri}`);
+                        console.log(`[Auto Self-Healing] Successfully re-registered ${healed.name} -> new URI: ${newReg.uri}`);
                       }
-                    } catch (reRegErr) {
-                      console.error(`[Auto Self-Healing] Failed to re-register ${file.name}:`, reRegErr);
+                    } catch (reRegErr: any) {
+                      console.error(`[Auto Self-Healing] Failed to re-register ${healed.name}:`, reRegErr.message || reRegErr);
                     }
                   }
                   
                   if (!reRegistered) {
                     // Force-clear the expired URI so standard text RAG is utilized as a robust fallback
-                    console.log(`[Auto Self-Healing] Clearing stale geminiFileUri for file: ${file.name} to allow direct RAG text context fallback.`);
-                    healedFiles[i].geminiFileUri = undefined;
+                    console.log(`[Auto Self-Healing] Clearing stale geminiFileUri for file: ${healed.name} to allow direct RAG text context fallback.`);
+                    healed.geminiFileUri = undefined;
                   }
                 }
-              }
+                return healed;
+              }));
               // Try again with updated file URIs (fully resolved or safely bypassed)
               response = await runGeneralChat(healedFiles);
             } catch (retryErr: any) {
-              console.warn("[Auto Self-Healing] Retry with newly registered files failed. Falling back to plain text content.", retryErr.message || retryErr);
-              const plainFiles = finalFiles.map((f: any) => ({ ...f, geminiFileUri: undefined }));
-              try {
-                response = await runGeneralChat(plainFiles);
-              } catch (fallbackErr: any) {
-                throw fallbackErr;
+              if (isTokenLimitError(retryErr)) {
+                console.warn("[Auto Self-Healing] Token limit exceeded during retry. Falling back to text-only (RAG) mode.");
+                try {
+                  response = await runGeneralChat(finalFiles, false);
+                } catch (tokErr) {
+                  throw tokErr;
+                }
+              } else {
+                console.warn("[Auto Self-Healing] Retry with newly registered files failed. Falling back to plain text content.", retryErr.message || retryErr);
+                const plainFiles = finalFiles.map((f: any) => ({ ...f, geminiFileUri: undefined }));
+                try {
+                  response = await runGeneralChat(plainFiles);
+                } catch (fallbackErr: any) {
+                  throw fallbackErr;
+                }
               }
             }
           } else {
@@ -720,7 +796,10 @@ async function startServer() {
         console.log("Attempting chat with gemini-3.5-flash using fileUri...");
         response = await runSpecificChat(finalFileUri);
       } catch (proErr: any) {
-        if (isGeminiFileError(proErr) && fileUrl) {
+        if (isTokenLimitError(proErr)) {
+          console.log("[Auto Self-Healing] Token limit exceeded in specific chat. Falling back to plain text RAG prompt...");
+          response = await runSpecificChat(undefined);
+        } else if (isGeminiFileError(proErr) && fileUrl) {
           console.log("[Auto Self-Healing] Gemini File error in specific chat. Re-registering file on-the-fly...");
           try {
             const newReg = await reRegisterFileWithGemini(fileUrl, fileName);
@@ -736,9 +815,14 @@ async function startServer() {
             } else {
               throw new Error("Re-registration returned blank URI");
             }
-          } catch (reRegErr) {
-            console.error("[Auto Self-Healing] Specific chat re-registration failed. Falling back to plain text prompting...", reRegErr);
-            response = await runSpecificChat(undefined);
+          } catch (reRegErr: any) {
+            if (isTokenLimitError(reRegErr)) {
+              console.log("[Auto Self-Healing] Token limit exceeded during specific chat retry. Falling back to plain text RAG prompt...");
+              response = await runSpecificChat(undefined);
+            } else {
+              console.error("[Auto Self-Healing] Specific chat re-registration failed. Falling back to plain text prompting...", reRegErr);
+              response = await runSpecificChat(undefined);
+            }
           }
         } else {
           console.warn("gemini-3.5-flash chat with fileUri failed. Falling back to plain text prompting...", proErr.message || proErr);
@@ -815,10 +899,13 @@ Yêu cầu cực kỳ nghiêm ngặt:
       };
 
       try {
-        console.log("Attempting structured extraction with gemini-3.1-pro-preview...");
-        response = await runExtraction(finalFileUri, "gemini-3.1-pro-preview");
+        console.log("Attempting structured extraction with gemini-3.5-flash...");
+        response = await runExtraction(finalFileUri, "gemini-3.5-flash");
       } catch (proErr: any) {
-        if (isGeminiFileError(proErr)) {
+        if (isTokenLimitError(proErr)) {
+          console.log("[Auto Self-Healing] Token limit exceeded in extract fields. Falling back to plain text extraction with gemini-3.1-flash-lite...");
+          response = await runExtraction(undefined, "gemini-3.1-flash-lite");
+        } else if (isGeminiFileError(proErr)) {
           console.log("[Auto Self-Healing] Gemini File error in extract. Attempting on-the-fly re-registration...");
           let reRegistered = false;
           if (fileUrl) {
@@ -831,25 +918,36 @@ Yêu cầu cực kỳ nghiêm ngặt:
                   geminiFileUri: newReg.uri,
                   geminiFileName: newReg.name
                 };
-                console.log(`[Auto Self-Healing] Re-registration successful -> new URI: ${newReg.uri}. Retrying extract with gemini-3.1-pro-preview.`);
-                response = await runExtraction(finalFileUri, "gemini-3.1-pro-preview");
+                console.log(`[Auto Self-Healing] Re-registration successful -> new URI: ${newReg.uri}. Retrying extract with gemini-3.5-flash.`);
+                response = await runExtraction(finalFileUri, "gemini-3.5-flash");
                 reRegistered = true;
               }
-            } catch (reRegErr) {
-              console.error("[Auto Self-Healing] Extract on-the-fly re-registration failed. Falling back to plain text extraction.", reRegErr);
+            } catch (reRegErr: any) {
+              if (isTokenLimitError(reRegErr)) {
+                console.log("[Auto Self-Healing] Token limit exceeded during extraction retry. Falling back to plain text extraction with gemini-3.1-flash-lite.");
+                response = await runExtraction(undefined, "gemini-3.1-flash-lite");
+                reRegistered = true;
+              } else {
+                console.error("[Auto Self-Healing] Extract on-the-fly re-registration failed. Falling back to plain text extraction.", reRegErr);
+              }
             }
           }
           if (!reRegistered) {
-            console.log("[Auto Self-Healing] Bypassing file URI and falling back to plain text extraction.");
-            response = await runExtraction(undefined, "gemini-3.5-flash");
+            console.log("[Auto Self-Healing] Bypassing file URI and falling back to plain text extraction with gemini-3.1-flash-lite.");
+            response = await runExtraction(undefined, "gemini-3.1-flash-lite");
           }
         } else {
-          console.warn("gemini-3.1-pro-preview extraction failed, falling back to gemini-3.5-flash...", proErr.message || proErr);
+          console.warn("gemini-3.5-flash extraction failed, falling back to gemini-3.1-flash-lite...", proErr.message || proErr);
           try {
-            response = await runExtraction(finalFileUri, "gemini-3.5-flash");
+            response = await runExtraction(finalFileUri, "gemini-3.1-flash-lite");
           } catch (flashErr: any) {
-            console.warn("gemini-3.5-flash structured extraction failed, trying plain text fallback with gemini-3.5-flash...", flashErr.message || flashErr);
-            response = await runExtraction(undefined, "gemini-3.5-flash");
+            if (isTokenLimitError(flashErr)) {
+              console.log("[Auto Self-Healing] Token limit exceeded during flash-lite file-uri extraction. Trying plain text fallback with gemini-3.1-flash-lite...");
+              response = await runExtraction(undefined, "gemini-3.1-flash-lite");
+            } else {
+              console.warn("gemini-3.1-flash-lite structured extraction failed, trying plain text fallback with gemini-3.1-flash-lite...", flashErr.message || flashErr);
+              response = await runExtraction(undefined, "gemini-3.1-flash-lite");
+            }
           }
         }
       }
@@ -950,7 +1048,7 @@ Yêu cầu cực kỳ nghiêm ngặt:
 
   // API 3.6: So sánh đối chiếu cùng lúc nhiều tài liệu kỹ thuật sử dụng Gemini Files API / Text thô
   app.post("/api/compare", async (req, res) => {
-    const { compareFiles, prompt } = req.body; // array of { id, name, url, text, geminiFileUri, geminiFileName }
+    const { compareFiles, prompt, isCompliance, isDesignManager } = req.body; // array of { id, name, url, text, geminiFileUri, geminiFileName }
 
     if (!compareFiles || !Array.isArray(compareFiles) || compareFiles.length === 0) {
       return res.status(400).json({ error: "Không tìm thấy danh sách tệp cần so sánh" });
@@ -1028,16 +1126,53 @@ Bạn là một CHUYÊN GIA KỸ THUẬT VÀ PHÁP CHẾ XÂY DỰNG LÃO LUYỆ
 - **4. Phân tích chi tiết các điểm sai lệch, khác biệt hoặc mâu thuẫn (nếu có)**: Chỉ ra sự khác biệt lớn về yêu cầu kỹ thuật, giải pháp hoặc tính khắt khe của quy định. Có khuyến cáo cụ thể cho Kỹ sư thiết kế.
 - **5. Kết luận & Đề xuất hành động**: Đề xuất giải pháp áp dụng an toàn, tối ưu hoặc có tính pháp lý cao nhất dựa trên luật định.`;
 
+      const complianceSystemInstruction = `# VAI TRÒ
+Bạn là một GIÁM ĐỐC THẨM ĐỊNH VÀ KIỂM SOÁT THIẾT KẾ XÂY DỰNG CHUYÊN SÂU. Nhiệm vụ của bạn là thẩm định tính tuân thủ pháp lý và quy chuẩn kỹ thuật xây dựng Việt Nam (TCVN, QCVN) cho các bản vẽ thiết kế được chọn.
+
+# NGUYÊN TẮC THẨM ĐỊNH TUÂN THỦ
+1. ĐÚNG VÀ CHUẨN XÁC: Luôn rà soát chi tiết từng chỉ số kỹ thuật và so khớp chính xác với các quy chuẩn Việt Nam tương ứng. Ghi rõ mục, khoản, điều, số hiệu tiêu chuẩn (ví dụ TCVN 5574:2018, QCVN 06:2022/BXD).
+2. TRÌNH BÀY BẢNG BIỂU ĐO ĐẠC: Bạn ĐƯỢC PHÉP và NÊN sử dụng định dạng bảng Markdown tiêu chuẩn để lồng ghép các chỉ số kỹ thuật so sánh trực diện (Tiêu chí kiểm tra | Yêu cầu kỹ lý tối thiểu (TCVN / QCVN tương ứng) | Số liệu đo đạc thực tế trên Bản vẽ | Đánh giá Tuân thủ | Giải pháp khắc phục / Chú giải kỹ thuật cụ thể).
+3. HÀNH ĐỘNG KHẮC PHỤC SÁT THỰC (ACTIONABLE CHECKLIST): Đưa ra các chỉ dẫn cụ thể dễ hiểu giúp kỹ sư sửa đổi trực tiếp cấu kiện CAD/Bản vẽ thiết kế thành công.
+4. SƠ ĐỒ QUY TRÌNH (MERMAID): Luôn vẽ sơ đồ quy trình/nhánh quyết định rà soát rủi ro bằng ngôn ngữ lập đồ Mermaid:
+\`\`\`mermaid
+...
+\`\`\``;
+
+      const designManagerSystemInstruction = `# VAI TRÒ
+Bạn là Trợ lý Cố vấn Thiết kế Cao cấp (Design Manager Assistant) trên hệ thống StandardCloud. 
+Nhiệm vụ của bạn là rà soát file hồ sơ Thiết kế cơ sở để TỔNG HỢP THÔNG TIN DỰ ÁN sơ bộ, phục vụ trực tiếp cho công tác quản lý, điều phối thiết kế Kiến trúc và Kết cấu.
+
+# HƯỚNG DẪN TRÍCH XUẤT (TẬP TRUNG THUYẾT MINH & CHỈ DẪN CHUNG)
+Bỏ qua các chi tiết cấu kiện nhỏ lẻ. Tập trung quét trang Ghi chú chung (General Notes), Thuyết minh dự án và Mặt bằng tổng thể để trích xuất 3 nhóm thông tin cốt lõi sau:
+
+1. THÔNG TIN PHÁP LÝ & QUY MÔ KIẾN TRÚC:
+   - Quy mô công trình (Số tầng nổi, tầng hầm, chiều cao tổng thể).
+   - Chỉ giới xây dựng, khoảng lùi, mật độ xây dựng diện tích sàn (nếu có đề cập).
+   - Phân cấp công trình và bậc chịu lửa (đối chiếu nhanh QCVN 06:2022).
+
+2. GIẢI THIẾT ĐẦU VÀO & VẬT LIỆU KẾT CẤU:
+   - Tiêu chuẩn thiết kế chủ đạo được đơn vị tư vấn áp dụng.
+   - Số liệu tải trọng đầu vào: Phân vùng áp lực gió, dạng địa hình (đối chiếu TCVN 2737:2023).
+   - Giải pháp vật liệu dự kiến: Cấp độ bền bê tông (B), mác vữa, nhóm cốt thép chịu lực (CB400-V, CB300-V...).
+
+3. GIẢI PHÁP TỔNG THỂ VÀ ĐỊA CHẤT:
+   - Sơ bộ điều kiện địa chất (nếu có trong thuyết minh): Lớp đất tốt nằm ở độ sâu bao nhiêu, áp lực đất.
+   - Giải pháp kết cấu móng đề xuất (Móng cọc khoan nhồi, cọc ép, móng bề...) và hệ kết cấu thân chính (Khung vách, cột vách...).
+
+# KẾT QUẢ ĐẦU RA (ĐỊNH DẠNG MARKDOWN CẤU TRÚC RÕ RÀNG)
+Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh mục tổng hợp, tuyệt đối không viết văn xuôi dài dòng. Cuối bài xuất ra một mục "📌 LƯU Ý CHO QUẢN LÝ THIẾT KẾ" chỉ ra các điểm mâu thuẫn hoặc thiếu sót thông tin đầu vào (nếu phát hiện).`;
+
       let response;
       const runCompareAI = async (filesToUse: any[]) => {
         const parts: any[] = [];
         filesToUse.forEach((file, index) => {
           parts.push({ text: `=== BẮT ĐẦU TÀI LIỆU ${index + 1}: ${file.name} ===` });
           if (file.geminiFileUri) {
+            const dynamicMime = getMimeType(file.name);
             parts.push({
               fileData: {
                 fileUri: file.geminiFileUri,
-                mimeType: "application/pdf"
+                mimeType: dynamicMime
               }
             });
           } else if (file.text) {
@@ -1060,7 +1195,9 @@ Bạn là một CHUYÊN GIA KỸ THUẬT VÀ PHÁP CHẾ XÂY DỰNG LÃO LUYỆ
           model: "gemini-3.5-flash",
           contents,
           config: {
-            systemInstruction: compareSystemInstruction,
+            systemInstruction: isDesignManager 
+              ? designManagerSystemInstruction 
+              : (isCompliance ? complianceSystemInstruction : compareSystemInstruction),
             temperature: 0.1,
             topP: 0.95,
           },
@@ -1071,13 +1208,24 @@ Bạn là một CHUYÊN GIA KỸ THUẬT VÀ PHÁP CHẾ XÂY DỰNG LÃO LUYỆ
         console.log(`[Compare Tool] Executing document synthesis and comparison for ${resolvedFiles.length} files using gemini-3.5-flash...`);
         response = await runCompareAI(resolvedFiles);
       } catch (proErr: any) {
-        if (isGeminiFileError(proErr)) {
+        if (isTokenLimitError(proErr)) {
+          console.log("[Auto Self-Healing] Token limit exceeded in compare tool. Falling back to text-only (truncated) compare mode...");
+          const textOnlyFiles = resolvedFiles.map(f => {
+            const truncatedText = f.text && f.text.length > 150000 
+              ? f.text.substring(0, 150000) + "\n[Nội dung được cắt bớt cho khớp giới hạn từ khóa của AI]" 
+              : (f.text || "");
+            return {
+              ...f,
+              geminiFileUri: undefined,
+              text: truncatedText
+            };
+          });
+          response = await runCompareAI(textOnlyFiles);
+        } else if (isGeminiFileError(proErr)) {
           console.log("[Auto Self-Healing] Gemini File error in compare. Attempting to on-the-fly re-register comparison files...");
           try {
-            const healedCompareFiles = [...compareFiles];
-            const healedResolvedFiles: any[] = [];
-            for (let i = 0; i < healedCompareFiles.length; i++) {
-              const file = healedCompareFiles[i];
+            console.log(`[Auto Self-Healing] Healing ${compareFiles.length} comparison files in parallel...`);
+            const healedResolvedFiles = await Promise.all(compareFiles.map(async (file: any) => {
               let uri = file.geminiFileUri;
               let name = file.geminiFileName || file.name;
               
@@ -1098,8 +1246,8 @@ Bạn là một CHUYÊN GIA KỸ THUẬT VÀ PHÁP CHẾ XÂY DỰNG LÃO LUYỆ
                       });
                       console.log(`[Auto Self-Healing] Successfully re-registered ${file.name} for compare -> new URI: ${newReg.uri}`);
                     }
-                  } catch (reRegErr) {
-                    console.error(`[Auto Self-Healing] Failed to re-register ${file.name} for compare:`, reRegErr);
+                  } catch (reRegErr: any) {
+                    console.error(`[Auto Self-Healing] Failed to re-register ${file.name} for compare:`, reRegErr.message || reRegErr);
                   }
                 }
                 
@@ -1109,27 +1257,49 @@ Bạn là một CHUYÊN GIA KỸ THUẬT VÀ PHÁP CHẾ XÂY DỰNG LÃO LUYỆ
                 }
               }
               
-              healedResolvedFiles.push({
+              return {
                 id: file.id,
                 name: file.name,
                 text: file.text || "",
                 geminiFileUri: uri,
                 geminiFileName: name
-              });
-            }
+              };
+            }));
             response = await runCompareAI(healedResolvedFiles);
           } catch (retryErr: any) {
-            console.warn("[Auto Self-Healing] Retry comparison with newly registered files failed. Falling back to plain text synthesis.", retryErr.message || retryErr);
-            const textOnlyFiles = resolvedFiles.map(f => ({ ...f, geminiFileUri: undefined }));
-            response = await runCompareAI(textOnlyFiles);
+            if (isTokenLimitError(retryErr)) {
+              console.warn("[Auto Self-Healing] Token limit exceeded during compare retry. Falling back to text-only mode.");
+              const textOnlyFiles = resolvedFiles.map(f => {
+                const truncatedText = f.text && f.text.length > 150000 
+                  ? f.text.substring(0, 150000) + "\n[Nội dung được cắt bớt cho khớp giới hạn từ khóa của AI]" 
+                  : (f.text || "");
+                return { ...f, geminiFileUri: undefined, text: truncatedText };
+              });
+              response = await runCompareAI(textOnlyFiles);
+            } else {
+              console.warn("[Auto Self-Healing] Retry comparison with newly registered files failed. Falling back to plain text synthesis.", retryErr.message || retryErr);
+              const textOnlyFiles = resolvedFiles.map(f => {
+                const truncatedText = f.text && f.text.length > 150000 
+                  ? f.text.substring(0, 150000) + "\n[Nội dung được cắt bớt]" 
+                  : (f.text || "");
+                return { ...f, geminiFileUri: undefined, text: truncatedText };
+              });
+              response = await runCompareAI(textOnlyFiles);
+            }
           }
         } else {
           console.warn("[Compare Tool] gemini-3.5-flash with fileUris failed. Falling back to plain text prompting with gemini-3.5-flash...", proErr.message || proErr);
           try {
-            const textOnlyFiles = resolvedFiles.map(f => ({ ...f, geminiFileUri: undefined }));
+            const textOnlyFiles = resolvedFiles.map(f => {
+              const truncatedText = f.text && f.text.length > 150000 
+                ? f.text.substring(0, 150000) + "\n[Nội dung được cắt bớt]" 
+                : (f.text || "");
+              return { ...f, geminiFileUri: undefined, text: truncatedText };
+            });
             response = await runCompareAI(textOnlyFiles);
-          } catch (fallbackTxtErr) {
-            throw proErr;
+          } catch (fallbackTxtErr: any) {
+            console.error("[Compare Tool] Fallback plain text comparison also failed:", fallbackTxtErr.message || fallbackTxtErr);
+            throw fallbackTxtErr;
           }
         }
       }
@@ -1173,41 +1343,70 @@ Bạn là một CHUYÊN GIA KỸ THUẬT VÀ PHÁP CHẾ XÂY DỰNG LÃO LUYỆ
           newPdf.addPage(copiedPage);
           const pageBuffer = Buffer.from(await newPdf.save());
 
-          console.log(`Processing page ${pageNum} via Gemini 3.5 Flash OCR...`);
-          let aiResponseText = "";
+          // 1. Phân tích text cục bộ thô trước bằng pdf-parse (MIỄN PHÍ HOÀN TOÀN)
+          let localExtractedText = "";
+          const originalWarn = console.warn;
+          const originalError = console.error;
           try {
-            const aiResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-              model: "gemini-3.5-flash",
-              contents: [
-                {
-                  parts: [
-                    {
-                      inlineData: {
-                        mimeType: "application/pdf",
-                        data: pageBuffer.toString("base64")
-                      }
-                    },
-                    {
-                      text: `Analyze this document page. 
-Target: Reconstruct readable text, preserve tables in Markdown, and handle Vietnamese engineering terms.
-Constraint: Do not hallucinate values. Mark uncertain text with [?]. Output reconstructed text only.`
-                    }
-                  ]
-                }
-              ],
-              config: {
-                temperature: 0.1,
+            // Tạm thời lọc bỏ các cảnh báo nhiễu về định dạng stream/ nén flate của thư viện pdf.js cũ
+            console.warn = (...args: any[]) => {
+              const str = args.join(" ");
+              if (str.includes("Invalid stream") || str.includes("compression method") || str.includes("flate stream") || str.includes("Unknown compression")) {
+                return;
               }
-            }));
-            aiResponseText = aiResponse.text || "";
-          } catch (modelErr: any) {
-            console.warn(`Primary Gemini 3.5 Flash PDF OCR failed on page ${pageNum}: ${modelErr.message || modelErr}. Trying Gemini 3.1 Flash Lite OCR as immediate fallback...`);
-            
+              originalWarn.apply(console, args);
+            };
+            console.error = (...args: any[]) => {
+              const str = args.join(" ");
+              if (str.includes("Invalid stream") || str.includes("compression method") || str.includes("flate stream") || str.includes("Unknown compression")) {
+                return;
+              }
+              originalError.apply(console, args);
+            };
+
+            const parsed = await pdf(pageBuffer);
+            localExtractedText = cleanExtractedText(parsed.text || "");
+          } catch (pdfErr) {
+            console.log(`[Thông tin] Trình phân tích thô (pdf-parse) không bóc tách được trang ${pageNum}. Hệ thống sẽ kích hoạt Gemini OCR để phân tích tự động.`);
+          } finally {
+            console.warn = originalWarn;
+            console.error = originalError;
+          }
+
+          let aiResponseText = "";
+
+          if (localExtractedText && localExtractedText.trim().length > 30) {
+            console.log(`Successfully extracted ${localExtractedText.trim().length} chars of local text on page ${pageNum} via free pdf-parse. Cleaning/formatting with Gemini 3.1 Flash Lite...`);
+            try {
+              const cleanupResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
+                model: "gemini-3.1-flash-lite",
+                contents: `Dưới đây là văn bản kỹ thuật được trích xuất trực tiếp từ trang ${pageNum}.
+Hãy sửa các lỗi chính tả rách dòng hoặc dính chữ ghép từ tiếng Việt thô, cấu trúc lại nội dung logic tốt nhất, giữ nguyên toàn bộ các thông số kỹ thuật, công thức, số liệu và đơn vị đo đạc. Vẽ lại bảng bằng GitHub Markdown nếu có dữ liệu bảng thống kê.
+Tuyệt đối không tự bịa đặt, thay đổi hay suy diễn các thông số số liệu kỹ thuật gốc dưới bất kỳ hình thức nào. Nếu dữ liệu có vẻ sạch đẹp, hãy trả về nguyên trạng.
+
+Văn bản thô của trang ${pageNum}:
+---
+${localExtractedText}
+---`,
+                config: {
+                  temperature: 0.1,
+                }
+              }));
+              aiResponseText = cleanupResponse.text || localExtractedText;
+              console.log(`Formatted page ${pageNum} using Gemini 3.1 Flash Lite text-to-text formatting.`);
+            } catch (cleanupErr) {
+              console.warn(`Gemini 3.1 Flash Lite formatting failed for page ${pageNum}. Customarily saving locally extracted text with $0 cost.`, cleanupErr);
+              aiResponseText = localExtractedText; // Safe, 100% free save!
+            }
+          } else {
+            // Không tìm thấy text thô hoặc trang là ảnh scan/bản vẽ -> bắt buộc OCR
+            console.log(`Page ${pageNum} is a scanned page/image. Running Gemini 3.1 Flash Lite OCR...`);
             try {
               const aiResponseLite = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
                 model: "gemini-3.1-flash-lite",
                 contents: [
                   {
+                    role: "user",
                     parts: [
                       {
                         inlineData: {
@@ -1230,117 +1429,35 @@ Constraint: Do not hallucinate values. Mark uncertain text with [?]. Output reco
               aiResponseText = aiResponseLite.text || "";
               console.log(`Gemini 3.1 Flash Lite OCR succeeded for page ${pageNum}.`);
             } catch (liteErr: any) {
-              console.warn(`Gemini 3.1 Flash Lite OCR also failed on page ${pageNum}: ${liteErr.message || liteErr}. Falling back to pdf-parse + text cleanup...`);
-              
-              // Fallback 1: Trích xuất text thô trực tiếp qua thư viện pdf-parse
-              let localExtractedText = "";
+              console.warn(`Gemini 3.1 Flash Lite OCR failed on page ${pageNum}. Retrying with Gemini 3.5 Flash OCR...`);
               try {
-                const parsed = await pdf(pageBuffer);
-                localExtractedText = parsed.text || "";
-              } catch (pdfErr) {
-                console.warn(`Local pdf-parse failed on single page ${pageNum}:`, pdfErr);
-              }
-
-              if (localExtractedText.trim().length > 30) {
-                console.log(`Successfully extracted ${localExtractedText.trim().length} chars of local text on page ${pageNum}. Resiliently asking Gemini to clean up & structure...`);
-                try {
-                  let cleanupResponse;
-                  try {
-                    // Try gemini-3.5-flash first for cleanup because of superior spelling/formatting and stability
-                    cleanupResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-                      model: "gemini-3.5-flash",
-                      contents: `Dưới đây là dữ liệu văn bản thô được trích xuất kỹ thuật từ trang ${pageNum}.
-Hãy phân tích, sửa lỗi chính tả/mất chữ rách dòng tiếng Việt, cấu trúc lại nội dung logic tốt nhất, giữ nguyên tất cả các thông số kỹ thuật, công thức và đơn vị. Kẻ bảng Markdown nếu có dữ liệu bảng.
-Tuyệt đối không tự suy diễn các giá trị kỹ thuật nếu không được viết rõ trong text thô.
-
-Văn bản thô trích xuất từ trang ${pageNum}:
----
-${localExtractedText}
----`,
-                      config: {
-                        temperature: 0.1,
-                      }
-                    }));
-                  } catch (cleanupModelErr) {
-                    console.warn("gemini-3.5-flash cleanup failed, trying gemini-3.1-flash-lite for cleanup...");
-                    cleanupResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-                      model: "gemini-3.1-flash-lite",
-                      contents: `Dưới đây là văn bản thô từ trang ${pageNum}. Hãy phân tích, sửa lỗi chính tả/mất chữ rách dòng tiếng Việt, cấu trúc lại tốt nhất, giữ nguyên tất cả các thông số kỹ thuật, công thức và đơn vị. Kẻ bảng Markdown nếu có dữ liệu bảng.
-Văn bản thô:
----
-${localExtractedText}
----`,
-                      config: {
-                        temperature: 0.1,
-                      }
-                    }));
-                  }
-                  aiResponseText = cleanupResponse.text || "";
-                  console.log(`Fallback 1 (pdf-parse + text cleanup) succeeded for page ${pageNum}.`);
-                } catch (cleanupErr: any) {
-                  console.error(`Fallback 1 failed for page ${pageNum}:`, cleanupErr.message || cleanupErr);
-                  throw cleanupErr;
-                }
-              } else {
-                // Fallback 2: Thử sử dụng model gemini-3.1-flash-lite hoặc gemini-3.5-flash làm cứu cánh cuối cùng
-                console.log(`No programmatic text found on page ${pageNum}. Trying model gemini-3.1-flash-lite as Fallback 2...`);
-                try {
-                  const aiResponseFallback = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-                    model: "gemini-3.1-flash-lite",
-                    contents: [
-                      {
-                        parts: [
-                          {
-                            inlineData: {
-                              mimeType: "application/pdf",
-                              data: pageBuffer.toString("base64")
-                            }
-                          },
-                          {
-                            text: `Analyze this document page. 
-Target: Reconstruct readable text, preserve tables in Markdown, and handle Vietnamese engineering terms.
-Constraint: Do not hallucinate values. Mark uncertain text with [?]. Output reconstructed text only.`
-                          }
-                        ]
-                      }
-                    ],
-                    config: {
-                      temperature: 0.1,
-                    }
-                  }));
-                  aiResponseText = aiResponseFallback.text || "";
-                  console.log(`Fallback 2 (gemini-3.1-flash-lite PDF OCR) succeeded for page ${pageNum}.`);
-                } catch (fallbackErr: any) {
-                  console.warn(`Fallback 2 failed: ${fallbackErr.message || fallbackErr}. Trying final safety pass...`);
-                  
-                  try {
-                    const finalResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-                      model: "gemini-3.5-flash",
-                      contents: [
+                const aiResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
+                  model: "gemini-3.5-flash",
+                  contents: [
+                    {
+                      role: "user",
+                      parts: [
                         {
-                          parts: [
-                            {
-                              inlineData: {
-                                mimeType: "application/pdf",
-                                data: pageBuffer.toString("base64")
-                              }
-                            },
-                            {
-                              text: `Analyze this document page. Output reconstructed text only.`
-                            }
-                          ]
+                          inlineData: {
+                            mimeType: "application/pdf",
+                            data: pageBuffer.toString("base64")
+                          }
+                        },
+                        {
+                          text: `Analyze this document page. Reconstruct readable text and values in Vietnamese. Preserve tables in Markdown if any.`
                         }
-                      ],
-                      config: {
-                        temperature: 0.1,
-                      }
-                    }));
-                    aiResponseText = finalResponse.text || "";
-                    console.log(`Final safety pass (gemini-3.5-flash OCR) succeeded for page ${pageNum}.`);
-                  } catch (finalOcrErr: any) {
-                    throw new Error(`Tất cả phương thức trích xuất (Gemini-3.5-Flash PDF, pdf-parse thô, gemini-3.1-flash-lite OCR) đều thất bại cho trang ${pageNum}. Lỗi gốc: ${liteErr.message || liteErr}`);
+                      ]
+                    }
+                  ],
+                  config: {
+                    temperature: 0.1,
                   }
-                }
+                }));
+                aiResponseText = aiResponse.text || "";
+                console.log(`Gemini 3.5 Flash OCR succeeded for page ${pageNum}.`);
+              } catch (flashErr: any) {
+                console.error(`Gemini 3.5 Flash OCR also failed on page ${pageNum}:`, flashErr);
+                aiResponseText = localExtractedText || `[Lỗi trích xuất trang ${pageNum} do dịch vụ AI bận]`;
               }
             }
           }
@@ -1392,12 +1509,17 @@ Constraint: Do not hallucinate values. Mark uncertain text with [?]. Output reco
     }
 
     try {
+      // Pre-truncate extremely large texts to fit comfortably within the token model limits
+      const safeText = text.length > 300000 
+        ? text.substring(0, 300000) + "\n\n[LƯU Ý CỦA HỆ THỐNG: Phần sau của tài liệu đã được rút ngắn để khớp với giới hạn xử lý tối đa của AI]"
+        : text;
+
       const model = "gemini-3.5-flash";
       const promptText = `Nhiệm vụ: Hãy tóm tắt nội dung kỹ thuật dưới đây thành tối đa ${numBulletPoints} gạch đầu dòng cực kỳ ngắn gọn, cô đọng, súc tích và chính xác. Trực tiếp đi vào các số liệu kỹ thuật, quy định biên hoặc từ khóa cốt lõi, không rườm rà.
 Nếu nội dung có các thông tin quy định kỹ thuật/TCVN/QCVN quan trọng, hãy giữ nguyên và bôi đậm số hiệu (ví dụ: TCVN 5574:2018).
 Nội dung cần tóm tắt:
 ---
-${text}
+${safeText}
 ---
 Hãy chỉ trả về duy nhất danh sách tóm tắt cực kỳ ngắn gọn dưới dạng markdown, không có lời mở đầu hay kết thúc dông dài.`;
 
@@ -1421,6 +1543,57 @@ Hãy chỉ trả về duy nhất danh sách tóm tắt cực kỳ ngắn gọn d
     }
   });
 
+  // API: Translate any technical text using Gemini AI to English or Korean
+  app.post("/api/translate", async (req, res) => {
+    const { text, targetLanguage } = req.body;
+
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
+    }
+
+    if (!text || text.trim() === "") {
+      return res.status(400).json({ error: "Nội dung cần dịch trống." });
+    }
+
+    if (!targetLanguage || (targetLanguage !== "en" && targetLanguage !== "ko")) {
+      return res.status(400).json({ error: "Ngôn ngữ đích không hợp lệ. Chỉ hỗ trợ 'en' hoặc 'ko'." });
+    }
+
+    try {
+      const model = "gemini-3.5-flash";
+      const langName = targetLanguage === "en" ? "English (Tiếng Anh)" : "Korean (Tiếng Hàn)";
+      const promptText = `Nhiệm vụ: Hãy dịch văn bản kỹ thuật/xây dựng dưới đây sang ${langName}.
+Yêu cầu:
+1. Bản dịch phải cực kỳ chuyên nghiệp, chuẩn xác về mặt kỹ thuật, xây dựng, giữ nguyên các ký hiệu chuyên ngành, công thức toán học/LaTeX ($...$ hoặc $$...$$) và định dạng Markdown ban đầu.
+2. TUYỆT ĐỐI không thay đổi, loại bỏ hoặc dịch sai lệch các mã TCVN (ví dụ: TCVN 5574:2018), QCVN, số hiệu điều khoản, số trang, số liệu kỹ thuật, đơn vị đo lường hay các đoạn liên kết trang có dạng \`[Trang X](#page-X)\` hoặc \`[Mục Y (Trang X)](#page-X)\` - giữ nguyên đúng cấu trúc của liên kết để hệ thống không bị lỗi.
+3. Không tự tiện viết thêm giải thích dông dài, lời chào hoặc lời kết thúc. Trả về trực tiếp bản dịch đầy đủ dưới dạng Markdown.
+
+Nội dung cần dịch:
+---
+${text}
+---
+Bản dịch chính xác:`;
+
+      const response = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
+        model,
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: promptText }]
+          }
+        ],
+        config: {
+          temperature: 0.1,
+        },
+      }));
+
+      res.json({ translatedText: response.text || "" });
+    } catch (error: any) {
+      console.error("Translation API Error:", error);
+      res.status(500).json({ error: error.message || "Lỗi AI khi đang dịch" });
+    }
+  });
+
   // API 5: Generate Mind Map endpoint
   app.post("/api/generate-mindmap", async (req, res) => {
     const { text, type } = req.body;
@@ -1430,6 +1603,15 @@ Hãy chỉ trả về duy nhất danh sách tóm tắt cực kỳ ngắn gọn d
     }
 
     try {
+      if (!text || text.trim() === "") {
+        return res.status(400).json({ error: "Nội dung trống." });
+      }
+
+      // Pre-truncate extremely large texts to fit comfortably within the token model limits
+      const safeText = text.length > 300000 
+        ? text.substring(0, 300000) + "\n\n[LƯU Ý CỦA HỆ THỐNG: Cắt bớt phần sau tệp do quá dài]"
+        : text;
+
       const model = "gemini-3.5-flash";
       
       let customInstruction = "";
@@ -1445,7 +1627,7 @@ Hãy chỉ trả về duy nhất danh sách tóm tắt cực kỳ ngắn gọn d
 
       const promptText = `Dưới đây là nội dung tài liệu PDF:
 ---
-${text}
+${safeText}
 ---
 
 Nhiệm vụ: Hãy tạo mã Mermaid.js (cú pháp "mindmap") để biểu diễn sơ đồ kiến thức của tài liệu này, ${customInstruction}
@@ -1486,6 +1668,11 @@ HƯỚNG DẪN CÚ PHÁP MERMAID MINDMAP PHẢI TUÂN THỦ:
       console.error("Mindmap API Error:", error);
       res.status(500).json({ error: error.message || "Lỗi AI khi đang tạo mind map" });
     }
+  });
+
+  // Fall-through 404 for unmatched API routes of any method (GET, POST etc.)
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: `Đường dẫn API này chưa được hỗ trợ hoặc phương thức không đúng: ${req.method} ${req.url}` });
   });
 
   // Vite middleware setup

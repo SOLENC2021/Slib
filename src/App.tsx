@@ -13,7 +13,7 @@ import { chatWithDocument, extractDataFromText } from "./lib/gemini";
 import { LayoutGrid, Sparkles, LogOut, Loader2, X, FileText } from "lucide-react";
 import { useAuth } from "./components/FirebaseProvider";
 import { db } from "./lib/firebase";
-import { cn } from "./lib/utils";
+import { cn, getApiUrl } from "./lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { 
   collection, 
@@ -37,9 +37,17 @@ import { handleFirestoreError, withFirestoreRetry } from "./lib/firestoreUtils";
 import { storage } from "./lib/firebase";
 import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { EditFileModal } from "./components/EditFileModal";
+import { AdminPanelModal } from "./components/AdminPanelModal";
+import { QuotaExceededModal } from "./components/QuotaExceededModal";
+import { ShieldCheck } from "lucide-react";
 
 export default function App() {
-  const { user, loading, login, logout } = useAuth();
+  const { user, profile, loading, loginError, login, logout, incrementApiUsage, setLoginError } = useAuth();
+  const [viewMode, setViewMode] = useState<'admin' | 'member'>('member');
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [isQuotaExceededModalOpen, setIsQuotaExceededModalOpen] = useState(false);
+  const [quotaLimitValue, setQuotaLimitValue] = useState(30);
+
   const [files, setFiles] = useState<PDFFile[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const activeFile = files.find(f => f.id === activeFileId) || null;
@@ -52,7 +60,7 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<PDFFile | null>(null);
-   const [fileToEdit, setFileToEdit] = useState<PDFFile | null>(null);
+  const [fileToEdit, setFileToEdit] = useState<PDFFile | null>(null);
   const [isAiPanelOpen, setIsAiPanelOpen] = useState(true);
   const [isPdfMaximized, setIsPdfMaximized] = useState(false);
   const [isActionPending, setIsActionPending] = useState(false);
@@ -64,6 +72,25 @@ export default function App() {
   const [chatWidthPercent, setChatWidthPercent] = useState<number>(45); // default 45% for Chat Panel, 55% for PDF Viewer
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Tracking pages currently being processed to prevent duplicate concurrent network fetch operations
+  const processingPagesRef = useRef<Set<string>>(new Set());
+  const pageChangeTimeoutRef = useRef<any>(null);
+
+  // Set view mode when user / profile loads
+  useEffect(() => {
+    if (user) {
+      const isUserAdmin = profile?.role === 'admin' || user?.email === 'solenc2021@gmail.com';
+      setViewMode(isUserAdmin ? 'admin' : 'member');
+    }
+  }, [profile, user]);
+
+  useEffect(() => {
+    if (pageChangeTimeoutRef.current) {
+      clearTimeout(pageChangeTimeoutRef.current);
+    }
+    processingPagesRef.current.clear();
+  }, [activeFileId]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -110,9 +137,16 @@ export default function App() {
   useEffect(() => {
     if (files.length > 0) {
       const fileIds = files.map(f => f.id);
-      setOpenedFileIds(prev => prev.filter(id => fileIds.includes(id)));
+      setOpenedFileIds(prev => {
+        const filtered = prev.filter(id => fileIds.includes(id));
+        // Only update state if the array content actually changed
+        if (filtered.length === prev.length && filtered.every((val, index) => val === prev[index])) {
+          return prev;
+        }
+        return filtered;
+      });
     } else {
-      setOpenedFileIds([]);
+      setOpenedFileIds(prev => prev.length === 0 ? prev : []);
     }
   }, [files]);
 
@@ -123,24 +157,53 @@ export default function App() {
       return;
     }
 
-    const q = query(
-      collection(db, "files"),
-      where("ownerId", "==", user.uid),
-      orderBy("uploadDate", "desc")
-    );
+    const isAdminUser = profile?.role === "admin" || user?.email === "solenc2021@gmail.com";
+    // If Admin and in Admin View Mode, query their own uploaded assets.
+    // Otherwise, query public assets (which isPublic == true).
+    const q = (isAdminUser && viewMode === "admin")
+      ? query(
+          collection(db, "files"),
+          where("ownerId", "==", user.uid)
+        )
+      : query(
+          collection(db, "files"),
+          where("isPublic", "==", true)
+        );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const fetchedFiles = snapshot.docs.map(doc => ({
         ...doc.data(),
         id: doc.id
       })) as PDFFile[];
+      
+      // Sort in memory to avoid Firestore composite index requirements
+      fetchedFiles.sort((a, b) => (b.uploadDate || 0) - (a.uploadDate || 0));
+      
       setFiles(fetchedFiles);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, "files");
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, profile, viewMode]);
+
+  // Self-healing: Ensure existing documents have isPublic = true so they are visible to members
+  useEffect(() => {
+    const isAdminUser = profile?.role === "admin" || user?.email === "solenc2021@gmail.com";
+    if (isAdminUser && files.length > 0 && viewMode === "admin") {
+      files.forEach(async (file) => {
+        if (file.isPublic === undefined) {
+          try {
+            const docRef = doc(db, "files", file.id);
+            await updateDoc(docRef, { isPublic: true });
+            console.log(`[Self-Healing] Automatically marked file as public for members: ${file.name}`);
+          } catch (err) {
+            console.warn(`[Self-Healing] Failed to set public flag for ${file.name}:`, err);
+          }
+        }
+      });
+    }
+  }, [files, profile, user, viewMode]);
 
   const [notes, setNotes] = useState<Note[]>([]);
 
@@ -178,13 +241,26 @@ export default function App() {
       case "ketcau_tcvn": return "TCVN";
       case "ketcau_tcnn": return "TCNN";
       case "mep": return "MEP";
+      case "vatlieu": return "Vật liệu";
       case "qckt": return "Quy chuẩn kỹ thuật";
       default: return "Văn bản hiện hành";
     }
   };
 
+  const handleClearTargetPage = useCallback(() => {
+    setTargetPage(null);
+  }, []);
+
+  const handleToggleMaximize = useCallback(() => {
+    setIsAiPanelOpen(prev => !prev);
+  }, []);
+
+  const handleClosePdfViewer = useCallback(() => {
+    setIsPdfViewerOpen(false);
+  }, []);
+
   const safeFetch = async (url: string, options: RequestInit) => {
-    const response = await fetch(url, options);
+    const response = await fetch(getApiUrl(url), options);
     const contentType = response.headers.get("content-type");
     
     if (!response.ok) {
@@ -265,22 +341,55 @@ export default function App() {
       // Re-check Firestore state for each page to avoid double processing
       if (activeFile.processedPages?.includes(p)) continue;
       
+      const pageKey = `${fileId}-${p}`;
+      if (processingPagesRef.current.has(pageKey)) {
+        console.log(`Page ${p} is already in the processing queue or being processed`);
+        continue;
+      }
+      
+      // Lock this page
+      processingPagesRef.current.add(pageKey);
+      
       try {
         console.log(`Lazy loading OCR for page ${p}...`);
-        const data = await safeFetch("/api/extract-pages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fileUrl: url, pages: [p] }),
-        });
+        
+        let success = false;
+        let pResult: any = null;
+        let retries = 3;
+        let delayMs = 1000;
+        
+        while (retries > 0 && !success) {
+          try {
+            const data = await safeFetch("/api/extract-pages", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ fileUrl: url, pages: [p] }),
+            });
+            
+            pResult = data?.pages?.[0];
+            if (pResult) {
+              success = true;
+            } else {
+              throw new Error("No page data returned");
+            }
+          } catch (fetchErr: any) {
+            retries--;
+            console.warn(`Request to extract page ${p} failed. Retries left: ${retries}. Error: ${fetchErr.message}`);
+            if (retries > 0) {
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              delayMs *= 2; 
+            } else {
+              throw fetchErr; 
+            }
+          }
+        }
 
-        const pageResult = data.pages[0];
-
-        if (pageResult && pageResult.text) {
+        if (pResult && pResult.text) {
           // 1. Save to sub-collection with retry
           const pageData: PageData = {
             fileId,
             pageNumber: p,
-            text: pageResult.text,
+            text: pResult.text,
             processedDate: Date.now()
           };
           await withFirestoreRetry(
@@ -291,13 +400,13 @@ export default function App() {
 
           // 2. Update processedPages and text in main doc with retry
           const docRef = doc(db, "files", fileId);
-          const updatedProcessed = [...(activeFile.processedPages || []), p];
+          const updatedProcessed = Array.from(new Set([...(activeFile.processedPages || []), p]));
           
           await withFirestoreRetry(
             () => updateDoc(docRef, {
               processedPages: updatedProcessed,
               // Appending with markers. Note: This still has race condition risk but better than before.
-              text: (activeFile.text + `\n\n--- [BẮT ĐẦU TRANG ${p}] ---\n\n` + pageResult.text + `\n\n--- [KẾT THÚC TRANG ${p}] ---\n\n`).substring(0, 1000000) 
+              text: (activeFile.text + `\n\n--- [BẮT ĐẦU TRANG ${p}] ---\n\n` + pResult.text + `\n\n--- [KẾT THÚC TRANG ${p}] ---\n\n`).substring(0, 1000000) 
             }),
             OperationType.UPDATE,
             `files/${fileId}`
@@ -305,16 +414,29 @@ export default function App() {
           
           console.log(`Page ${p} OCR completed.`);
         }
-      } catch (error) {
-        console.error(`Error processing page ${p}:`, error);
+      } catch (error: any) {
+        console.error(`Error processing page ${p}:`, error.message || error);
+      } finally {
+        // Unlock this page
+        processingPagesRef.current.delete(pageKey);
       }
     }
   };
 
   const handlePageChange = useCallback((pageNumber: number) => {
-    if (activeFile && (activeFile.extractionMethod === "hybrid-lazy" || !activeFile.processedPages?.includes(pageNumber))) {
-      processSpecificPage(activeFile.id, activeFile.url, pageNumber);
+    if (!activeFile || activeFile.extractionMethod !== "hybrid-lazy") return;
+    
+    // Clear any existing page trigger timeout
+    if (pageChangeTimeoutRef.current) {
+      clearTimeout(pageChangeTimeoutRef.current);
     }
+    
+    // Debounce processing to handle fast scrolling safely without hammering the network/server
+    pageChangeTimeoutRef.current = setTimeout(() => {
+      if (!activeFile.processedPages?.includes(pageNumber)) {
+        processSpecificPage(activeFile.id, activeFile.url, pageNumber);
+      }
+    }, 450);
   }, [activeFile, activeFileId]);
 
   const handleConfirmUpload = async (category: string) => {
@@ -362,7 +484,8 @@ export default function App() {
         size: (pendingFile.size / (1024 * 1024)).toFixed(2) + " MB",
         category: getCategoryLabel(category),
         isAIReady: false,
-        ownerId: user.uid
+        ownerId: user.uid,
+        isPublic: true
       };
 
       console.log("Đang lưu thông tin ban đầu vào Firestore...");
@@ -398,6 +521,13 @@ export default function App() {
   };
 
   const handleSendMessage = useCallback(async (content: string, image?: string, isGeneral?: boolean, referencedFileIds?: string[]) => {
+    const allowed = await incrementApiUsage();
+    if (!allowed) {
+      setQuotaLimitValue(profile?.apiLimit || 30);
+      setIsQuotaExceededModalOpen(true);
+      return;
+    }
+
     if (isGeneral) {
       const userMsg: Message = {
         id: Date.now().toString(),
@@ -462,6 +592,20 @@ export default function App() {
       } catch (error: any) {
         console.error("Lỗi AI Chung:", error);
         
+        const isQuotaErr = 
+          error.message?.includes("HẾT HẠN MỨC") ||
+          error.message?.includes("Quota") ||
+          error.message?.includes("quota") ||
+          error.message?.includes("Billing/Quota") ||
+          error.message?.includes("quota exceeded") ||
+          error.message?.includes("limit exceeded") ||
+          error.message?.includes("429");
+
+        if (isQuotaErr) {
+          setQuotaLimitValue(profile?.apiLimit || 30);
+          setIsQuotaExceededModalOpen(true);
+        }
+
         const isPermError = 
           error.message?.includes("hết hạn lưu trữ") ||
           error.message?.includes("You do not have permission to access the File") ||
@@ -488,9 +632,11 @@ export default function App() {
         const errorMsg: Message = {
           id: (Date.now() + 1).toString(),
           role: "ai",
-          content: isPermError 
-            ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
-            : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
+          content: isQuotaErr
+            ? "⚠️ Hệ thống đã HẾT HẠN MỨC (Quota) yêu cầu tới trí tuệ nhân tạo Gemini ngày hôm nay hoặc chưa cấu hình thanh toán. Vui lòng bấm vào thông báo nâng hạn mức hiển thị trên màn hình hoặc liên hệ Quản trị viên của bạn."
+            : isPermError 
+              ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
+              : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
           timestamp: Date.now(),
         };
         setGeneralMessages((prev) => [...prev, errorMsg]);
@@ -579,6 +725,20 @@ export default function App() {
     } catch (error: any) {
       console.error("Lỗi AI:", error);
 
+      const isQuotaErr = 
+        error.message?.includes("HẾT HẠN MỨC") ||
+        error.message?.includes("Quota") ||
+        error.message?.includes("quota") ||
+        error.message?.includes("Billing/Quota") ||
+        error.message?.includes("quota exceeded") ||
+        error.message?.includes("limit exceeded") ||
+        error.message?.includes("429");
+
+      if (isQuotaErr) {
+        setQuotaLimitValue(profile?.apiLimit || 30);
+        setIsQuotaExceededModalOpen(true);
+      }
+
       const isPermError = 
         error.message?.includes("hết hạn lưu trữ") ||
         error.message?.includes("You do not have permission to access the File") ||
@@ -598,19 +758,28 @@ export default function App() {
       const errorMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "ai",
-        content: isPermError 
-          ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
-          : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
+        content: isQuotaErr
+          ? "⚠️ Hệ thống đã HẾT HẠN MỨC (Quota) yêu cầu tới trí tuệ nhân tạo Gemini ngày hôm nay hoặc chưa cấu hình thanh toán. Vui lòng bấm vào thông báo nâng hạn mức hiển thị trên màn hình hoặc liên hệ Quản trị viên của bạn."
+          : isPermError 
+            ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
+            : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
         timestamp: Date.now(),
       };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setIsProcessing(false);
     }
-  }, [activeFile, messages, generalMessages, files]);
+  }, [activeFile, messages, generalMessages, files, incrementApiUsage, profile]);
 
   const handleExtract = useCallback(async (fields: ExtractionField[]) => {
     if (!activeFile) return null;
+
+    const allowed = await incrementApiUsage();
+    if (!allowed) {
+      setQuotaLimitValue(profile?.apiLimit || 30);
+      setIsQuotaExceededModalOpen(true);
+      return null;
+    }
 
     // On-demand registration if geminiFileUri is missing or expired (> 40h)
     const isExpired = activeFile.uploadDate && (Date.now() - activeFile.uploadDate > 40 * 60 * 60 * 1000);
@@ -646,7 +815,17 @@ export default function App() {
       }).catch(e => console.error("Auto self-healing database write failed:", e));
     }
     return result?.data || result;
-  }, [activeFile]);
+  }, [activeFile, incrementApiUsage, profile, safeFetch]);
+
+  const handleCheckQuota = useCallback(async (): Promise<boolean> => {
+    const allowed = await incrementApiUsage();
+    if (!allowed) {
+      setQuotaLimitValue(profile?.apiLimit || 30);
+      setIsQuotaExceededModalOpen(true);
+      return false;
+    }
+    return true;
+  }, [incrementApiUsage, profile]);
 
   const handleSync = useCallback(async (data: any) => {
     if (!activeFile || !user) return;
@@ -714,14 +893,14 @@ export default function App() {
   }, []);
 
   const handleSaveNote = useCallback(async (content: string) => {
-    if (!user || !activeFile) return;
+    if (!user) return;
     const noteId = "note_" + Date.now();
     try {
       const noteData: Note = {
         id: noteId,
         content,
-        fileId: activeFile.id,
-        fileName: activeFile.name,
+        fileId: activeFile ? activeFile.id : "general",
+        fileName: activeFile ? activeFile.name : "Hỏi đáp chung",
         ownerId: user.uid,
         createdAt: Date.now()
       };
@@ -819,24 +998,67 @@ export default function App() {
   }
 
   if (!user) {
+    const isUnauthorizedDomain = loginError?.includes("unauthorized-domain") || loginError?.includes("Tên miền");
+
     return (
-      <div className="h-screen w-full flex items-center justify-center bg-[#ebeff4] font-sans p-6">
-        <div className="max-w-md w-full bg-white rounded-[32px] shadow-[0_25px_60px_-15px_rgba(0,0,0,0.08)] p-12 border border-gray-200/60 flex flex-col items-center text-center">
+      <div className="h-screen w-full flex items-center justify-center bg-[#ebeff4] font-sans p-6 overflow-y-auto">
+        <div className="max-w-md w-full bg-white rounded-[32px] shadow-[0_25px_60px_-15px_rgba(0,0,0,0.08)] p-10 border border-gray-200/60 flex flex-col items-center text-center my-8">
           <div className="w-20 h-20 bg-gray-900 rounded-[32px] flex items-center justify-center mb-8 shadow-xl">
             <LayoutGrid className="w-10 h-10 text-white" />
           </div>
           <h1 className="text-2xl font-black text-gray-900 uppercase tracking-tight mb-4">
             Library Engine <span className="text-indigo-600">v3</span>
           </h1>
-          <p className="text-gray-400 text-sm font-bold uppercase tracking-widest leading-relaxed mb-10">
+          <p className="text-gray-400 text-sm font-bold uppercase tracking-widest leading-relaxed mb-8">
             Hệ thống quản lý tài liệu kỹ thuật<br/>thế hệ mới của Kỹ sư trạm
           </p>
+
           <button 
             onClick={login}
-            className="w-full py-5 bg-indigo-600 text-white rounded-[24px] font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-indigo-600/20 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-4 group"
+            className="w-full py-5 bg-indigo-600 text-white rounded-[24px] font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-indigo-600/20 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-4 group cursor-pointer"
           >
             ĐĂNG NHẬP VỚI GOOGLE
           </button>
+
+          {loginError && (
+            <div className="mt-6 w-full text-left bg-red-50 border border-red-200/60 rounded-[20px] p-5 shadow-inner">
+              <div className="flex items-center gap-2 text-red-600 font-black text-[10px] uppercase tracking-widest mb-2.5">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                LỖI ĐĂNG NHẬP FIREBASE
+              </div>
+              <p className="text-red-700 text-xs font-bold leading-relaxed mb-4">
+                {loginError}
+              </p>
+
+              {isUnauthorizedDomain && (
+                <div className="bg-white/60 p-4 rounded-xl border border-red-150/50 text-[11px] text-slate-600 leading-relaxed font-medium">
+                  <p className="font-extrabold text-slate-800 uppercase text-[10px] tracking-wider mb-2 text-indigo-600">
+                    Cách khắc phục nhanh (Chỉ Thêm 1 Lần):
+                  </p>
+                  <ol className="list-decimal pl-4.5 space-y-1.5 font-semibold text-slate-700">
+                    <li>Vào <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" className="text-indigo-600 underline font-bold">Firebase Console</a> dứ án <code className="bg-slate-100 px-1 rounded">thuviennoibo</code>.</li>
+                    <li>Vào mục <span className="font-bold text-slate-800">Authentication</span> → Chọn tab <span className="font-bold text-slate-800">Settings</span>.</li>
+                    <li>Chọn dòng <span className="font-bold text-slate-800">Authorized domains (Miền được ủy quyền)</span>.</li>
+                    <li>Nhấn <span className="font-bold text-slate-800">Add domain</span> và thêm miền sau:</li>
+                  </ol>
+                  <div className="mt-2.5 flex flex-col gap-1">
+                    <code className="block bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg text-[10px] font-bold font-mono border border-indigo-100 select-all">
+                      solenc2021.github.io
+                    </code>
+                    {window.location.hostname && window.location.hostname !== "solenc2021.github.io" && (
+                      <code className="block bg-amber-50 text-amber-600 px-3 py-1 rounded-lg text-[10px] font-bold font-mono border border-amber-100 select-all">
+                        {window.location.hostname}
+                      </code>
+                    )}
+                  </div>
+                  <p className="text-[10px] font-bold text-slate-400 mt-2.5 italic">
+                    * Sau khi Thêm xong, hãy tải lại trang này và thử Đăng nhập lại!
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           <p className="mt-8 text-[10px] text-gray-300 font-bold uppercase tracking-widest">
             BẢO MẬT BỞI GOOGLE CLOUD PLATFORM
           </p>
@@ -862,6 +1084,62 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-6">
+          {/* Segmented Mode Picker for Admin previewing */}
+          {(profile?.role === 'admin' || user?.email === 'solenc2021@gmail.com') ? (
+            <div className="flex bg-[#f1f4f8] p-1.5 rounded-2xl border border-gray-200/50 gap-1 select-none shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.03)] mr-2">
+              <button
+                onClick={() => {
+                  setViewMode('admin');
+                  setActiveFileId(null);
+                  setMessages([]);
+                }}
+                className={cn(
+                  "px-3.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all duration-200 flex items-center gap-1.5 cursor-pointer",
+                  viewMode === 'admin'
+                    ? "bg-white text-gray-900 border border-gray-200/60 shadow-xs"
+                    : "text-gray-400 hover:text-gray-650"
+                )}
+                title="Xem giao diện và thao tác Quản trị viên"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
+                Quản trị viên
+              </button>
+              <button
+                onClick={() => {
+                  setViewMode('member');
+                  setActiveFileId(null);
+                  setMessages([]);
+                }}
+                className={cn(
+                  "px-3.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all duration-200 flex items-center gap-1.5 cursor-pointer",
+                  viewMode === 'member'
+                    ? "bg-white text-emerald-700 border border-emerald-100 shadow-xs"
+                    : "text-gray-400 hover:text-gray-650"
+                )}
+                title="Xem giao diện cổng Thành viên"
+              >
+                <FileText className="w-3.5 h-3.5 text-emerald-500" />
+                Thành viên
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-50/70 border border-emerald-150/40 rounded-2xl text-[10px] font-black uppercase tracking-widest text-[#009688] mr-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              CỔNG THÀNH VIÊN
+            </div>
+          )}
+
+          {viewMode === 'admin' && (profile?.role === 'admin' || user?.email === 'solenc2021@gmail.com') && (
+            <button
+              onClick={() => setIsAdminModalOpen(true)}
+              className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-2 transition-all duration-300 border border-amber-600 shadow-sm cursor-pointer"
+              title="Mở bảng điều khiển kiểm soát nội bộ"
+            >
+              <ShieldCheck className="w-4 h-4" />
+              QUẢN TRỊ VIÊN ✦
+            </button>
+          )}
+
           <button 
             onClick={() => setIsAiPanelOpen(!isAiPanelOpen)}
             className={cn(
@@ -988,7 +1266,7 @@ export default function App() {
                   }}
                   exit={{ width: 0, opacity: 0 }}
                   transition={isDragging ? { type: "tween", duration: 0 } : { type: "spring", damping: 25, stiffness: 180 }}
-                  className="bg-white rounded-[28px] shadow-[0_24px_55px_rgba(0,0,0,0.07),0_2px_6px_rgba(0,0,0,0.02)] border border-gray-200/70 flex flex-col overflow-hidden h-full z-10"
+                  className="bg-white rounded-[28px] shadow-[0_24px_55px_rgba(0,0,0,0.07),0_2px_6px_rgba(0,0,0,0.02)] border border-gray-200/70 flex flex-col overflow-hidden h-full relative z-30"
                 >
                   <ChatPanel
                     messages={messages}
@@ -1015,6 +1293,8 @@ export default function App() {
                     onClose={() => setIsAiPanelOpen(false)}
                     isPdfViewerOpen={isPdfViewerOpen}
                     onTogglePdfViewer={() => setIsPdfViewerOpen(!isPdfViewerOpen)}
+                    onCheckQuota={handleCheckQuota}
+                    viewMode={viewMode}
                   />
                 </motion.div>
               )}
@@ -1069,16 +1349,16 @@ export default function App() {
                   }}
                   exit={{ width: 0, opacity: 0, x: 60 }}
                   transition={isDragging ? { type: "tween", duration: 0 } : { type: "spring", damping: 25, stiffness: 180 }}
-                  className="h-full flex flex-col overflow-hidden min-w-[280px]"
+                  className="h-full flex flex-col overflow-hidden min-w-[280px] relative z-20"
                 >
                   <PDFViewer 
                     file={activeFile} 
                     onPageChange={handlePageChange} 
                     targetPage={targetPage}
-                    onClearTargetPage={() => setTargetPage(null)}
+                    onClearTargetPage={handleClearTargetPage}
                     isMaximized={!isAiPanelOpen}
-                    onToggleMaximize={() => setIsAiPanelOpen(!isAiPanelOpen)}
-                    onClose={() => setIsPdfViewerOpen(false)}
+                    onToggleMaximize={handleToggleMaximize}
+                    onClose={handleClosePdfViewer}
                   />
                 </motion.div>
               )}
@@ -1098,8 +1378,21 @@ export default function App() {
           onDeleteFile={(file) => setFileToDelete(file)}
           onEditFile={(file) => setFileToEdit(file)}
           isUploading={isUploading}
+          viewMode={viewMode}
         />
       </div>
+
+      <AdminPanelModal
+        isOpen={isAdminModalOpen}
+        onClose={() => setIsAdminModalOpen(false)}
+        currentAdminEmail={user?.email || ""}
+      />
+
+      <QuotaExceededModal
+        isOpen={isQuotaExceededModalOpen}
+        onClose={() => setIsQuotaExceededModalOpen(false)}
+        limit={quotaLimitValue}
+      />
     </div>
   );
 }

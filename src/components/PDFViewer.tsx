@@ -12,6 +12,167 @@ import * as pdfjs from "pdfjs-dist";
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
 
+// Helper to remove Vietnamese tones/diacritics for diacritic-insensitive search
+function removeVietnameseTones(str: string): string {
+  if (!str) return "";
+  let res = str.normalize("NFD");
+  // Remove combining diacritical marks
+  res = res.replace(/[\u0300-\u036f]/g, "");
+  // Replace remaining special Vietnamese letters
+  res = res.replace(/đ/g, "d").replace(/Đ/g, "D");
+  
+  // Extra mapping in case of legacy composers
+  res = res.replace(/[àáạảãâầấậẩẫăằắặẳẵ]/g, "a");
+  res = res.replace(/[èéẹẻẽêềếệểễ]/g, "e");
+  res = res.replace(/[ìíịỉĩ]/g, "i");
+  res = res.replace(/[òóọỏõôồốộổỗơờớợởỡ]/g, "o");
+  res = res.replace(/[ùúụủũưừứựửữ]/g, "u");
+  res = res.replace(/[ỳýỵỷỹ]/g, "y");
+  
+  res = res.replace(/[ÀÁẠẢÃÂẦẤẬẨẪĂẰẮẶẲẴ]/g, "A");
+  res = res.replace(/[ÈÉẸẺẼÊỀẾỆỂỄ]/g, "E");
+  res = res.replace(/[ÌÍỊỈĨ]/g, "I");
+  res = res.replace(/[ÒÓỌỎÕÔỒỐỘỔỖƠỜỚỢỞỠ]/g, "O");
+  res = res.replace(/[ÙÚỤỦŨƯỪỨỰỬỮ]/g, "U");
+  res = res.replace(/[ỲÝỴỶỸ]/g, "Y");
+  
+  return res;
+}
+
+// Highly robust Vietnamese & Unicode text match finder with spacing-insensitive mapping
+function findMatchInText(fullText: string, query: string): { found: boolean; startIdx: number; matchedLength: number } {
+  if (!fullText || !query) return { found: false, startIdx: -1, matchedLength: 0 };
+  
+  const normTextNFC = fullText.normalize("NFC");
+  const normQueryNFC = query.normalize("NFC");
+  
+  // 1. Direct case-insensitive search (NFC)
+  let idx = normTextNFC.toLowerCase().indexOf(normQueryNFC.toLowerCase());
+  if (idx !== -1) {
+    return { found: true, startIdx: idx, matchedLength: normQueryNFC.length };
+  }
+  
+  // 2. Direct case-insensitive search (NFD)
+  const normTextNFD = fullText.normalize("NFD");
+  const normQueryNFD = query.normalize("NFD");
+  idx = normTextNFD.toLowerCase().indexOf(normQueryNFD.toLowerCase());
+  if (idx !== -1) {
+    return { found: true, startIdx: idx, matchedLength: normQueryNFD.length };
+  }
+
+  // Helper to search and map coordinates ignoring spaces
+  const matchIgnoringSpaces = (textStr: string, queryStr: string) => {
+    const cleanQ = queryStr.replace(/\s+/g, "").toLowerCase();
+    if (!cleanQ) return { startIdx: -1, matchedLength: 0 };
+    
+    const cleanT = textStr.toLowerCase();
+    const indices: number[] = [];
+    let cleanTextNoSpaces = "";
+    
+    for (let i = 0; i < cleanT.length; i++) {
+      const char = cleanT[i];
+      if (char !== " " && char !== "\t" && char !== "\n" && char !== "\r" && char !== "\xa0") {
+        cleanTextNoSpaces += char;
+        indices.push(i);
+      }
+    }
+    
+    const mIdx = cleanTextNoSpaces.indexOf(cleanQ);
+    if (mIdx !== -1) {
+      const origStart = indices[mIdx];
+      const origEnd = indices[mIdx + cleanQ.length - 1];
+      return {
+        startIdx: origStart,
+        matchedLength: origEnd - origStart + 1
+      };
+    }
+    return { startIdx: -1, matchedLength: 0 };
+  };
+
+  // 3. Match ignoring arbitrary spacing (NFC)
+  let spaceMatch = matchIgnoringSpaces(normTextNFC, normQueryNFC);
+  if (spaceMatch.startIdx !== -1) {
+    return { found: true, startIdx: spaceMatch.startIdx, matchedLength: spaceMatch.matchedLength };
+  }
+  
+  // 4. Match ignoring arbitrary spacing (NFD)
+  spaceMatch = matchIgnoringSpaces(normTextNFD, normQueryNFD);
+  if (spaceMatch.startIdx !== -1) {
+    return { found: true, startIdx: spaceMatch.startIdx, matchedLength: spaceMatch.matchedLength };
+  }
+
+  // 5. Fallback to unaccented (diacritic-insensitive) match
+  const unaccentedText = removeVietnameseTones(normTextNFC);
+  const unaccentedQuery = removeVietnameseTones(normQueryNFC);
+
+  idx = unaccentedText.toLowerCase().indexOf(unaccentedQuery.toLowerCase());
+  if (idx !== -1) {
+    return { found: true, startIdx: idx, matchedLength: unaccentedQuery.length };
+  }
+
+  // 6. Fallback to unaccented spacing-insensitive match
+  spaceMatch = matchIgnoringSpaces(unaccentedText, unaccentedQuery);
+  if (spaceMatch.startIdx !== -1) {
+    return { found: true, startIdx: spaceMatch.startIdx, matchedLength: spaceMatch.matchedLength };
+  }
+
+  return { found: false, startIdx: -1, matchedLength: 0 };
+}
+
+// Parses pages from continuous text structured with page markers
+function parsePagesFromText(text: string): { [pageNo: number]: string } {
+  const pages: { [pageNo: number]: string } = {};
+  if (!text) return pages;
+
+  const regex = /---\s*\[B\s*Ắ\s*T\s*Đ\s*Ầ\s*U\s*T\s*R\s*A\s*N\s*G\s+(\d+)\]\s*---/gi;
+  // Support both accented and normalized letters in markers
+  const cleanRegex = /---\s*\[BẮT ĐẦU TRANG\s+(\d+)\]\s*---/gi;
+  
+  let match;
+  const matches: { pageNum: number; index: number; headerLength: number }[] = [];
+  
+  // Try clean regex first, then soft if needed
+  while ((match = cleanRegex.exec(text)) !== null) {
+    matches.push({
+      pageNum: parseInt(match[1], 10),
+      index: match.index,
+      headerLength: match[0].length
+    });
+  }
+
+  if (matches.length === 0) {
+    const rawRegex = /---\s*\[B\s*A\s*T\s*D\s*A\s*U\s*T\s*R\s*A\s*N\s*G\s+(\d+)\]\s*---/gi;
+    while ((match = rawRegex.exec(text)) !== null) {
+      matches.push({
+        pageNum: parseInt(match[1], 10),
+        index: match.index,
+        headerLength: match[0].length
+      });
+    }
+  }
+
+  if (matches.length === 0) {
+    pages[1] = text;
+    return pages;
+  }
+
+  for (let i = 0; i < matches.length; i++) {
+    const current = matches[i];
+    const next = matches[i + 1];
+    
+    const start = current.index + current.headerLength;
+    const end = next ? next.index : text.length;
+    
+    let pageText = text.substring(start, end);
+    pageText = pageText.replace(/---\s*\[KẾT THÚC TRANG\s+\d+\]\s*---/gi, "");
+    pageText = pageText.replace(/---\s*\[KET THUC TRANG\s+\d+\]\s*---/gi, "");
+    
+    pages[current.pageNum] = pageText.trim();
+  }
+
+  return pages;
+}
+
 interface PDFViewerProps {
   file: PDFFile | null;
   onPageChange?: (pageNumber: number) => void;
@@ -32,7 +193,9 @@ export function PDFViewer({
   onClose
 }: PDFViewerProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
+  const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [pageInput, setPageInput] = useState<string>("1");
   const [scale, setScale] = useState(1.2);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -40,63 +203,116 @@ export function PDFViewer({
   const pdfDocRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Sync typed input with current observer page
+  useEffect(() => {
+    setPageInput(currentPage.toString());
+  }, [currentPage]);
+
+  const handleJumpToPage = (pageNumStr: string) => {
+    const pageNum = parseInt(pageNumStr, 10);
+    const maxPages = numPages || (file ? file.numpages : 1) || 1;
+    if (!isNaN(pageNum) && pageNum >= 1 && pageNum <= maxPages) {
+      const el = document.querySelector(`[data-page="${pageNum}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth" });
+        setCurrentPage(pageNum);
+      }
+    } else {
+      setPageInput(currentPage.toString());
+    }
+  };
+
   const [pageTexts, setPageTexts] = useState<{ [page: number]: string }>({});
+  const [parentPageTexts, setParentPageTexts] = useState<{ [page: number]: string }>({});
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<{ page: number; text: string }[]>([]);
   const [currentResultIdx, setCurrentResultIdx] = useState(-1);
   const [isIndexing, setIsIndexing] = useState(false);
 
-  // Background text extraction for searching
+  // Sync document text from the parent component (Gemini OCR / pdf-parse processed)
   useEffect(() => {
-    if (pdfDocRef.current) {
+    if (file && file.text) {
+      const parsed = parsePagesFromText(file.text);
+      setParentPageTexts(parsed);
+    } else {
+      setParentPageTexts({});
+    }
+  }, [file?.text, file?.id]);
+
+  // Background text extraction utilizing newly loaded state pdfDoc
+  useEffect(() => {
+    if (pdfDoc) {
       setPageTexts({});
       setSearchResults([]);
       setCurrentResultIdx(-1);
       setSearchQuery("");
       setIsSearchOpen(false);
       
-      const doc = pdfDocRef.current;
       const extractAll = async () => {
         setIsIndexing(true);
-        const texts: { [page: number]: string } = {};
-        for (let i = 1; i <= doc.numPages; i++) {
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
           try {
-            const page = await doc.getPage(i);
+            const page = await pdfDoc.getPage(i);
             const txtContent = await page.getTextContent();
-            const pageText = txtContent.items.map((item: any) => item.str).join(" ");
-            texts[i] = pageText;
+            
+            // Map str carefully to avoid undefined errors
+            const pageText = txtContent.items
+              .map((item: any) => (item && typeof item.str === "string") ? item.str : "")
+              .join(" ");
+            
+            // Incremental page texting allows instant searching as loading goes!
+            setPageTexts((prev) => ({
+              ...prev,
+              [i]: pageText,
+            }));
           } catch (err) {
             console.error("Lỗi trích xuất chữ trang " + i, err);
           }
         }
-        setPageTexts(texts);
         setIsIndexing(false);
       };
       
       extractAll();
+    } else {
+      setPageTexts({});
+      setSearchResults([]);
+      setCurrentResultIdx(-1);
+      setSearchQuery("");
+      setIsSearchOpen(false);
     }
-  }, [pdfDocRef.current, file?.url]);
+  }, [pdfDoc]);
 
-  const handleSearchChange = (query: string) => {
-    setSearchQuery(query);
-    if (!query.trim()) {
+  // Reactive Search Effect that recalculates matching pages as pageTexts are indexed or searchQuery is changed
+  useEffect(() => {
+    if (!searchQuery.trim()) {
       setSearchResults([]);
       setCurrentResultIdx(-1);
       return;
     }
-    
+
     const matches: { page: number; text: string }[] = [];
-    const lowerQuery = query.toLowerCase();
     const total = numPages || file?.numpages || 0;
     
     for (let p = 1; p <= total; p++) {
-      const text = pageTexts[p] || "";
-      if (text.toLowerCase().includes(lowerQuery)) {
-        const idx = text.toLowerCase().indexOf(lowerQuery);
-        const start = Math.max(0, idx - 30);
-        const end = Math.min(text.length, idx + lowerQuery.length + 30);
-        const snippet = text.substring(start, end).trim();
+      const localText = pageTexts[p] || "";
+      const parentText = parentPageTexts[p] || "";
+      
+      const localMatch = findMatchInText(localText, searchQuery);
+      const parentMatch = findMatchInText(parentText, searchQuery);
+      
+      if (localMatch.found) {
+        const start = Math.max(0, localMatch.startIdx - 30);
+        const end = Math.min(localText.length, localMatch.startIdx + localMatch.matchedLength + 30);
+        const snippet = localText.substring(start, end).replace(/\s+/g, " ").trim();
+        matches.push({
+          page: p,
+          text: `...${snippet}...`
+        });
+      } else if (parentMatch.found) {
+        const start = Math.max(0, parentMatch.startIdx - 30);
+        const end = Math.min(parentText.length, parentMatch.startIdx + parentMatch.matchedLength + 30);
+        const snippet = parentText.substring(start, end).replace(/\s+/g, " ").trim();
         matches.push({
           page: p,
           text: `...${snippet}...`
@@ -105,9 +321,24 @@ export function PDFViewer({
     }
     
     setSearchResults(matches);
+    
     if (matches.length > 0) {
+      if (currentResultIdx === -1 || currentResultIdx >= matches.length) {
+        setCurrentResultIdx(0);
+      }
+    } else {
+      setCurrentResultIdx(-1);
+    }
+  }, [pageTexts, parentPageTexts, searchQuery, numPages, file?.numpages]);
+
+  // Keep track of the last searched query to avoid repeated scrolls when pages load incrementally
+  const lastScrollQueryRef = useRef("");
+
+  useEffect(() => {
+    if (searchResults.length > 0 && searchQuery !== lastScrollQueryRef.current) {
+      lastScrollQueryRef.current = searchQuery;
       setCurrentResultIdx(0);
-      const firstMatchPage = matches[0].page;
+      const firstMatchPage = searchResults[0].page;
       setTimeout(() => {
         const el = document.querySelector(`[data-page="${firstMatchPage}"]`);
         if (el) {
@@ -118,9 +349,13 @@ export function PDFViewer({
           }, 2000);
         }
       }, 50);
-    } else {
-      setCurrentResultIdx(-1);
+    } else if (searchResults.length === 0) {
+      lastScrollQueryRef.current = "";
     }
+  }, [searchResults, searchQuery]);
+
+  const handleSearchChange = (query: string) => {
+    setSearchQuery(query);
   };
 
   const goToNextResult = () => {
@@ -208,6 +443,9 @@ export function PDFViewer({
   useEffect(() => {
     if (file?.url) {
       loadPDF(file.url);
+    } else {
+      setPdfDoc(null);
+      pdfDocRef.current = null;
     }
   }, [file?.url]);
 
@@ -220,6 +458,7 @@ export function PDFViewer({
       const loadingTask = pdfjs.getDocument(url);
       const pdf = await loadingTask.promise;
       pdfDocRef.current = pdf;
+      setPdfDoc(pdf);
       setNumPages(pdf.numPages);
       
       const pages = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
@@ -393,27 +632,54 @@ export function PDFViewer({
 
       {/* Floating Page Indicator */}
       <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
-        <div className="bg-black/80 backdrop-blur-md px-6 py-3 rounded-full border border-white/10 shadow-2xl flex items-center gap-4 pointer-events-auto">
+        <div className="bg-slate-900/40 hover:bg-slate-900/80 backdrop-blur-md px-5 py-2.5 rounded-full border border-white/5 hover:border-white/15 shadow-2xl flex items-center gap-3.5 pointer-events-auto transform transition-all duration-300 hover:scale-[1.02] hover:shadow-indigo-500/10">
           <button 
             onClick={() => {
               const el = document.querySelector(`[data-page="${currentPage - 1}"]`);
               el?.scrollIntoView({ behavior: 'smooth' });
             }}
             disabled={currentPage <= 1}
-            className="text-white disabled:opacity-30 p-1"
+            className="text-white hover:text-indigo-450 disabled:opacity-30 p-1 cursor-pointer transition-colors"
+            title="Trang trước"
           >
             <ChevronLeft className="w-5 h-5" />
           </button>
-          <div className="text-[13px] font-black text-white uppercase tracking-widest min-w-[100px] text-center">
-             TRANG {currentPage} / {numPages || file.numpages}
+          
+          <div className="text-[12px] font-black text-white uppercase tracking-widest flex items-center gap-1.5 min-w-[130px] justify-center select-none">
+            <span className="opacity-80">TRANG</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={pageInput}
+              onChange={(e) => {
+                const val = e.target.value.replace(/[^0-9]/g, "");
+                setPageInput(val);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  handleJumpToPage(pageInput);
+                  e.currentTarget.blur();
+                }
+              }}
+              onBlur={() => {
+                handleJumpToPage(pageInput);
+              }}
+              className="w-12 h-6.5 text-center font-black bg-white/10 hover:bg-white/20 focus:bg-white/25 text-white border border-white/10 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-450/40 rounded-lg transition-all text-xs outline-none focus:outline-none p-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              title="Nhập số trang và nhấn Enter"
+            />
+            <span className="opacity-30">/</span>
+            <span className="opacity-80">{numPages || file.numpages}</span>
           </div>
+
           <button 
             onClick={() => {
               const el = document.querySelector(`[data-page="${currentPage + 1}"]`);
               el?.scrollIntoView({ behavior: 'smooth' });
             }}
             disabled={currentPage >= (numPages || Infinity)}
-            className="text-white disabled:opacity-30 p-1"
+            className="text-white hover:text-indigo-450 disabled:opacity-30 p-1 cursor-pointer transition-colors"
+            title="Trang sau"
           >
             <ChevronRight className="w-5 h-5" />
           </button>
@@ -430,11 +696,69 @@ export function PDFViewer({
         )}
 
         {loadError ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-white p-12 text-center h-full w-full">
-            <AlertCircle className="w-12 h-12 text-red-500 mb-6" />
-            <h3 className="text-xl font-black uppercase tracking-widest mb-4">Lỗi tải PDF</h3>
-            <p className="text-gray-500 text-sm max-w-sm font-bold mb-8">{loadError}</p>
-            <button onClick={() => loadPDF(file.url)} className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest">Thử lại</button>
+          <div className="flex-1 flex flex-col items-center justify-center text-white p-6 sm:p-12 text-center h-full w-full max-w-2xl mx-auto">
+            <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center text-red-500 mb-6 border border-red-500/20">
+              <AlertCircle className="w-8 h-8" />
+            </div>
+            
+            <h3 className="text-lg font-black uppercase tracking-widest text-red-400 mb-2">
+              Lỗi tải tài liệu PDF
+            </h3>
+
+            {loadError.includes("402") ? (
+              <div className="bg-slate-900/60 border border-red-500/30 rounded-3xl p-6 text-left space-y-4 mb-8 shadow-lg max-w-xl">
+                <div className="flex items-center gap-2 pb-2 border-b border-white/5">
+                  <span className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse" />
+                  <span className="text-xs font-black uppercase tracking-widest text-red-400">
+                    Sự Cố Thanh Toán Firebase (Lỗi 402)
+                  </span>
+                </div>
+                <p className="text-xs text-gray-300 leading-relaxed">
+                  Đường dẫn tài liệu trả về mã lỗi <strong>HTTP 402 - Payment Required</strong>. Điều này có nghĩa là dự án Firebase/Google Cloud liên kết (tên miền phụ: <code className="bg-black/30 px-1.5 py-0.5 rounded font-mono text-amber-300 text-[11px]">thuviennoibo</code>) đang gặp vấn đề:
+                </p>
+                <ul className="text-[11px] text-gray-400 list-disc pl-5 space-y-1">
+                  <li>Đã vượt quá hạn ngạch băng thông (bandwidth limits) hoặc dung lượng tải của gói miễn phí Spark.</li>
+                  <li>Tài khoản Google Cloud liên quan bị tạm khóa do hết hạn phương thức thanh toán hoặc thiếu thẻ thanh toán hợp lệ.</li>
+                </ul>
+                <div className="pt-2 text-[11px] text-amber-400/90 font-bold">
+                  💡 Hướng dẫn xử lý: Quản lý hoặc Quản trị viên cần đăng nhập vào trang quản trị <strong>Firebase Console</strong> của dự án, kiểm tra mục <em>"Usage & Billing"</em> để nâng cấp gói hoặc cập nhật thông tin hóa đơn.
+                </div>
+              </div>
+            ) : (
+              <p className="text-gray-400 text-sm max-w-sm mb-8">{loadError}</p>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
+              <button 
+                onClick={() => loadPDF(file.url)} 
+                className="px-6 py-3 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-all cursor-pointer shadow-md active:scale-95"
+              >
+                Thử tải lại
+              </button>
+              
+              <a 
+                href={file.url} 
+                target="_blank" 
+                rel="noopener noreferrer" 
+                referrerPolicy="no-referrer"
+                className="px-6 py-3 bg-slate-800 hover:bg-slate-700 text-white border border-white/10 rounded-xl font-bold text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md active:scale-95"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Mở trong tab mới
+              </a>
+
+              <a 
+                href={file.url} 
+                download={file.name}
+                target="_blank" 
+                rel="noopener noreferrer" 
+                referrerPolicy="no-referrer"
+                className="px-6 py-3 bg-[#0d9488]/90 hover:bg-[#0d9488] text-white border border-[#0d9488]/35 rounded-xl font-bold text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-2 cursor-pointer shadow-md active:scale-95"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Tải tệp tin
+              </a>
+            </div>
           </div>
         ) : (
           renderedPages.map(pageNo => (
@@ -505,6 +829,7 @@ function PDFPage({ pdfDoc, pageNo, scale }: { pdfDoc: any, pageNo: number, scale
         }
 
         const page = await pdfDoc.getPage(pageNo);
+        if (!isMounted || !canvasRef.current) return;
         const viewport = page.getViewport({ scale });
         const canvas = canvasRef.current;
         const context = canvas.getContext("2d");

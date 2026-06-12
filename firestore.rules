@@ -16,6 +16,14 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
+    function isAdmin() {
+      return isSignedIn() && (
+             (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+              get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin") ||
+             request.auth.token.email == "solenc2021@gmail.com"
+      );
+    }
+
     function isValidId(id) {
       return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
@@ -71,10 +79,19 @@ service cloud.firestore {
     // Users collection
     match /users/{userId} {
       allow get: if isSignedIn();
-      allow list: if false; 
+      allow list: if isAdmin(); 
       allow create: if isOwner(userId) && isValidUser(incoming());
-      allow update: if isOwner(userId) && isValidUser(incoming()) && 
-                    incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL']);
+      allow update: if isSignedIn() && (
+        (isOwner(userId) && isValidUser(incoming()) && (
+          // Allow standard and self-healing keys
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'apiUsageCount', 'lastRequestDate', 'role', 'apiLimit']) &&
+          // Normal users cannot self-escalate their role to admin
+          (incoming().role == 'user' || existing().role == 'admin' || isAdmin()) &&
+          // Normal users cannot raise their apiLimit above default 30
+          (incoming().apiLimit <= 30 || existing().apiLimit == incoming().apiLimit || isAdmin())
+        )) ||
+        (isAdmin() && isValidUser(incoming()))
+      );
       allow delete: if false;
     }
 

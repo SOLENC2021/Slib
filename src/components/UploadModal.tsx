@@ -17,6 +17,7 @@ const CATEGORIES = [
   { id: "ketcau_tcvn", name: "Kết cấu - TCVN" },
   { id: "ketcau_tcnn", name: "Kết cấu - TCNN" },
   { id: "mep", name: "MEP" },
+  { id: "vatlieu", name: "Vật liệu" },
   { id: "qckt", name: "Quy chuẩn kỹ thuật" },
   { id: "vbhh", name: "Văn bản hiện hành" },
   { id: "banve", name: "Bản vẽ thiết kế" },

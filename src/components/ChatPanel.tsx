@@ -1,15 +1,18 @@
 import React, { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { 
   Send, Zap, ListFilter, Save, CheckCircle2, 
   AlertCircle, Loader2, Copy, Maximize2, Download,
   Plus, Trash2, Settings, Sparkles, X, LayoutGrid,
-  Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, Minimize2, BookOpen, FileText, Camera
+  Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, Minimize2, BookOpen, FileText, Camera, Languages,
+  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen
 } from "lucide-react";
+import pptxgen from "pptxgenjs";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
-import { cn } from "@/lib/utils";
+import { cn, getApiUrl, cleanLatexForClipboard } from "@/lib/utils";
 import Mermaid from "./Mermaid";
 import { Message, ExtractionField, PDFFile, Note } from "@/types";
 
@@ -32,6 +35,8 @@ interface ChatPanelProps {
   onSelectFile?: (fileId: string, pageNum?: number | null) => void;
   isPdfViewerOpen?: boolean;
   onTogglePdfViewer?: () => void;
+  onCheckQuota?: () => Promise<boolean>;
+  viewMode?: "admin" | "member";
 }
 
 function parseMermaidToOutline(code: string) {
@@ -96,7 +101,10 @@ function parseAIResponse(content: string): ParsedSections {
     const summaryStart = summaryMatch.index! + summaryMatch[0].length;
     const basisStart = basisMatch.index!;
     
-    sections.summary = content.substring(summaryStart, basisStart).trim();
+    let summaryText = content.substring(summaryStart, basisStart).trim();
+    // Clean up redundant "Trực diện, ngắn gọn" prefixes that might have been generated at the start of Section 1 text block
+    summaryText = summaryText.replace(/^(trực diện,?\s*ngắn gọn\.?\s*[-:–—]*\s*)/i, "").trim();
+    sections.summary = summaryText;
 
     if (notesMatch && notesMatch.index! > basisStart) {
       const basisEnd = notesMatch.index!;
@@ -322,7 +330,9 @@ export function ChatPanel({
   onUpdateFile,
   onSelectFile,
   isPdfViewerOpen = false,
-  onTogglePdfViewer
+  onTogglePdfViewer,
+  onCheckQuota,
+  viewMode = "member"
 }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -335,6 +345,7 @@ export function ChatPanel({
 
   // Scrolling detection for input area fading effect
   const [isScrolled, setIsScrolled] = useState(false);
+  const [isComposerExpanded, setIsComposerExpanded] = useState(false);
 
   // Gemini Quick-Summarizer Assistant States
   const [summarizingText, setSummarizingText] = useState<string | null>(null);
@@ -343,8 +354,179 @@ export function ChatPanel({
   const [bulletCount, setBulletCount] = useState<number>(3);
   const [summarizeError, setSummarizeError] = useState<string | null>(null);
   const [copiedSummary, setCopiedSummary] = useState<boolean>(false);
+  const [isSavingSummaryToNote, setIsSavingSummaryToNote] = useState<boolean>(false);
+  const [savedSummaryToNote, setSavedSummaryToNote] = useState<boolean>(false);
+
+  // When summarizing text changes, reset saved state
+  useEffect(() => {
+    setSavedSummaryToNote(false);
+    setIsSavingSummaryToNote(false);
+  }, [summarizingText]);
+
+  const handleSaveSummaryToNote = async () => {
+    if (!summaryResult || !onSaveNote) return;
+    setIsSavingSummaryToNote(true);
+    try {
+      let titleHeader = "### TÓM TẮT AI TỪ TÀI LIỆU KỸ THUẬT\n\n";
+      if (activeFile) {
+        titleHeader = `### TÓM TẮT AI TỪ TÀI LIỆU: ${activeFile.name}\n\n`;
+      }
+      await onSaveNote(`${titleHeader}${summaryResult}`);
+      setSavedSummaryToNote(true);
+    } catch (err) {
+      console.error("Lỗi khi lưu tóm tắt vào ghi chú:", err);
+    } finally {
+      setIsSavingSummaryToNote(false);
+    }
+  };
+
+  // PowerPoint & Gamma Exporter States
+  const [pptModalData, setPptModalData] = useState<{ isOpen: boolean; content: string; messageId: string } | null>(null);
+  const [isGeneratingPpt, setIsGeneratingPpt] = useState<boolean>(false);
+  const [copiedGammaOutline, setCopiedGammaOutline] = useState<boolean>(false);
+
+  // Global Notebook Synthesis States
+  const [isSynthesizingNotes, setIsSynthesizingNotes] = useState<boolean>(false);
+  const [synthesizedNotesSummary, setSynthesizedNotesSummary] = useState<string | null>(null);
+  const [synthesisStyle, setSynthesisStyle] = useState<'bullets' | 'report' | 'quickref'>('report');
+  const [synthesisError, setSynthesisError] = useState<string | null>(null);
+  const [copiedSynthesis, setCopiedSynthesis] = useState<boolean>(false);
+
+  // Manual Note Creation & Deletion Confirmation States
+  const [newNoteText, setNewNoteText] = useState<string>("");
+  const [isAddingNote, setIsAddingNote] = useState<boolean>(false);
+  const [noteIdToDelete, setNoteIdToDelete] = useState<string | null>(null);
+
+  // Dynamic Note Storage Upgrade States
+  const [storageLimitGb, setStorageLimitGb] = useState<number>(10);
+  const [isUpgradingStorage, setIsUpgradingStorage] = useState<boolean>(false);
+  const [showUpgradeSuccess, setShowUpgradeSuccess] = useState<boolean>(false);
+
+  const handleUpgradeStorageCapacity = () => {
+    setIsUpgradingStorage(true);
+    setTimeout(() => {
+      setStorageLimitGb(prev => prev + 50);
+      setIsUpgradingStorage(false);
+      setShowUpgradeSuccess(true);
+      setTimeout(() => setShowUpgradeSuccess(false), 5000);
+    }, 800);
+  };
+
+  const handleAddNewManualNote = async () => {
+    if (!newNoteText.trim() || !onSaveNote) return;
+    setIsAddingNote(true);
+    try {
+      await onSaveNote(newNoteText.trim());
+      setNewNoteText("");
+    } catch (err) {
+      console.error("Lỗi khi thêm ghi chú thủ công:", err);
+    } finally {
+      setIsAddingNote(false);
+    }
+  };
+
+  const handleSynthesizeNotes = async () => {
+    if (!notes || notes.length === 0) return;
+    setIsSynthesizingNotes(true);
+    setSynthesisError(null);
+    setCopiedSynthesis(false);
+
+    // Compile all notes into a single prompt content block
+    const compiledNotesText = notes.map((note, index) => {
+      const dateStr = new Date(note.createdAt).toLocaleString("vi-VN", { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' });
+      return `GHI CHÚ #${index + 1} (Thời gian: ${dateStr}, Nguồn tài liệu: ${note.fileName || "N/A"}):\n---\nNội dung:\n${note.content}\n---`;
+    }).join("\n\n");
+
+    try {
+      let promptText = "";
+      if (synthesisStyle === 'bullets') {
+        promptText = `Nhiệm vụ: Hãy tổng hợp toàn bộ các ghi chú kỹ thuật bên dưới thành một bản tóm tắt phân tích gạch đầu dòng cực kỳ cô đọng, hệ thống và chính xác. Trực tiếp đi vào các số liệu kỹ thuật, tiêu chuẩn áp dụng, quy định biên hoặc từ khóa cốt lõi. Nhóm các thông tin tương tự lại với nhau để tạo thành cấu trúc nhóm logic rõ ràng.\n\nDưới đây là tập hợp ghi chú cần tổng hợp:\n===\n${compiledNotesText}\n===\n\nHãy chỉ trả về nội dung tổng hợp bằng tiếng Việt dưới dạng markdown (bắt đầu bằng tiêu đề # TỔNG HỢP GHI CHÚ KỸ THUẬT: CÔ ĐỌNG), trình bày trực tiếp, không dông dài.`;
+      } else if (synthesisStyle === 'report') {
+        promptText = `Nhiệm vụ: Phân tích toàn bộ các ghi chú kỹ thuật bên dưới và biên soạn thành một BÁO CÁO TỔNG HỢP ĐỐI CHIẾU KỸ THUẬT cực kỳ chuyên nghiệp.\nHồ sơ báo cáo cần có các mục rõ ràng:\n1. Tổng quan & Kết luận cốt lõi (Tóm tắt nhanh trạng thái, các thông số quan trọng nhất)\n2. Bảng đối chiếu so sánh chỉ số/quy chuẩn (Hãy lập bảng markdown đối chiếu chi tiết các yêu cầu biên, giới hạn chịu lực, khoảng cách, chiều dày...)\n3. Kiến nghị thực tế / Các điểm cần đặc biệt lưu ý khi thi công thiết kế.\n\nDưới đây là tập hợp ghi chú cần phân tích tổng hợp:\n===\n${compiledNotesText}\n===\n\nTrả về báo cáo bằng tiếng Việt định dạng markdown, bắt đầu bằng tiêu đề # BÁO CÁO ĐỐI CHIẾU & TỔNG HỢP KỸ THUẬT, trình bày chuẩn mực kỹ thuật cao nhất, không dông dài mở đầu kết thúc.`;
+      } else {
+        promptText = `Nhiệm vụ: Hãy biên soạn cẩm nang tra cứu nhanh (Quick Reference & Cheat Sheet) từ các ghi chú kỹ thuật dưới đây.\nBố cục gồm:\n- Định nghĩa & Các con số mật độ cốt lõi (Trình bày dạng danh mục hoặc bảng khóa)\n- Công thức & Quy tắc tỷ lệ vàng (Lọc ra các công thức cốt lõi)\n- Checklist tự kiểm tra nhanh cho kỹ sư thiết kế/thẩm tra.\n\nDưới đây là tập hợp ghi chú cần biên soạn:\n===\n${compiledNotesText}\n===\n\nHãy chỉ trả về tài liệu tra cứu nhanh bằng tiếng Việt dạng markdown, bắt đầu bằng tiêu đề # CẨM NANG TRA CỨU NHANH KỸ THUẬT, trực quan, dễ theo dõi nhất.`;
+      }
+
+      const response = await fetch(getApiUrl("/api/chat"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: promptText,
+          history: []
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Không thể kết nối với dịch vụ AI.");
+      }
+
+      const data = await response.json();
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      setSynthesizedNotesSummary(data.response || "");
+    } catch (err: any) {
+      console.error("Notes synthesis error:", err);
+      setSynthesisError(err?.message || "Lỗi không xác định khi tổng hợp.");
+    } finally {
+      setIsSynthesizingNotes(false);
+    }
+  };
+
+  // Translation states
+  const [translations, setTranslations] = useState<{ [id: string]: { [lang: string]: string } }>({});
+  const [visibleLanguages, setVisibleLanguages] = useState<{ [id: string]: 'vi' | 'en' | 'ko' }>({});
+  const [translatingId, setTranslatingId] = useState<{ [id: string]: 'en' | 'ko' | null }>({});
+
+  const handleTranslate = async (text: string, id: string, lang: 'en' | 'ko') => {
+    if (translations[id] && translations[id][lang]) {
+      setVisibleLanguages(prev => ({ ...prev, [id]: lang }));
+      return;
+    }
+
+    try {
+      setTranslatingId(prev => ({ ...prev, [id]: lang }));
+      
+      const response = await fetch(getApiUrl("/api/translate"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, targetLanguage: lang })
+      });
+      
+      if (!response.ok) {
+        let errMsg = "Lỗi khi kết nối dịch thuật.";
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errData.message || errMsg;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
+      
+      const data = await response.json();
+      if (data.translatedText) {
+        setTranslations(prev => ({
+          ...prev,
+          [id]: {
+            ...(prev[id] || {}),
+            [lang]: data.translatedText
+          }
+        }));
+        setVisibleLanguages(prev => ({ ...prev, [id]: lang }));
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert(`Không thể tự động dịch bằng AI. Chi tiết: ${err.message || "Kiểm tra lại cấu hình API."}`);
+    } finally {
+      setTranslatingId(prev => ({ ...prev, [id]: null }));
+    }
+  };
 
   const triggerSummarize = async (text: string, count = bulletCount) => {
+    if (onCheckQuota) {
+      const allowed = await onCheckQuota();
+      if (!allowed) return;
+    }
     setSummarizingText(text);
     setIsSummarizing(true);
     setSummaryResult("");
@@ -352,12 +534,19 @@ export function ChatPanel({
     setCopiedSummary(false);
 
     try {
-      const response = await fetch("/api/summarize", {
+      const response = await fetch(getApiUrl("/api/summarize"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, numBulletPoints: count })
       });
-      if (!response.ok) throw new Error("Yêu cầu tóm tắt thất bại");
+      if (!response.ok) {
+        let errMsg = "Yêu cầu tóm tắt thất bại";
+        try {
+          const errData = await response.json();
+          errMsg = errData.error || errData.message || errMsg;
+        } catch (_) {}
+        throw new Error(errMsg);
+      }
       const data = await response.json();
       setSummaryResult(data.summary);
     } catch (err: any) {
@@ -497,14 +686,12 @@ export function ChatPanel({
                 if (onSelectFile) {
                   onSelectFile(matched.id);
                 }
-                setMode("compare");
-                setSelectedCompareIds(prev => prev.includes(matched.id) ? prev : [...prev, matched.id]);
               } else {
                 alert(`Không tìm thấy file tài liệu nào trong thư viện trùng khớp với tiêu chuẩn "${text}". Vui lòng tải file "${text}" lên hệ thống trước.`);
               }
             }}
             className="inline-flex items-center gap-1.5 px-3 py-1 text-[12px] font-black text-rose-700 bg-rose-50 border border-rose-200/60 rounded-xl uppercase tracking-wider shadow-sm hover:bg-rose-100 transition-all cursor-pointer active:scale-95 text-left"
-            title={matched ? `Click để mở tiêu chuẩn ${matched.name} và bật tab Tra cứu & Đối chiếu` : `Chưa có file tiêu chuẩn "${text}" trong thư viện`}
+            title={matched ? `Click để mở tiêu chuẩn ${matched.name}` : `Chưa có file tiêu chuẩn "${text}" trong thư viện`}
           >
             🛡️ {text}
           </button>
@@ -558,6 +745,16 @@ export function ChatPanel({
   // Core Compliance Audit State
   const [selectedComplianceDrawingId, setSelectedComplianceDrawingId] = useState<string>("");
   const [selectedComplianceRefIds, setSelectedComplianceRefIds] = useState<string[]>([]);
+  const [selectedComplianceDiscipline, setSelectedComplianceDiscipline] = useState<"kientruc" | "ketcau" | "mep" | "vatlieu" | "qckt">("ketcau");
+  const [structuralStandardSystem, setStructuralStandardSystem] = useState<"tcvn" | "tcnn">("tcvn");
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
+    "banve": true,
+    "kientruc": true,
+    "ketcau": true,
+    "mep": true,
+    "qckt": false,
+    "vatlieu": false,
+  });
   const [complianceRuleType, setComplianceRuleType] = useState<string>("density_height");
   const [customCompliancePrompt, setCustomCompliancePrompt] = useState<string>("");
   const [complianceResult, setComplianceResult] = useState<string | null>(null);
@@ -587,14 +784,137 @@ export function ChatPanel({
       
       if (selectedComplianceRefIds.length === 0) {
         const stdF = allFiles.filter(f => f.category !== "Bản vẽ thiết kế");
-        setSelectedComplianceRefIds(stdF.map(f => f.id));
+        if (stdF.length > 0) {
+          setSelectedComplianceRefIds(stdF.map(f => f.id));
+        }
       }
     }
   }, [mode, activeFile, allFiles]);
 
+  const getRefFilesForDiscipline = (discipline: "kientruc" | "ketcau" | "mep" | "vatlieu" | "qckt") => {
+    return allFiles.filter(f => {
+      if (f.category === "Bản vẽ thiết kế") return false;
+      const cat = f.category || "";
+      const nameLower = f.name.toLowerCase();
+      
+      if (discipline === "ketcau") {
+        const isTcvn = structuralStandardSystem === "tcvn";
+        const isStructural = (
+          cat === "Kết cấu" || 
+          cat === "TCVN" || 
+          cat === "TCNN" ||
+          nameLower.includes("ket cau") ||
+          nameLower.includes("kết cấu") ||
+          nameLower.includes("5574") ||
+          nameLower.includes("be tong") ||
+          nameLower.includes("bê tông") ||
+          nameLower.includes("thep") ||
+          nameLower.includes("thép") ||
+          nameLower.includes("tai trong") ||
+          nameLower.includes("tải trọng") ||
+          nameLower.includes("tcvn") ||
+          nameLower.includes("tcnn") ||
+          nameLower.includes("eurocode") ||
+          nameLower.includes("bs ") ||
+          nameLower.includes("aci")
+        );
+        
+        if (!isStructural) return false;
+
+        const hasTcnnKeywords = 
+          cat === "TCNN" ||
+          nameLower.includes("tcnn") ||
+          nameLower.includes("eurocode") ||
+          nameLower.includes("bs ") ||
+          nameLower.includes("aci ") ||
+          nameLower.includes("astm") ||
+          nameLower.includes("asce") ||
+          nameLower.includes("aisc");
+          
+        const hasTcvnKeywords =
+          cat === "TCVN" ||
+          nameLower.includes("tcvn") ||
+          nameLower.includes("5574") ||
+          nameLower.includes("2737");
+          
+        if (isTcvn) {
+          return !hasTcnnKeywords || hasTcvnKeywords;
+        } else {
+          return hasTcnnKeywords || !hasTcvnKeywords;
+        }
+      }
+      
+      if (discipline === "mep") {
+        return (
+          cat === "MEP" || 
+          nameLower.includes("mep") ||
+          nameLower.includes("dien") ||
+          nameLower.includes("điện") ||
+          nameLower.includes("nuoc") ||
+          nameLower.includes("nước") ||
+          nameLower.includes("thong gio") ||
+          nameLower.includes("thông gió") ||
+          nameLower.includes("dieu hoa") ||
+          nameLower.includes("điều hòa") ||
+          nameLower.includes("cap thoat") ||
+          nameLower.includes("cấp thoát")
+        );
+      }
+      
+      if (discipline === "kientruc") {
+        return (
+          cat === "Kiến trúc" ||
+          nameLower.includes("kien truc") ||
+          nameLower.includes("kiến trúc") ||
+          nameLower.includes("mat dung") ||
+          nameLower.includes("mặt đứng") ||
+          nameLower.includes("mat cat") ||
+          nameLower.includes("mặt cắt") ||
+          nameLower.includes("mat bang") ||
+          nameLower.includes("mặt bằng")
+        );
+      }
+
+      if (discipline === "vatlieu") {
+        return (
+          cat === "Vật liệu" ||
+          cat === "Văn bản hiện hành" ||
+          nameLower.includes("vat lieu") ||
+          nameLower.includes("vật liệu") ||
+          nameLower.includes("be tong") ||
+          nameLower.includes("bê tông") ||
+          nameLower.includes("xi mang") ||
+          nameLower.includes("xi măng") ||
+          nameLower.includes("gach") ||
+          nameLower.includes("gạch") ||
+          nameLower.includes("nhua") ||
+          nameLower.includes("nhựa")
+        );
+      }
+
+      if (discipline === "qckt") {
+        return (
+          cat === "Quy chuẩn kỹ thuật" ||
+          nameLower.includes("quy chuan") ||
+          nameLower.includes("quy chuẩn") ||
+          nameLower.includes("qcvn") ||
+          nameLower.includes("pccc") ||
+          nameLower.includes("phong chay") ||
+          nameLower.includes("phòng cháy") ||
+          nameLower.includes("tieu chuan") ||
+          nameLower.includes("tiêu chuẩn") ||
+          nameLower.includes("tcvn 9386")
+        );
+      }
+      
+      return false;
+    });
+  };
+
   const handleCopyText = async (text: string, id: string) => {
     try {
-      await navigator.clipboard.writeText(text);
+      const cleanText = cleanLatexForClipboard(text);
+      await navigator.clipboard.writeText(cleanText);
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 2000);
     } catch (err) {
@@ -604,7 +924,8 @@ export function ChatPanel({
 
   const handleDownloadText = (text: string, defaultFilename: string) => {
     try {
-      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const cleanText = cleanLatexForClipboard(text);
+      const blob = new Blob([cleanText], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -618,12 +939,230 @@ export function ChatPanel({
     }
   };
 
+  interface SlideData {
+    title: string;
+    bullets: string[];
+  }
+
+  const parseContentToSlides = (text: string): SlideData[] => {
+    const sections = text.split(/(?=^##?\s+)/m);
+    const slides: SlideData[] = [];
+    
+    sections.forEach((section) => {
+      const lines = section.trim().split("\n");
+      if (lines.length === 0) return;
+      
+      let heading = lines[0].replace(/^#+\s*/, "").replace(/^\d+\.\s*/, "").trim();
+      if (!heading) heading = "Nội dung";
+      
+      const bullets: string[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        const cleanLine = line
+          .replace(/^-\s*\*\*.*?\*\*:\s*/, "")
+          .replace(/^[-*+]\s+/, "")
+          .replace(/^\d+\.\s+/, "")
+          .replace(/\*\*/g, "")
+          .replace(/\*/g, "")
+          .trim();
+          
+        if (cleanLine.length > 5) {
+          bullets.push(cleanLine);
+        }
+      }
+      
+      if (bullets.length === 0) {
+        const paragraphs = lines.slice(1).join("\n").split("\n\n");
+        paragraphs.forEach(p => {
+          const cleanP = p.replace(/\*\*/g, "").trim();
+          if (cleanP.length > 10) {
+            bullets.push(cleanP);
+          }
+        });
+      }
+      
+      if (bullets.length > 0) {
+        slides.push({
+          title: heading,
+          bullets: bullets.slice(0, 5)
+        });
+      }
+    });
+    
+    return slides;
+  };
+
+  const handleExportToPPTX = (content: string) => {
+    setIsGeneratingPpt(true);
+    try {
+      const pptx = new pptxgen();
+      pptx.layout = "LAYOUT_16x9";
+      
+      const primaryColor = "1E1B4B";
+      
+      const slide1 = pptx.addSlide();
+      slide1.background = { color: primaryColor };
+      
+      slide1.addShape(pptx.ShapeType.rect, {
+        x: 0,
+        y: 0,
+        w: "100%",
+        h: 0.15,
+        fill: { color: "6366F1" },
+      });
+      
+      slide1.addText("TÀI LIỆU TRÌNH BÀY QUY CHUẨN KỸ THUẬT", {
+        x: 0.8,
+        y: 1.5,
+        w: "85%",
+        h: 0.4,
+        fontSize: 14,
+        color: "D9F99D",
+        fontFace: "Arial",
+        bold: true,
+      });
+
+      const subtitleText = activeFile 
+        ? `Nguồn tham chiếu: ${activeFile.name}\nHệ thống Đối chiếu & Tra cứu TCVN/QCVN tự động`
+        : "Hệ thống Tra cứu Quy chuẩn & Tiêu chuẩn Xây dựng TCVN/QCVN";
+
+      slide1.addText("HƯỚNG DẪN TRA CỨU & ÁP DỤNG", {
+        x: 0.8,
+        y: 2.1,
+        w: "85%",
+        h: 1.2,
+        fontSize: 32,
+        color: "FFFFFF",
+        fontFace: "Arial",
+        bold: true,
+      });
+      
+      slide1.addText(subtitleText, {
+        x: 0.8,
+        y: 3.8,
+        w: "85%",
+        h: 0.8,
+        fontSize: 13,
+        color: "94A3B8",
+        fontFace: "Arial",
+      });
+      
+      slide1.addText("Được tạo tự động bởi AI Trợ lý Chuyên trách", {
+        x: 0.8,
+        y: 5.0,
+        w: "85%",
+        h: 0.4,
+        fontSize: 10,
+        color: "64748B",
+        fontFace: "Arial",
+        italic: true,
+      });
+
+      const parsedSlides = parseContentToSlides(content);
+      
+      if (parsedSlides.length === 0) {
+        const s = pptx.addSlide();
+        s.addText("NỘI DUNG TRA CỨU", { x: 0.6, y: 0.4, w: "80%", h: 0.5, fontSize: 20, color: primaryColor, bold: true });
+        s.addText(content.slice(0, 1000), { x: 0.6, y: 1.2, w: "88%", h: 4.5, fontSize: 13, color: "334155" });
+      } else {
+        parsedSlides.forEach((slideData, idx) => {
+          const s = pptx.addSlide();
+          
+          s.addText(`${idx + 1}. ${slideData.title.toUpperCase()}`, {
+            x: 0.6,
+            y: 0.4,
+            w: "88%",
+            h: 0.6,
+            fontSize: 20,
+            color: primaryColor,
+            fontFace: "Arial",
+            bold: true,
+          });
+          
+          s.addShape(pptx.ShapeType.rect, {
+            x: 0.6,
+            y: 1.1,
+            w: 0.05,
+            h: 4.2,
+            fill: { color: "6366F1" },
+          });
+          
+          const textObjects = slideData.bullets.map((bulletText) => {
+            let ptSize = 13;
+            if (bulletText.length > 200) ptSize = 11;
+            
+            return {
+              text: `•  ${bulletText}`,
+              options: {
+                fontSize: ptSize,
+                color: "1E293B",
+                fontFace: "Arial",
+                paraSpaceAfter: 12,
+                lineSpacing: 18,
+              }
+            };
+          });
+
+          s.addText(textObjects, {
+            x: 0.85,
+            y: 1.1,
+            w: "82%",
+            h: 4.2,
+            valign: "top",
+          });
+          
+          s.addText(`Trang ${idx + 2} / ${parsedSlides.length + 1} | Hệ thống Tra cứu TCVN/QCVN`, {
+            x: 0.6,
+            y: 5.4,
+            w: "88%",
+            h: 0.3,
+            fontSize: 8,
+            color: "94A3B8",
+            fontFace: "Arial",
+          });
+        });
+      }
+      
+      const fileName = `Trinh_bay_Tra_cuu_${new Date().toISOString().slice(0, 10)}.pptx`;
+      pptx.writeFile({ fileName });
+    } catch (err) {
+      console.error("Lỗi khi tạo slide PPTX:", err);
+      alert("Không thể sinh file PowerPoint. Vui lòng thử lại hoặc dùng mục Copy sang Gamma.");
+    } finally {
+      setIsGeneratingPpt(false);
+    }
+  };
+
+  const generateGammaOutline = (content: string): string => {
+    const parsedSlides = parseContentToSlides(content);
+    if (parsedSlides.length === 0) return `# Slide Thuyết Trình Quy Chuẩn\n- ${content}`;
+    
+    let result = `# HƯỚNG DẪN TRA CỨU & ÁP DỤNG QUY CHUẨN\n- Định dạng hỗ trợ nhập trực tiếp sang Gamma AI\n- Tài liệu đối chiếu kỹ thuật thông minh\n\n`;
+    
+    parsedSlides.forEach((slide) => {
+      result += `# ${slide.title}\n`;
+      slide.bullets.forEach((bullet) => {
+        result += `- ${bullet}\n`;
+      });
+      result += `\n`;
+    });
+    
+    return result;
+  };
+
   const handleCompareExecution = async () => {
     if (selectedCompareIds.length === 0) {
       setCompareError("Vui lòng chọn ít nhất 1 tài liệu để tiến hành so sánh.");
       return;
     }
     
+    if (onCheckQuota) {
+      const allowed = await onCheckQuota();
+      if (!allowed) return;
+    }
+
     setIsComparing(true);
     setCompareError(null);
     setCompareResult(null);
@@ -634,18 +1173,35 @@ export function ChatPanel({
       
       setCompareStep(2); // Docs Processing / OCR Check representation
 
-      const response = await fetch("/api/compare", {
+      const response = await fetch(getApiUrl("/api/compare"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          compareFiles: selectedFiles,
+          compareFiles: selectedFiles.map(f => ({
+            id: f.id,
+            name: f.name,
+            url: f.url,
+            geminiFileUri: f.geminiFileUri,
+            geminiFileName: f.geminiFileName,
+            uploadDate: f.uploadDate,
+            size: f.size,
+            category: f.category,
+            text: f.text ? f.text.substring(0, 100000) : ""
+          })),
           prompt: comparePrompt || "Hãy thực hiện so sánh đối chiếu kỹ thuật chi tiết nhất giữa các tài liệu trên."
         })
       });
 
       setCompareStep(3); // AI is writing detailed engineering comparison
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const errorHtml = await response.text().catch(() => "");
+        console.error("Non-JSON Response from compare API:", errorHtml.substring(0, 500));
+        throw new Error(`AI Server phản hồi không đúng cấu trúc (Nhận HTML thay vì JSON). Có thể máy chủ đang khởi tạo lại hoặc gặp sự cố quá tải. Vui lòng thử lại sau 2-3 giây.`);
+      }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
@@ -701,6 +1257,11 @@ export function ChatPanel({
       return;
     }
 
+    if (onCheckQuota) {
+      const allowed = await onCheckQuota();
+      if (!allowed) return;
+    }
+
     setIsComplianceAuditing(true);
     setComplianceError(null);
     setComplianceResult(null);
@@ -712,7 +1273,7 @@ export function ChatPanel({
 
       setComplianceStep(2); // Connecting and referencing selected standards from library
 
-      const refFiles = allFiles.filter(f => selectedComplianceRefIds.includes(f.id));
+      const refFiles = getRefFilesForDiscipline(selectedComplianceDiscipline);
 
       let ruleDesc = "";
       if (complianceRuleType === "density_height") {
@@ -725,15 +1286,66 @@ export function ChatPanel({
         ruleDesc = "Thẩm định mảng Hệ thống cơ điện MEP và điều khiển khí hậu: thông hơi tự nhiên hoặc nhân tạo, diện tích mặt thoáng chiếu sáng phòng đơn chức năng, bảo an kết nối phụ tải chống giật đô thị, và độ dốc ống cấp thoát thải xây dựng.";
       } else if (complianceRuleType === "blueprint_spec") {
         ruleDesc = "Kiểm nghiệm tiêu chuẩn định chuẩn bản vẽ chuyên ngành xây dựng: đầy đủ khung vẽ tên, định dạng tỷ lệ hiển thị chuẩn hóa, xuất hiện bảng liệt kê phân loại vật tư linh kiện cấu kiện và chuẩn mực ghi chú kỹ thuật chú dẫn cụ thể.";
+      } else if (complianceRuleType === "design_manager") {
+        ruleDesc = "Tập trung rà soát hồ sơ Thiết kế cơ sở để TỔNG HỢP THÔNG TIN DỰ ÁN sơ bộ (Thông tin Pháp lý & Quy mô kiến trúc, Giả thiết đầu vào & Vật liệu kết cấu, Giải pháp tổng thể và Địa chất) hỗ trợ công tác Quản lý Thiết kế.";
       } else {
         ruleDesc = customCompliancePrompt || "Phân tích, đánh giá chi tiết sự phù hợp của tất cả thông số hình học và ghi chú kỹ thuật trên bản vẽ đối với các dòng pháp quy hiện hành.";
       }
 
-      const auditPrompt = `
-[YÊU CẦU ĐẶC BIỆT - CHUYÊN GIA THẨM ĐỊNH TUÂN THỦ TCVN/QCVN]
-Bạn là GIÁM ĐỐC THẨM ĐỊNH VÀ KIỂM SOÁT THIẾT KẾ XÂY DỰNG. Bạn có năng lực thâm sâu đọc hiểu bản vẽ CAD / bản vẽ kết cấu chi tiết dưới định dạng văn bản số và dữ liệu hình ảnh kỹ thuật để rà soát sự sai lệch tiêu chuẩn hiện hành.
+      let specialtyLabel = "KẾT CẤU & SỨC BỀN CHỊU LỰC";
+      let standardSystemDescription = "TCVN/QCVN tương ứng";
 
-Nhiệm vụ của bạn: Tiến hành THẨM ĐỊNH TOÀN DIỆN Bản vẽ kỹ thuật "${drawingFile.name}" dựa trên hệ quy chuẩn pháp luật hiện hành và các bộ quy tắc tham chiếu trong Thư viện Tài liệu đã chọn:
+      if (selectedComplianceDiscipline === "kientruc") {
+        specialtyLabel = "KIẾN TRÚC THIẾT KẾ";
+        standardSystemDescription = "Quy định quy chuẩn kiến trúc hiện hành và QCVN liên quan";
+      } else if (selectedComplianceDiscipline === "ketcau") {
+        specialtyLabel = `KẾT CẤU & SỨC BỀN CHỊU LỰC (Ưu tiên kiểm tra theo hệ tiêu chuẩn: ${structuralStandardSystem === "tcvn" ? "TCVN - TIÊU CHUẨN VIỆT NAM (ƯU TIÊN HÀNG ĐẦU)" : "TCNN - TIÊU CHUẨN NƯỚC NGOÀI (EUROCODE/ACI/BS)"})`;
+        standardSystemDescription = structuralStandardSystem === "tcvn" ? "TCVN - Tiêu chuẩn Việt Nam" : "TCNN - Tiêu chuẩn Nước ngoài";
+      } else if (selectedComplianceDiscipline === "mep") {
+        specialtyLabel = "CƠ ĐIỆN MEP & TIỆN ÍCH HẠ TẦNG";
+        standardSystemDescription = "Tiêu chuẩn cơ điện, điện, nước và PCCC MEP liên quan";
+      } else if (selectedComplianceDiscipline === "vatlieu") {
+        specialtyLabel = "VẬT LIỆU XÂY DỰNG & TIÊU CHUẨN HOÀN THIỆN";
+        standardSystemDescription = "Các quy chuẩn, tiêu chuẩn kỹ thuật vật liệu xây dựng (TCVN)";
+      } else if (selectedComplianceDiscipline === "qckt") {
+        specialtyLabel = "QUY CHUẨN KỸ THUẬT QUỐC GIA & PHÁP QUY PHÒNG CHÁY CHỮA CHÁY (PCCC)";
+        standardSystemDescription = "Quy chuẩn kỹ thuật Việt Nam (QCVN) và quy định pháp lý";
+      }
+
+      let auditPrompt = "";
+      if (complianceRuleType === "design_manager") {
+        auditPrompt = `
+[YÊU CẦU ĐẶC BIỆT - TỔNG HỢP & HOẠCH ĐỊNH THIẾT KẾ DỰ ÁN]
+Bạn là Trợ lý Cố vấn Thiết kế Cao cấp (Design Manager Assistant) trên hệ thống StandardCloud. 
+Nhiệm vụ của bạn là rà soát file hồ sơ Thiết kế cơ sở "${drawingFile.name}" để TỔNG HỢP THÔNG TIN DỰ ÁN sơ bộ, phục vụ trực tiếp cho công tác quản lý, điều phối thiết kế Kiến trúc và Kết cấu.
+
+HƯỚNG DẪN TRÍCH XUẤT (TẬP TRUNG THUYẾT MINH & CHỈ DẪN CHUNG):
+Bỏ qua các chi tiết cấu kiện nhỏ lẻ. Tập trung quét trang Ghi chú chung (General Notes), Thuyết minh dự án và Mặt bằng tổng thể để trích xuất 3 nhóm thông tin cốt lõi sau:
+
+1. THÔNG TIN PHÁP LÝ & QUY MÔ KIẾN TRÚC:
+   - Quy mô công trình (Số tầng nổi, tầng hầm, chiều cao tổng thể).
+   - Chỉ giới xây dựng, khoảng lùi, mật độ xây dựng diện tích sàn (nếu có đề cập).
+   - Phân cấp công trình và bậc chịu lửa (đối chiếu nhanh QCVN 06:2022).
+
+2. GIẢI THIẾT ĐẦU VÀO & VẬT LIỆU KẾT CẤU:
+   - Tiêu chuẩn thiết kế chủ đạo được đơn vị tư vấn áp dụng.
+   - Số liệu tải trọng đầu vào: Phân vùng áp lực gió, dạng địa hình (đối chiếu TCVN 2737:2023).
+   - Giải pháp vật liệu dự kiến: Cấp độ bền bê tông (B), mác vữa, nhóm cốt thép chịu lực (CB400-V, CB300-V...).
+
+3. GIẢI PHÁP TỔNG THỂ VÀ ĐỊA CHẤT:
+   - Sơ bộ điều kiện địa chất (nếu có trong thuyết minh): Lớp đất tốt nằm ở độ sâu bao nhiêu, áp lực đất.
+   - Giải pháp kết cấu móng đề xuất (Móng cọc khoan nhồi, cọc ép, móng bề...) và hệ kết cấu thân chính (Khung vách, cột vách...).
+
+KẾT QUẢ ĐẦU RA (ĐỊNH DẠNG MARKDOWN CẤU TRÚC RÕ RÀNG):
+Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh mục tổng hợp, tuyệt đối không viết văn xuôi dài dòng. Cuối bài xuất ra một mục "📌 LƯU Ý CHO QUẢN LÝ THIẾT KẾ" chỉ ra các điểm mâu thuẫn hoặc thiếu sót thông tin đầu vào (nếu phát hiện).
+`;
+      } else {
+        auditPrompt = `
+[YÊU CẦU ĐẶC BIỆT - CHUYÊN GIA THẨM ĐỊNH TUÂN THỦ TCVN/QCVN]
+Bạn là GIÁM ĐỐC THẨM ĐỊNH VÀ KIỂM SOÁT THIẾT KẾ XÂY DỰNG CHUYÊN SÂU BỘ MÔN: ${specialtyLabel}.
+Bạn có năng lực thâm sâu đọc hiểu bản vẽ CAD / bản vẽ kết cấu chi tiết dưới định dạng văn bản số và dữ liệu hình ảnh kỹ thuật để rà soát sự sai lệch tiêu chuẩn hiện hành.
+
+Nhiệm vụ của bạn: Tiến hành THẨM ĐỊNH TOÀN DIỆN Bản vẽ kỹ thuật "${drawingFile.name}" dựa trên hệ quy chuẩn pháp luật hiện hành và các bộ quy tắc tham chiếu trong bộ môn đã chọn (Hãy ưu tiên tuyệt đối việc sử dụng và so khớp theo hệ tiêu chuẩn: ${standardSystemDescription}):
 ${refFiles.length > 0 ? refFiles.map((f, i) => `- Tài liệu Thư viện tham khảo ${i+1}: "${f.name}" (Hãy so khớp số liệu từ đây nếu có)`).join("\n") : "- Sử dụng trực tiếp kho tàng Standard pháp quy TCVN & QCVN hiện hành tương ứng chuyên ngành."}
 
 KHOẢN MỤC RÀ SOÁT CHUYÊN BIỆT: ${ruleDesc}
@@ -766,23 +1378,49 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
 (Nội dung sơ đồ như flowchart LR hoặc mindmap thích hợp)
 \`\`\`
 `;
+      }
 
       setComplianceStep(3); // AI Auditing drawing data
 
-      const response = await fetch("/api/compare", {
+      const response = await fetch(getApiUrl("/api/compare"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
-          compareFiles: [drawingFile, ...refFiles],
-          prompt: auditPrompt
+          compareFiles: [drawingFile, ...refFiles].map(f => ({
+            id: f.id,
+            name: f.name,
+            url: f.url,
+            geminiFileUri: f.geminiFileUri,
+            geminiFileName: f.geminiFileName,
+            uploadDate: f.uploadDate,
+            size: f.size,
+            category: f.category,
+            text: f.text ? f.text.substring(0, 100000) : ""
+          })),
+          prompt: auditPrompt,
+          isCompliance: complianceRuleType !== "design_manager",
+          isDesignManager: complianceRuleType === "design_manager"
         })
       });
 
       if (!response.ok) {
+        const contentType = response.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          const errorHtml = await response.text().catch(() => "");
+          console.error("Non-JSON error from compliance API:", errorHtml.substring(0, 500));
+          throw new Error(`AI Server gặp sự cố hệ thống (Trích xuất không đồng bộ). Vui lòng thử lại sau giây lát.`);
+        }
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.error || `Sự cố mạng phía AI Server (${response.status})`);
+      }
+
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const errorHtml = await response.text().catch(() => "");
+        console.error("Non-JSON Response from compliance API:", errorHtml.substring(0, 500));
+        throw new Error(`AI Server phản hồi không đúng cấu trúc (Nhận HTML thay vì JSON). Có thể máy chủ đang khởi động lại hoặc gặp sự cố quá tải. Vui lòng thử lại sau 2-3 giây.`);
       }
 
       const resData = await response.json();
@@ -816,7 +1454,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
             geminiFileName: null
           }).catch(subErr => console.error("Failed to clear expired geminiFileUri for drawing:", subErr));
         }
-        const refFiles = allFiles ? allFiles.filter(f => selectedComplianceRefIds.includes(f.id)) : [];
+        const refFiles = allFiles ? getRefFilesForDiscipline(selectedComplianceDiscipline) : [];
         if (refFiles && refFiles.length > 0) {
           for (const f of refFiles) {
             onUpdateFile(f.id, {
@@ -865,7 +1503,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           : (val || "Chưa có dữ liệu");
         formattedText += `## ${field.name.toUpperCase()}\n${valStr}\n\n`;
       });
-      navigator.clipboard.writeText(formattedText);
+      navigator.clipboard.writeText(cleanLatexForClipboard(formattedText));
       setCopiedId("extracted_all");
       setTimeout(() => setCopiedId(null), 2000);
     } catch (err) {
@@ -884,7 +1522,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
     setIsRegisteringUri(true);
     setRegisterError(null);
     try {
-      const response = await fetch("/api/register-gemini-file", {
+      const response = await fetch(getApiUrl("/api/register-gemini-file"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fileUrl: activeFile.url, filename: activeFile.name })
@@ -973,13 +1611,19 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
 
   const handleGenerateMindmap = async (typeOverride?: "standard" | "technical" | "process" | "safety") => {
     if (!activeFile) return;
+
+    if (onCheckQuota) {
+      const allowed = await onCheckQuota();
+      if (!allowed) return;
+    }
+
     const typeValue = typeOverride || mindmapType;
     if (typeOverride) {
       setMindmapType(typeOverride);
     }
     setMindmapStatus("loading");
     try {
-      const response = await fetch("/api/generate-mindmap", {
+      const response = await fetch(getApiUrl("/api/generate-mindmap"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: activeFile.text, type: typeValue }),
@@ -1088,7 +1732,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           )}
         >
           <Scale className="w-3.5 h-3.5 text-current animate-pulse" />
-          <span>KIỂM TRA BẢN VẼ</span>
+          <span>KIỂM TRA THIẾT KẾ</span>
         </button>
         <button
           onClick={() => setMode("notes")}
@@ -1109,7 +1753,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
         }}
         className="flex-1 overflow-y-auto px-6 pt-6 pb-40 space-y-6 no-scrollbar"
       >
-        {activeFile && mode !== "compare" && mode !== "compliance" && mode !== "general_chat" && (
+        {activeFile && mode !== "compare" && mode !== "compliance" && mode !== "general_chat" && mode !== "notes" && (
           <div className="bg-white border border-gray-200/60 rounded-3xl p-6 shadow-[0_12px_32px_rgba(0,0,0,0.035),0_1px_3px_rgba(0,0,0,0.015)] space-y-4 animate-in fade-in duration-300">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -1228,39 +1872,112 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 )}
               </div>
  
-              {/* Standards Reference Checkboxes */}
+              {/* Disciplines Selection for Auditing Standards */}
               <div className="pt-2">
-                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.15em] mb-2">
-                  2. THƯ VIỆN TIÊU CHUẨN ĐỐI CHIẾU ({selectedComplianceRefIds.length} đã chọn)
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.15em] mb-2.5">
+                  2. THẨM TRÌNH THEO HẠNG MỤC / BỘ MÔN
                 </label>
-                <div className="max-h-[195px] overflow-y-auto border border-gray-200/50 rounded-2xl p-4 bg-[#f8fafc] space-y-3 no-scrollbar shadow-xs">
-                  {allFiles.filter(f => f.category !== "Bản vẽ thiết kế").length === 0 ? (
-                    <p className="text-center text-[10px] py-6 text-gray-400 uppercase font-black tracking-widest bg-white rounded-xl border border-gray-150">Không có file tiêu chuẩn tham chiếu nào đã tải.</p>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2 md:gap-2.5 mb-3.5">
+                  {[
+                    { id: "kientruc", label: "Kiến trúc", icon: "🏛️", colorBg: "bg-amber-50/70 border-amber-200 text-amber-950 px-1 py-3" },
+                    { id: "ketcau", label: "Kết cấu", icon: "🧱", colorBg: "bg-indigo-55 border-indigo-200 text-indigo-950 px-1 py-3" },
+                    { id: "mep", label: "MEP", icon: "⚡", colorBg: "bg-emerald-50/70 border-emerald-200 text-emerald-950 px-1 py-3" },
+                    { id: "vatlieu", label: "Vật liệu", icon: "🏗️", colorBg: "bg-rose-50/70 border-rose-200 text-rose-950 px-1 py-3" },
+                    { id: "qckt", label: "Quy chuẩn KT", icon: "📒", colorBg: "bg-teal-50/70 border-teal-200 text-teal-950 px-1 py-3" },
+                  ].map((disp) => {
+                    const isSelected = selectedComplianceDiscipline === disp.id;
+                    return (
+                      <button
+                        key={disp.id}
+                        type="button"
+                        onClick={() => setSelectedComplianceDiscipline(disp.id as any)}
+                        className={cn(
+                          "rounded-2xl border text-center flex flex-col items-center justify-center gap-1.5 transition-all text-xs cursor-pointer shadow-xs font-black",
+                          isSelected
+                            ? `${disp.colorBg} border-2 ring-2 ring-indigo-500/10 scale-[1.02]`
+                            : "bg-[#fdfefe] hover:bg-gray-50 border-gray-150 text-gray-600 px-1 py-3"
+                        )}
+                      >
+                        <span className="text-lg">{disp.icon}</span>
+                        <span className="uppercase tracking-wide text-[10px] leading-tight font-black">{disp.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {selectedComplianceDiscipline === "ketcau" && (
+                  <div className="mb-3.5 bg-indigo-50/55 p-3 rounded-2xl border border-indigo-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 animate-in fade-in duration-300">
+                    <div>
+                      <span className="text-[10px] font-black uppercase text-indigo-950 tracking-wider block">
+                        Hệ thống Tiêu chuẩn Thẩm định:
+                      </span>
+                      <span className="text-[9px] font-bold text-indigo-700/80 block mt-0.5 uppercase tracking-wide">
+                        Ưu tiên hàng đầu hệ tiêu chuẩn dùng để kiểm định cấu kiện
+                      </span>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setStructuralStandardSystem("tcvn")}
+                        className={cn(
+                          "px-3.5 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-xl border cursor-pointer transition-all flex items-center gap-1.5",
+                          structuralStandardSystem === "tcvn"
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-white text-gray-500 border-gray-150 hover:text-gray-900 shadow-3xs"
+                        )}
+                      >
+                        <span>🇻🇳 TCVN (Khuyên dùng)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setStructuralStandardSystem("tcnn")}
+                        className={cn(
+                          "px-3.5 py-1.5 text-[10px] font-black uppercase tracking-widest rounded-xl border cursor-pointer transition-all flex items-center gap-1.5",
+                          structuralStandardSystem === "tcnn"
+                            ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                            : "bg-white text-gray-500 border-gray-150 hover:text-gray-900 shadow-3xs"
+                        )}
+                      >
+                        <span>🌐 TCNN (Eurocode/ACI)</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="max-h-[195px] overflow-y-auto border border-gray-200/50 rounded-2xl p-4 bg-[#f8fafc] space-y-2.5 no-scrollbar shadow-inner">
+                  {getRefFilesForDiscipline(selectedComplianceDiscipline).length === 0 ? (
+                    <div className="text-center py-4 space-y-2">
+                      <p className="text-[10px] text-gray-400 uppercase font-black tracking-widest bg-white rounded-xl py-3 border border-gray-150 shadow-2xs max-w-xs mx-auto">Không có file tiêu chuẩn riêng biệt đã tải</p>
+                      <p className="text-[10.5px] text-gray-500 font-medium px-2 leading-relaxed italic">
+                        💡 Hệ thống sẽ tự động dùng kho chuẩn mực liên bang <strong>TCVN / QCVN</strong> tích hợp sẵn trong trí thông minh AI để Thẩm định bộ môn <strong>
+                          {selectedComplianceDiscipline === "kientruc" ? "Kiến trúc" 
+                           : selectedComplianceDiscipline === "ketcau" ? `Kết cấu (${structuralStandardSystem === "tcvn" ? "Hệ TCVN" : "Hệ TCNN/Eurocode"})` 
+                           : selectedComplianceDiscipline === "mep" ? "Hệ thống cơ điện MEP"
+                           : selectedComplianceDiscipline === "vatlieu" ? "Vật liệu xây dựng"
+                           : "Quy chuẩn kỹ thuật"}
+                        </strong> độc lập.
+                      </p>
+                    </div>
                   ) : (
-                    allFiles.filter(f => f.category !== "Bản vẽ thiết kế").map(file => {
-                      const isChecked = selectedComplianceRefIds.includes(file.id);
-                      const handleToggle = () => {
-                        setSelectedComplianceRefIds(prev =>
-                          isChecked ? prev.filter(id => id !== file.id) : [...prev, file.id]
-                        );
-                      };
-                      return (
-                        <label key={file.id} className="flex items-center gap-3.5 p-3.5 bg-white rounded-2xl hover:bg-indigo-50/30 border border-gray-200/50 cursor-pointer transition-all duration-200 shadow-xs">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={handleToggle}
-                            className="w-4.5 h-4.5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                          />
-                          <div className="min-w-0">
-                            <p className="text-xs font-black text-gray-800 truncate uppercase tracking-wide">{file.name}</p>
-                            <span className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">
-                              {file.category || "Quy chuẩn"} • {file.size || "0.1 MB"}
-                            </span>
+                    <div className="space-y-2">
+                      <p className="text-[9px] text-indigo-600/80 font-black uppercase tracking-widest mb-1 leading-normal">
+                        ✓ BỘ TIÊU CHUẨN SẼ ĐƯỢC QUÉT TỰ ĐỘNG ({getRefFilesForDiscipline(selectedComplianceDiscipline).length}):
+                      </p>
+                      {getRefFilesForDiscipline(selectedComplianceDiscipline).map(file => {
+                        return (
+                          <div key={file.id} className="flex items-center gap-3 p-3 bg-white rounded-xl border border-indigo-100 shadow-3xs">
+                            <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shrink-0" />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-black text-gray-800 truncate uppercase tracking-wide">{file.name}</p>
+                              <span className="text-[9px] text-gray-450 font-extrabold uppercase tracking-widest block mt-0.5">
+                                {file.category || "Quy chuẩn"} • {file.size || "0.1 MB"}
+                              </span>
+                            </div>
+                            <span className="px-2 py-0.5 bg-indigo-50 text-indigo-600 text-[8px] font-black uppercase tracking-wider rounded-md border border-indigo-100 shrink-0">ACTIVE</span>
                           </div>
-                        </label>
-                      );
-                    })
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               </div>
@@ -1273,6 +1990,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {[
+                  { id: "design_manager", label: "Tổng hợp Dự án (Design Manager) 📌", desc: "Quét thuyết minh, vật liệu xây dựng, rà móng và địa chất" },
                   { id: "density_height", label: "Mật độ, Chiều cao & Khoảng lùi", desc: "Mặt đứng, chỉ giới xây dựng, tỷ lệ ranh giới đất" },
                   { id: "fire_safety", label: "Phòng cháy chữa cháy PCCC", desc: "TCVN 06:2022, lối thoát nạn, cấu kiện chịu hỏa hoạn" },
                   { id: "structure_load", label: "Kết cấu sức bền cốt thép", desc: "TCVN 5574:2018, mác bê tông dầm móng dầm sàn dập" },
@@ -1482,61 +2200,192 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                  />
               </div>
 
-              {/* Scrollable list of files */}
-              <div className="max-h-[260px] overflow-y-auto border border-gray-200/50 rounded-2xl p-4 bg-[#f8fafc] space-y-3 no-scrollbar shadow-inner mt-4">
-                {allFiles.filter(item => item.name.toLowerCase().includes(compareSearch.toLowerCase())).length === 0 ? (
-                  <p className="text-center text-xs text-gray-450 py-8 uppercase tracking-widest font-black bg-white rounded-xl border border-gray-150">Không tìm thấy tài liệu phù hợp</p>
-                ) : (
-                  allFiles
-                    .filter(item => item.name.toLowerCase().includes(compareSearch.toLowerCase()))
-                    .map((item) => {
-                      const isChecked = selectedCompareIds.includes(item.id);
-                      const handleToggle = () => {
-                        setSelectedCompareIds(prev => {
-                          if (prev.includes(item.id)) {
-                            return prev.filter(id => id !== item.id);
-                          } else {
-                            return [...prev, item.id];
-                          }
-                        });
-                      };
-                      return (
+              {/* Scrollable tree list of files grouped by Folder */}
+              <div className="max-h-[380px] overflow-y-auto border border-gray-200/50 rounded-2xl p-4 bg-[#f8fafc] space-y-3 no-scrollbar shadow-inner mt-4">
+                {(() => {
+                  const FOLDER_CATEGORIES = [
+                    { id: "kientruc", label: "Kiến trúc", icon: "🏛️", categories: ["Kiến trúc"] },
+                    { id: "ketcau", label: "Kết cấu", icon: "🧱", categories: ["Kết cấu", "TCVN", "TCNN"] },
+                    { id: "mep", label: "MEP", icon: "⚡", categories: ["MEP"] },
+                    { id: "vatlieu", label: "Vật liệu", icon: "🏗️", categories: ["Vật liệu", "Văn bản hiện hành"] },
+                    { id: "qckt", label: "Quy chuẩn kỹ thuật", icon: "📒", categories: ["Quy chuẩn kỹ thuật"] },
+                  ];
+
+                  const getFilesInFolder = (folderCats: string[]) => {
+                    return allFiles.filter(item => {
+                      if (item.category === "Bản vẽ thiết kế") {
+                        return false;
+                      }
+                      if (compareSearch && !item.name.toLowerCase().includes(compareSearch.toLowerCase())) {
+                        return false;
+                      }
+                      const cat = item.category || "Văn bản hiện hành";
+                      if (folderCats.includes(cat)) return true;
+                      if (folderCats.includes("Văn bản hiện hành")) {
+                        const ALL_DEFINED_CATS = ["Bản vẽ thiết kế", "Kiến trúc", "Kết cấu", "TCVN", "TCNN", "MEP", "Quy chuẩn kỹ thuật", "Vật liệu"];
+                        if (!ALL_DEFINED_CATS.includes(cat)) {
+                          return true;
+                        }
+                      }
+                      return false;
+                    });
+                  };
+
+                  const totalFilteredCount = allFiles.filter(item => {
+                    if (item.category === "Bản vẽ thiết kế") return false;
+                    return item.name.toLowerCase().includes(compareSearch.toLowerCase());
+                  }).length;
+
+                  if (totalFilteredCount === 0) {
+                    return (
+                      <p className="text-center text-xs text-gray-450 py-8 uppercase tracking-widest font-black bg-white rounded-xl border border-gray-150">
+                        Không tìm thấy tài liệu phù hợp
+                      </p>
+                    );
+                  }
+
+                  return FOLDER_CATEGORIES.map(folder => {
+                    const filesInFolder = getFilesInFolder(folder.categories);
+
+                    const isExpanded = !!expandedFolders[folder.id];
+                    const selectedInFolder = filesInFolder.filter(f => selectedCompareIds.includes(f.id));
+                    const isAllSelected = filesInFolder.length > 0 && selectedInFolder.length === filesInFolder.length;
+
+                    const handleToggleFolderExpanded = () => {
+                      setExpandedFolders(prev => ({
+                        ...prev,
+                        [folder.id]: !prev[folder.id]
+                      }));
+                    };
+
+                    const handleSelectAllInFolder = (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      const folderFileIds = filesInFolder.map(f => f.id);
+                      setSelectedCompareIds(prev => {
+                        const filtered = prev.filter(id => !folderFileIds.includes(id));
+                        return [...filtered, ...folderFileIds];
+                      });
+                    };
+
+                    const handleDeselectAllInFolder = (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      const folderFileIds = filesInFolder.map(f => f.id);
+                      setSelectedCompareIds(prev => prev.filter(id => !folderFileIds.includes(id)));
+                    };
+
+                    return (
+                      <div key={folder.id} className="bg-white rounded-2xl border border-gray-150 overflow-hidden shadow-xs">
+                        {/* Folder Header */}
                         <div 
-                          key={item.id}
-                          onClick={handleToggle}
+                          onClick={handleToggleFolderExpanded}
                           className={cn(
-                            "flex items-center justify-between p-4.5 bg-white rounded-2xl border transition-all duration-300 cursor-pointer shadow-xs hover:border-indigo-200",
-                            isChecked ? "bg-indigo-50/40 border-indigo-400" : "border-gray-200/50 hover:bg-slate-50/45"
+                            "flex items-center justify-between px-4 py-3.5 bg-gray-50/70 border-b border-gray-150 hover:bg-slate-100/50 cursor-pointer select-none transition-all",
+                            isExpanded ? "bg-slate-50/80" : "border-b-transparent"
                           )}
                         >
-                          <div className="flex items-center gap-3.5 min-w-0 flex-1 pr-4">
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={handleToggle}
-                              onClick={(e) => e.stopPropagation()}
-                              className="w-5 h-5 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                            />
-                            <div className="min-w-0">
-                              <p className="text-sm font-extrabold text-gray-850 truncate">{item.name}</p>
-                              <p className="text-xs text-gray-500 font-bold uppercase tracking-wider mt-1">
-                                {item.category || "Kiến trúc"} • {item.size || "0 MB"}
-                              </p>
-                            </div>
-                          </div>
-                          
-                          {/* File status badge */}
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            {item.geminiFileUri ? (
-                              <span className="px-2.5 py-1 bg-emerald-50 text-emerald-600 rounded-md text-[9px] font-black uppercase tracking-widest border border-emerald-100">CLOUD OK</span>
+                          <div className="flex items-center gap-2 min-w-0">
+                            {isExpanded ? (
+                              <ChevronDown className="w-4 h-4 text-gray-550 shrink-0" />
                             ) : (
-                              <span className="px-2.5 py-1 bg-amber-50 text-amber-600 rounded-md text-[9px] font-black uppercase tracking-widest border border-amber-100">TEXT ONLY</span>
+                              <ChevronRight className="w-4 h-4 text-gray-550 shrink-0" />
+                            )}
+                            {isExpanded ? (
+                              <FolderOpen className="w-4.5 h-4.5 text-indigo-500 shrink-0" />
+                            ) : (
+                              <Folder className="w-4.5 h-4.5 text-indigo-400 shrink-0" />
+                            )}
+                            <span className="text-xs font-black text-gray-750 uppercase tracking-widest truncate">
+                              {folder.icon} {folder.label}
+                            </span>
+                            <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[9px] font-bold block shrink-0">
+                              {selectedInFolder.length}/{filesInFolder.length}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {filesInFolder.length > 0 && (
+                              isAllSelected ? (
+                                <button
+                                  type="button"
+                                  onClick={handleDeselectAllInFolder}
+                                  className="text-[10px] font-black text-red-500 uppercase tracking-wider hover:text-red-700 bg-red-55 px-2 py-1 rounded"
+                                >
+                                  Bỏ chọn
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={handleSelectAllInFolder}
+                                  className="text-[10px] font-black text-indigo-600 uppercase tracking-wider hover:text-indigo-800 bg-indigo-55 px-2 py-1 rounded"
+                                >
+                                  Chọn hết
+                                </button>
+                              )
                             )}
                           </div>
                         </div>
-                      );
-                    })
-                )}
+
+                        {/* Folder File List */}
+                        {isExpanded && (
+                          <div className="p-3 bg-white space-y-2 border-l-2 border-dashed border-gray-100 ml-6 mr-3 my-2">
+                            {filesInFolder.length === 0 ? (
+                              <p className="text-center text-[11px] text-gray-400 py-4 uppercase tracking-wider font-semibold">
+                                Không có tài liệu nào thuộc nhóm này
+                              </p>
+                            ) : (
+                              filesInFolder.map(item => {
+                                const isChecked = selectedCompareIds.includes(item.id);
+                                const handleToggle = () => {
+                                  setSelectedCompareIds(prev => {
+                                    if (prev.includes(item.id)) {
+                                      return prev.filter(id => id !== item.id);
+                                    } else {
+                                      return [...prev, item.id];
+                                    }
+                                  });
+                                };
+                                return (
+                                  <div
+                                    key={item.id}
+                                    onClick={handleToggle}
+                                    className={cn(
+                                      "flex items-center justify-between p-3 bg-[#fdfefe] rounded-xl border transition-all duration-200 cursor-pointer shadow-3xs hover:border-indigo-200",
+                                      isChecked ? "bg-indigo-50/20 border-indigo-300" : "border-gray-150 hover:bg-slate-50/30"
+                                    )}
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0 flex-1 pr-3">
+                                      <input
+                                        type="checkbox"
+                                        checked={isChecked}
+                                        onChange={handleToggle}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="w-4.5 h-4.5 text-indigo-650 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
+                                      />
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-black text-gray-800 truncate block uppercase tracking-wide">{item.name}</p>
+                                        <p className="text-[9px] text-gray-450 font-bold uppercase tracking-widest mt-0.5">
+                                          {item.category || "Kiến trúc"} • {item.size || "0 MB"}
+                                        </p>
+                                      </div>
+                                    </div>
+
+                                    <div className="flex items-center shrink-0">
+                                      {item.geminiFileUri ? (
+                                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[8px] font-black uppercase tracking-wider border border-emerald-100">CLOUD OK</span>
+                                      ) : (
+                                        <span className="px-2 py-0.5 bg-amber-50 text-amber-600 rounded text-[8px] font-black uppercase tracking-wider border border-amber-100">TEXT ONLY</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             </div>
 
@@ -1693,22 +2542,22 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           <>
             <div ref={scrollRef} className="space-y-6 h-full flex flex-col justify-between">
               {generalMessages.length === 0 ? (
-                <div className="max-w-3xl mx-auto w-full py-12 px-5 space-y-8 animate-in fade-in duration-500">
+                <div className="max-w-3xl mx-auto w-full pt-4 pb-6 px-5 space-y-6 animate-in fade-in duration-500">
                   {/* Central Welcome Header */}
-                  <div className="text-center space-y-3 shrink-0">
-                    <div className="w-14 h-14 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto text-white shadow-xl shadow-indigo-600/20">
-                      <Sparkles className="w-7 h-7 fill-white/15 animate-pulse" />
+                  <div className="text-center space-y-2.5 shrink-0">
+                    <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center mx-auto text-white shadow-lg shadow-indigo-600/15">
+                      <Sparkles className="w-6 h-6 fill-white/10 animate-pulse" />
                     </div>
-                    <div className="space-y-1">
-                      <h3 className="text-xl sm:text-2xl font-black text-slate-900 uppercase tracking-wider">
+                    <div className="space-y-0.5">
+                      <h3 className="text-lg sm:text-xl font-black text-slate-900 uppercase tracking-wider">
                         Trợ lý Thẩm định TCVN/QCVN
                       </h3>
-                      <p className="text-[10px] sm:text-xs text-indigo-600 font-extrabold uppercase tracking-widest">
+                      <p className="text-[9px] sm:text-[10.5px] text-indigo-600 font-extrabold uppercase tracking-widest">
                         StandardCloud AI Engine — Tìm kiếm Toàn diện
                       </p>
                     </div>
-                    <p className="text-xs sm:text-sm text-gray-500 leading-relaxed max-w-xl mx-auto font-medium">
-                      Chào mừng bạn! Tôi là chuyên viên AI chuyên trách Tra cứu quốc gia quy chuẩn Việt Nam. Hệ thống tự động tìm kiếm trực tiếp và toàn diện trên TOÀN BỘ tư liệu kỹ thuật đã tải.
+                    <p className="text-xs text-gray-500 leading-relaxed max-w-lg mx-auto font-medium">
+                      Chào mừng bạn! Trợ lý AI chuyên trách sẽ đồng hành và hỗ trợ bạn tra cứu nhanh chóng, chính xác mọi quy chuẩn, tiêu chuẩn kỹ thuật (TCVN/QCVN).
                     </p>
                   </div>
 
@@ -1800,14 +2649,15 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 <div className="space-y-6 flex-1 w-full pb-6">
                   {generalMessages.map((msg) => {
                     const parsed = msg.role === "ai" ? parseAIResponse(msg.content) : null;
+                    const isTranslated = visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && translations[msg.id]?.[visibleLanguages[msg.id]];
                     
                     return (
                       <div
                         key={msg.id}
                         className={cn(
-                          "flex flex-col rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 animate-in fade-in duration-300",
+                          "relative group/msg flex flex-col rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 animate-in fade-in duration-300 overflow-visible",
                           msg.role === "user"
-                            ? "bg-indigo-600 text-white ml-auto max-w-[85%]"
+                            ? "bg-indigo-600 text-white ml-auto max-w-[85%] pr-[76px]"
                             : "bg-[#f8fafc] border border-gray-200/50 mr-auto w-full max-w-[100%]"
                         )}
                       >
@@ -1817,7 +2667,169 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           </div>
                         )}
                         
-                        {msg.role === "ai" && parsed && parsed.hasStructure ? (
+                        {/* Actions Toolbar - COMPACT FLOATING DOCK IN THE TOP-RIGHT CORNER */}
+                        <div className="absolute top-3 bottom-3 right-3 w-fit pointer-events-none z-20 flex flex-col justify-start">
+                          <div className={cn(
+                            "sticky top-3 pointer-events-auto flex items-center gap-1 opacity-80 md:opacity-30 group-hover/msg:opacity-100 focus-within:opacity-100 hover:opacity-100 transition-all duration-300 p-1 rounded-xl shadow-sm border backdrop-blur-md",
+                            msg.role === "user" 
+                              ? "bg-indigo-750/95 border-indigo-505/35 text-white" 
+                              : "bg-white/95 border-gray-150/75 text-gray-400"
+                          )}>
+                            {/* Tải về */}
+                            <button
+                              onClick={() => handleDownloadText(
+                                isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                                `cau_tra_loi_${msg.id.slice(0, 5)}.txt`
+                              )}
+                              className={cn(
+                                "flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 border border-transparent shadow-xs",
+                                msg.role === "user"
+                                  ? "hover:bg-indigo-600 text-indigo-150 hover:text-white"
+                                  : "hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 hover:border-emerald-100"
+                              )}
+                              title="Tải về máy (.txt)"
+                            >
+                              <Download className="w-3.5 h-3.5 shrink-0" />
+                            </button>
+
+                            {/* Tóm tắt AI */}
+                            {msg.role !== "user" && (
+                              <button
+                                onClick={() => triggerSummarize(
+                                  isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content
+                                )}
+                                className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent hover:border-violet-100 shadow-xs"
+                                title="Tóm tắt ngắn câu trả lời bằng AI"
+                              >
+                                <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                              </button>
+                            )}
+
+                            {/* Xuất Slides / Gamma AI */}
+                            {msg.role !== "user" && (
+                              <button
+                                onClick={() => setPptModalData({ 
+                                  isOpen: true, 
+                                  content: isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content, 
+                                  messageId: msg.id 
+                                })}
+                                className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent hover:border-violet-105 shadow-xs"
+                                title="Xuất slide thuyết trình (PowerPoint / Gamma AI)"
+                              >
+                                <Presentation className="w-3.5 h-3.5 shrink-0" />
+                              </button>
+                            )}
+
+                            {/* Sao chép */}
+                            <button
+                              onClick={() => handleCopyText(
+                                isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                                msg.id
+                              )}
+                              className={cn(
+                                "flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 border border-transparent shadow-xs",
+                                msg.role === "user"
+                                  ? "hover:bg-indigo-600 text-indigo-100 hover:text-white"
+                                  : "hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 hover:border-indigo-100"
+                              )}
+                              title="Sao chép câu trả lời"
+                            >
+                              {copiedId === msg.id ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5 shrink-0" />
+                              )}
+                            </button>
+
+                            {/* Dịch EN / KO / VI */}
+                            {msg.role === "ai" && (
+                              <div className="flex items-center gap-1 shrink-0 border-l border-gray-150/60 pl-1">
+                                {/* Dịch EN */}
+                                <button
+                                  onClick={() => handleTranslate(msg.content, msg.id, 'en')}
+                                  disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
+                                  className={cn(
+                                    "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] border shadow-xs select-none",
+                                    visibleLanguages[msg.id] === 'en'
+                                      ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
+                                      : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
+                                  )}
+                                  title="Dịch câu trả lời sang Tiếng Anh"
+                                >
+                                  {translatingId[msg.id] === 'en' ? (
+                                    <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
+                                  ) : (
+                                    <span>EN</span>
+                                  )}
+                                </button>
+
+                                {/* Dịch KO */}
+                                <button
+                                  onClick={() => handleTranslate(msg.content, msg.id, 'ko')}
+                                  disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
+                                  className={cn(
+                                    "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] border shadow-xs select-none",
+                                    visibleLanguages[msg.id] === 'ko'
+                                      ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
+                                      : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
+                                  )}
+                                  title="Dịch câu trả lời sang Tiếng Hàn"
+                                >
+                                  {translatingId[msg.id] === 'ko' ? (
+                                    <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
+                                  ) : (
+                                    <span>KO</span>
+                                  )}
+                                </button>
+
+                                {/* Quay lại tiếng Việt */}
+                                {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
+                                  <button
+                                    onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
+                                    className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-xs"
+                                    title="Quay lại bản gốc tiếng Việt"
+                                  >
+                                    <span>Gốc</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                            {/* Lưu vào sổ tay ghi chú */}
+                            {msg.role === "ai" && (
+                              <button
+                                onClick={() => handleSaveMessageToNote(
+                                  isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                                  msg.id
+                                )}
+                                disabled={savingId === msg.id}
+                                className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent hover:border-blue-105 shadow-xs"
+                                title="Lưu vào ghi chú"
+                              >
+                                {savingId === msg.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                                ) : savedIds.includes(msg.id) ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                ) : (
+                                  <Save className="w-3.5 h-3.5 shrink-0" />
+                                )}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Content render body */}
+                        {isTranslated ? (
+                          <div className="prose prose-sm prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left">
+                            <ReactMarkdown
+                              remarkPlugins={[remarkMath, remarkGfm]}
+                              rehypePlugins={[rehypeKatex]}
+                              components={customMarkdownComponents}
+                            >
+                              {convertCitationsToLinks(translations[msg.id][visibleLanguages[msg.id]])}
+                            </ReactMarkdown>
+                          </div>
+                        ) : msg.role === "ai" && parsed && parsed.hasStructure ? (
                           <div className="space-y-5 w-full text-left">
                             {/* Section 1: Tóm tắt */}
                             <div className="bg-white border-l-4 border-l-indigo-600 border border-gray-150/50 rounded-r-2xl rounded-l-md p-5 shadow-sm space-y-2">
@@ -1886,84 +2898,6 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             </ReactMarkdown>
                           </div>
                         )}
-
-                        {/* Actions Toolbar */}
-                        <div className={cn(
-                          "flex items-center gap-2 mt-3 pt-3 border-t justify-end shrink-0",
-                          msg.role === "user" ? "border-indigo-500/30 text-indigo-100" : "border-gray-50 text-gray-400"
-                        )}>
-                          <button
-                            onClick={() => handleDownloadText(msg.content, `cau_tra_loi_${msg.id.slice(0, 5)}.txt`)}
-                            className={cn(
-                              "flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all cursor-pointer",
-                              msg.role === "user"
-                                ? "hover:bg-white/10 text-indigo-100 hover:text-white"
-                                : "hover:bg-indigo-50 text-gray-400 hover:text-emerald-600 border border-transparent hover:border-emerald-100"
-                            )}
-                            title="Tải câu trả lời này về máy (.txt)"
-                          >
-                            <Download className="w-3 h-3" />
-                            <span>TẢI VỀ</span>
-                          </button>
-                          {msg.role !== "user" && (
-                            <button
-                              onClick={() => triggerSummarize(msg.content)}
-                              className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all cursor-pointer hover:bg-indigo-50 text-indigo-600 border border-transparent hover:border-indigo-100"
-                              title="Tóm tắt ngắn gọn câu trả lời này bằng Gemini AI"
-                            >
-                              <Sparkles className="w-3 h-3" />
-                              <span>TÓM TẮT AI</span>
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleCopyText(msg.content, msg.id)}
-                            className={cn(
-                              "flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all cursor-pointer",
-                              msg.role === "user"
-                                ? "hover:bg-white/10 text-indigo-100 hover:text-white"
-                                : "hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 border border-transparent hover:border-indigo-100"
-                            )}
-                            title="Sao chép câu trả lời"
-                          >
-                            {copiedId === msg.id ? (
-                              <>
-                                <Check className="w-3 h-3 text-emerald-500" />
-                                <span className={msg.role === "user" ? "text-white" : "text-emerald-600"}>Đã copy</span>
-                              </>
-                            ) : (
-                              <>
-                                <Copy className="w-3 h-3" />
-                                <span>Sao chép</span>
-                              </>
-                            )}
-                          </button>
-
-                          {msg.role === "ai" && (
-                            <button
-                              onClick={() => handleSaveMessageToNote(msg.content, msg.id)}
-                              disabled={savingId === msg.id}
-                              className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 border border-transparent hover:border-indigo-100 cursor-pointer"
-                              title="Lưu vào sổ tay ghi chú"
-                            >
-                              {savingId === msg.id ? (
-                                <>
-                                  <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />
-                                  <span>Đang lưu...</span>
-                                </>
-                              ) : savedIds.includes(msg.id) ? (
-                                <>
-                                  <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                                  <span className="text-emerald-600">Đã lưu</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Save className="w-3 h-3" />
-                                  <span>Lưu ghi chú</span>
-                                </>
-                              )}
-                            </button>
-                          )}
-                        </div>
                       </div>
                     );
                   })}
@@ -1977,6 +2911,245 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
               )}
             </div>
           </>
+        ) : mode === "notes" ? (
+          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
+                  <Save className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest">
+                      SỔ TAY GHI CHÚ
+                    </h3>
+                    <span className="bg-emerald-55 text-emerald-800 text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-emerald-110 flex items-center gap-1">
+                      <CheckCircle2 className="w-2.5 h-2.5" />
+                      Đã đồng bộ Cloud
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">KNOWLEDGE NOTEBOOK</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Thêm ghi chú mới thủ công */}
+            <div className="bg-white rounded-[32px] border border-gray-150/60 p-6 shadow-xs space-y-4">
+              <span className="text-[10px] text-gray-400 font-black uppercase tracking-widest block">Thêm ghi chú lưu ý mới</span>
+              <textarea
+                value={newNoteText}
+                onChange={(e) => setNewNoteText(e.target.value)}
+                placeholder="Nhập nội dung ghi chú kỹ thuật, công thức, hoặc lưu ý tiêu chuẩn..."
+                className="w-full min-h-[100px] p-4 bg-slate-50 border border-transparent focus:border-indigo-120 focus:bg-white rounded-2xl text-[12px] font-semibold text-slate-800 placeholder-gray-400 outline-none transition-all resize-none focus:ring-1 focus:ring-indigo-100"
+              />
+              <div className="flex justify-end">
+                <button
+                  onClick={handleAddNewManualNote}
+                  disabled={isAddingNote || !newNoteText.trim()}
+                  className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-xl font-black text-[10px] uppercase tracking-widest transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                >
+                  {isAddingNote ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>ĐANG LƯU...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>LƯU GHI CHÚ MỚI</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {notes && notes.length > 0 ? (
+                notes.map((note) => (
+                  <div key={note.id} className="bg-white rounded-[32px] border border-gray-100 p-6 shadow-sm hover:shadow-md transition-all group relative overflow-visible">
+                    <div className="flex justify-between items-center mb-4 sticky top-0 bg-white/95 backdrop-blur-md z-10 py-3 -mx-6 px-6 -mt-6 border-b border-gray-50 rounded-t-[32px] transition-all">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
+                        <div className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+                          📅 {new Date(note.createdAt).toLocaleString("vi-VN", { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}
+                        </div>
+                        {visibleLanguages[note.id] && visibleLanguages[note.id] !== 'vi' && (
+                          <span className={cn(
+                            "text-[8px] font-black uppercase tracking-wider px-1.5 py-0.5 rounded-md self-start sm:self-center",
+                            visibleLanguages[note.id] === 'en' ? "bg-indigo-50 text-indigo-650 border border-indigo-150" : "bg-purple-50 text-purple-600 border border-purple-150"
+                          )}>
+                            Bản dịch {visibleLanguages[note.id] === 'en' ? 'Tiếng Anh' : 'Tiếng Hàn'}
+                          </span>
+                        )}
+                      </div>
+                      
+                      <div className="flex items-center gap-1.5">
+                        {/* Dịch EN */}
+                        <button
+                          onClick={() => handleTranslate(note.content, note.id, 'en')}
+                          disabled={translatingId[note.id] !== undefined && translatingId[note.id] !== null}
+                          className={cn(
+                            "p-1.5 rounded-lg border text-[9px] font-black uppercase tracking-widest transition-all duration-300 flex items-center gap-1 cursor-pointer",
+                            visibleLanguages[note.id] === 'en'
+                              ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                              : "border-transparent text-gray-400 hover:text-indigo-600 hover:bg-slate-50"
+                          )}
+                          title="Dịch ghi chú sang tiếng Anh"
+                        >
+                          {translatingId[note.id] === 'en' ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500" />
+                          ) : (
+                            <Languages className="w-3.5 h-3.5" />
+                          )}
+                          <span className="hidden sm:inline">Dịch EN</span>
+                        </button>
+
+                        {/* Dịch KO */}
+                        <button
+                          onClick={() => handleTranslate(note.content, note.id, 'ko')}
+                          disabled={translatingId[note.id] !== undefined && translatingId[note.id] !== null}
+                          className={cn(
+                            "p-1.5 rounded-lg border text-[9px] font-black uppercase tracking-widest transition-all duration-300 flex items-center gap-1 cursor-pointer",
+                            visibleLanguages[note.id] === 'ko'
+                              ? "bg-indigo-50 border-indigo-200 text-indigo-700"
+                              : "border-transparent text-gray-400 hover:text-indigo-600 hover:bg-slate-50"
+                          )}
+                          title="Dịch ghi chú sang tiếng Hàn"
+                        >
+                          {translatingId[note.id] === 'ko' ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-550" />
+                          ) : (
+                            <Languages className="w-3.5 h-3.5" />
+                          )}
+                          <span className="hidden sm:inline">Dịch KO</span>
+                        </button>
+
+                        {/* Bản gốc (Chỉ xuất hiện khi đang xem bản dịch) */}
+                        {visibleLanguages[note.id] && visibleLanguages[note.id] !== 'vi' && (
+                          <button
+                            onClick={() => setVisibleLanguages(prev => ({ ...prev, [note.id]: 'vi' }))}
+                            className="p-1.5 rounded-lg border border-rose-150 bg-rose-50 hover:bg-rose-100/70 text-rose-700 text-[9px] font-black uppercase tracking-widest transition-all flex items-center gap-1 cursor-pointer"
+                            title="Quay về bản gốc tiếng Việt"
+                          >
+                            <Languages className="w-3.5 h-3.5 text-rose-500" />
+                            <span className="hidden sm:inline">Gốc VI</span>
+                          </button>
+                        )}
+
+                        {/* Tóm tắt AI */}
+                        <button
+                          onClick={() => {
+                            const activeText = 
+                              visibleLanguages[note.id] === 'en' && translations[note.id]?.en
+                                ? translations[note.id].en
+                                : visibleLanguages[note.id] === 'ko' && translations[note.id]?.ko
+                                  ? translations[note.id].ko
+                                  : note.content;
+                            triggerSummarize(activeText);
+                          }}
+                          className="p-1.5 rounded-lg border border-transparent text-gray-400 hover:text-indigo-650 hover:bg-slate-50 text-[9px] font-black uppercase tracking-widest transition-all duration-300 flex items-center gap-1 cursor-pointer"
+                          title="Tóm tắt ngắn ghi chú bằng AI"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 text-indigo-505" />
+                          <span className="hidden sm:inline">Tóm tắt AI</span>
+                        </button>
+
+                        <div className="w-[1px] h-4 bg-gray-150 mx-1" />
+
+                        {/* Sao chép */}
+                        <button
+                          onClick={() => handleCopyText(
+                            visibleLanguages[note.id] === 'en' && translations[note.id]?.en
+                              ? translations[note.id].en
+                              : visibleLanguages[note.id] === 'ko' && translations[note.id]?.ko
+                                ? translations[note.id].ko
+                                : note.content,
+                            note.id
+                          )}
+                          className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all cursor-pointer"
+                          title="Sao chép văn bản đang hiển thị"
+                        >
+                          {copiedId === note.id ? (
+                            <Check className="w-4 h-4 text-emerald-500 animate-bounce" />
+                          ) : (
+                            <Copy className="w-4 h-4" />
+                          )}
+                        </button>
+
+                        {/* Xóa */}
+                        {noteIdToDelete === note.id ? (
+                          <div className="flex items-center gap-1.5 animate-in fade-in slide-in-from-right-2 duration-200">
+                            <button
+                              onClick={async () => {
+                                if (onDeleteNote) {
+                                  try {
+                                    await onDeleteNote(note.id);
+                                  } catch (err) {
+                                    console.error("Lỗi xóa ghi chú:", err);
+                                  }
+                                }
+                                setNoteIdToDelete(null);
+                              }}
+                              className="px-2 py-1 bg-red-650 hover:bg-red-700 text-white rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer whitespace-nowrap"
+                            >
+                              Xóa
+                            </button>
+                            <button
+                              onClick={() => setNoteIdToDelete(null)}
+                              className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all cursor-pointer whitespace-nowrap"
+                            >
+                              Hủy
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setNoteIdToDelete(note.id);
+                            }}
+                            className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all cursor-pointer animate-in fade-in duration-300"
+                            title="Xóa ghi chú"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="prose prose-sm prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-255 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-255">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkMath, remarkGfm]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={customMarkdownComponents}
+                      >
+                        {convertCitationsToLinks(
+                          visibleLanguages[note.id] === 'en' && translations[note.id]?.en
+                            ? translations[note.id].en
+                            : visibleLanguages[note.id] === 'ko' && translations[note.id]?.ko
+                              ? translations[note.id].ko
+                              : note.content
+                        )}
+                      </ReactMarkdown>
+                    </div>
+
+                    <div className="mt-4 pt-3 border-t border-gray-50 text-[9px] text-gray-400 font-bold uppercase tracking-widest truncate">
+                      📁 Nguồn: {note.fileName}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="bg-white rounded-[32px] border border-gray-100 p-12 shadow-sm min-h-[300px] flex flex-col items-center justify-center text-center space-y-4">
+                  <div className="bg-indigo-55/40 text-indigo-100 p-5 rounded-full">
+                    <Save className="w-12 h-12 text-gray-200 mx-auto" />
+                  </div>
+                  <div>
+                    <h5 className="text-gray-400 text-xs font-black uppercase tracking-widest">Sổ tay ghi chú còn trống</h5>
+                    <p className="text-gray-450 text-[9px] uppercase tracking-widest mt-2 max-w-xs leading-relaxed">
+                      Lưu trữ các câu trả lời kỹ thuật từ mục "Hỏi đáp" bằng nút <strong>"Lưu ghi chú"</strong>.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         ) : !activeFile ? (
           <div className="flex-1 h-full flex flex-col items-center justify-center p-12 text-center space-y-6">
             <div className="w-16 h-16 rounded-[24px] bg-amber-50 hover:bg-amber-100 border border-amber-100 flex items-center justify-center text-amber-500 shadow-sm mx-auto transition-all">
@@ -1994,13 +3167,15 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
             <div ref={scrollRef} className="space-y-4">
               {messages.map((msg) => {
                 const parsed = msg.role === "ai" ? parseAIResponse(msg.content) : null;
+                const isTranslated = visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && translations[msg.id]?.[visibleLanguages[msg.id]];
+                
                 return (
                   <div
                     key={msg.id}
                     className={cn(
-                      "flex flex-col rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 animate-in fade-in duration-300",
+                      "relative group/msg flex flex-col rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 animate-in fade-in duration-300 overflow-visible",
                       msg.role === "user"
-                        ? "bg-indigo-600 text-white ml-auto max-w-[85%]"
+                        ? "bg-indigo-600 text-white ml-auto max-w-[85%] pr-[76px]"
                         : "bg-[#f8fafc] border border-gray-200/50 mr-auto w-full max-w-[100%]"
                     )}
                   >
@@ -2010,7 +3185,169 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       </div>
                     )}
                     
-                    {msg.role === "ai" && parsed && parsed.hasStructure ? (
+                    {/* Actions Toolbar - COMPACT FLOATING DOCK IN THE TOP-RIGHT CORNER */}
+                    <div className="absolute top-3 bottom-3 right-3 w-fit pointer-events-none z-20 flex flex-col justify-start">
+                      <div className={cn(
+                        "sticky top-3 pointer-events-auto flex items-center gap-1 opacity-80 md:opacity-30 group-hover/msg:opacity-100 focus-within:opacity-100 hover:opacity-100 transition-all duration-300 p-1 rounded-xl shadow-sm border backdrop-blur-md",
+                        msg.role === "user" 
+                          ? "bg-indigo-750/95 border-indigo-505/35 text-white" 
+                          : "bg-white/95 border-gray-150/75 text-gray-400"
+                      )}>
+                        {/* Tải về */}
+                        <button
+                          onClick={() => handleDownloadText(
+                            isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                            `cau_tra_loi_${msg.id.slice(0, 5)}.txt`
+                          )}
+                          className={cn(
+                            "flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 border border-transparent shadow-xs",
+                            msg.role === "user"
+                              ? "hover:bg-indigo-650 text-indigo-150 hover:text-white"
+                              : "hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 hover:border-emerald-100"
+                          )}
+                          title="Tải về máy (.txt)"
+                        >
+                          <Download className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+
+                        {/* Tóm tắt AI */}
+                        {msg.role !== "user" && (
+                          <button
+                            onClick={() => triggerSummarize(
+                              isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content
+                            )}
+                            className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent hover:border-violet-100 shadow-xs"
+                            title="Tóm tắt ngắn câu trả lời bằng AI"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                          </button>
+                        )}
+
+                        {/* Xuất Slides / Gamma AI */}
+                        {msg.role !== "user" && (
+                          <button
+                            onClick={() => setPptModalData({ 
+                              isOpen: true, 
+                              content: isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content, 
+                              messageId: msg.id 
+                            })}
+                            className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent hover:border-violet-105 shadow-xs"
+                            title="Xuất slide thuyết trình (PowerPoint / Gamma AI)"
+                          >
+                            <Presentation className="w-3.5 h-3.5 shrink-0" />
+                          </button>
+                        )}
+
+                        {/* Sao chép */}
+                        <button
+                          onClick={() => handleCopyText(
+                            isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                            msg.id
+                          )}
+                          className={cn(
+                            "flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 border border-transparent shadow-xs",
+                            msg.role === "user"
+                              ? "hover:bg-indigo-600 text-indigo-100 hover:text-white"
+                              : "hover:bg-indigo-55 text-gray-400 hover:text-indigo-600 hover:border-indigo-100"
+                          )}
+                          title="Sao chép câu trả lời"
+                        >
+                          {copiedId === msg.id ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5 shrink-0" />
+                          )}
+                        </button>
+
+                        {/* Dịch EN / KO / VI */}
+                        {msg.role === "ai" && (
+                          <div className="flex items-center gap-1 shrink-0 border-l border-gray-150/60 pl-1">
+                            {/* Dịch EN */}
+                            <button
+                              onClick={() => handleTranslate(msg.content, msg.id, 'en')}
+                              disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
+                              className={cn(
+                                "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] border shadow-xs select-none",
+                                visibleLanguages[msg.id] === 'en'
+                                  ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
+                                  : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
+                              )}
+                              title="Dịch câu trả lời sang Tiếng Anh"
+                            >
+                              {translatingId[msg.id] === 'en' ? (
+                                <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
+                              ) : (
+                                <span>EN</span>
+                              )}
+                            </button>
+
+                            {/* Dịch KO */}
+                            <button
+                              onClick={() => handleTranslate(msg.content, msg.id, 'ko')}
+                              disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
+                              className={cn(
+                                "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] border shadow-xs select-none",
+                                visibleLanguages[msg.id] === 'ko'
+                                  ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
+                                  : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
+                              )}
+                              title="Dịch câu trả lời sang Tiếng Hàn"
+                            >
+                              {translatingId[msg.id] === 'ko' ? (
+                                <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
+                              ) : (
+                                <span>KO</span>
+                              )}
+                            </button>
+
+                            {/* Quay lại tiếng Việt */}
+                            {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
+                              <button
+                                onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
+                                className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-350 pointer-events-auto cursor-pointer h-7 min-w-[28px] bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-xs"
+                                title="Quay lại bản gốc tiếng Việt"
+                              >
+                                <span>Gốc</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Lưu vào sổ tay ghi chú */}
+                        {msg.role === "ai" && (
+                          <button
+                            onClick={() => handleSaveMessageToNote(
+                              isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                              msg.id
+                            )}
+                            disabled={savingId === msg.id}
+                            className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent hover:border-blue-105 shadow-xs"
+                            title="Lưu vào ghi chú"
+                          >
+                            {savingId === msg.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                            ) : savedIds.includes(msg.id) ? (
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                            ) : (
+                              <Save className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Content render body */}
+                  {isTranslated ? (
+                    <div className="prose prose-sm prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkMath, remarkGfm]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={customMarkdownComponents}
+                      >
+                          {convertCitationsToLinks(translations[msg.id][visibleLanguages[msg.id]])}
+                        </ReactMarkdown>
+                      </div>
+                    ) : msg.role === "ai" && parsed && parsed.hasStructure ? (
                       <div className="space-y-5 w-full text-left">
                         {/* Section 1: Tóm tắt */}
                         <div className="bg-white border-l-4 border-l-indigo-600 border border-gray-150/50 rounded-r-2xl rounded-l-md p-5 shadow-sm space-y-2">
@@ -2079,177 +3416,17 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         </ReactMarkdown>
                       </div>
                     )}
-
-                  {/* Actions Toolbar (Copy & Save to Note) */}
-                  <div className={cn(
-                    "flex items-center gap-2 mt-3 pt-3 border-t justify-end shrink-0",
-                    msg.role === "user" ? "border-indigo-500/30 text-indigo-100" : "border-gray-50 text-gray-400"
-                  )}>
-                    <button
-                      onClick={() => handleDownloadText(msg.content, `cau_tra_loi_${msg.id.slice(0, 5)}.txt`)}
-                      className={cn(
-                        "flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all cursor-pointer",
-                        msg.role === "user"
-                          ? "hover:bg-white/10 text-indigo-100 hover:text-white"
-                          : "hover:bg-indigo-50 text-gray-400 hover:text-emerald-600 border border-transparent hover:border-emerald-100"
-                      )}
-                      title="Tải câu trả lời này về máy (.txt)"
-                    >
-                      <Download className="w-3 h-3" />
-                      <span>TẢI VỀ</span>
-                    </button>
-                    {msg.role !== "user" && (
-                      <button
-                        onClick={() => triggerSummarize(msg.content)}
-                        className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all cursor-pointer hover:bg-indigo-50 text-indigo-600 border border-transparent hover:border-indigo-100"
-                        title="Tóm tắt ngắn gọn câu trả lời này bằng Gemini AI"
-                      >
-                        <Sparkles className="w-3 h-3" />
-                        <span>TÓM TẮT AI</span>
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleCopyText(msg.content, msg.id)}
-                      className={cn(
-                        "flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all",
-                        msg.role === "user"
-                          ? "hover:bg-white/10 text-indigo-100 hover:text-white"
-                          : "hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 border border-transparent hover:border-indigo-100"
-                      )}
-                      title="Sao chép câu trả lời"
-                    >
-                      {copiedId === msg.id ? (
-                        <>
-                          <Check className="w-3 h-3 text-emerald-500" />
-                          <span className={msg.role === "user" ? "text-white" : "text-emerald-600"}>Đã copy</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3 h-3" />
-                          <span>Sao chép</span>
-                        </>
-                      )}
-                    </button>
-
-                    {msg.role === "ai" && (
-                      <button
-                        onClick={() => handleSaveMessageToNote(msg.content, msg.id)}
-                        disabled={savingId === msg.id}
-                        className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 border border-transparent hover:border-indigo-100"
-                        title="Lưu vào sổ tay ghi chú"
-                      >
-                        {savingId === msg.id ? (
-                          <>
-                            <Loader2 className="w-3 h-3 animate-spin text-indigo-600" />
-                            <span>Đang lưu...</span>
-                          </>
-                        ) : savedIds.includes(msg.id) ? (
-                          <>
-                            <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                            <span className="text-emerald-600">Đã lưu</span>
-                          </>
-                        ) : (
-                          <>
-                            <Save className="w-3 h-3" />
-                            <span>Lưu ghi chú</span>
-                          </>
-                        )}
-                      </button>
-                    )}
                   </div>
-                </div>
                 );
               })}
               {isProcessing && (
-                <div className="flex items-center gap-2 text-gray-400 text-[10px] font-black uppercase tracking-widest italic ml-4">
+                <div className="flex items-center gap-2 text-gray-400 text-[10px] font-black uppercase tracking-widest italic ml-4 text-left">
                   <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
                   Gemini đang suy nghĩ...
                 </div>
               )}
             </div>
           </>
-        ) : mode === "notes" ? (
-          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
-                  <Save className="w-4 h-4 text-indigo-600" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest">
-                    SỔ TAY GHI CHÚ
-                  </h3>
-                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">KNOWLEDGE NOTEBOOK</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {notes && notes.length > 0 ? (
-                notes.map((note) => (
-                  <div key={note.id} className="bg-white rounded-[32px] border border-gray-100 p-6 shadow-sm hover:shadow-md transition-all group relative overflow-hidden">
-                    <div className="flex justify-between items-start mb-4">
-                      <div className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
-                        📅 {new Date(note.createdAt).toLocaleString("vi-VN", { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' })}
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={() => handleCopyText(note.content, note.id)}
-                          className="p-2 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
-                          title="Sao chép nội dung"
-                        >
-                          {copiedId === note.id ? (
-                            <Check className="w-4 h-4 text-emerald-500 animate-bounce" />
-                          ) : (
-                            <Copy className="w-4 h-4" />
-                          )}
-                        </button>
-                        <button
-                          onClick={async () => {
-                            if (confirm("Bạn có chắc muốn xóa ghi chú này?")) {
-                              if (onDeleteNote) {
-                                await onDeleteNote(note.id);
-                              }
-                            }
-                          }}
-                          className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
-                          title="Xóa ghi chú"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="prose prose-sm prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-250 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-250">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkMath, remarkGfm]}
-                        rehypePlugins={[rehypeKatex]}
-                        components={customMarkdownComponents}
-                      >
-                        {convertCitationsToLinks(note.content)}
-                      </ReactMarkdown>
-                    </div>
-
-                    <div className="mt-4 pt-3 border-t border-gray-50 text-[9px] text-gray-400 font-bold uppercase tracking-widest truncate">
-                      📁 Nguồn: {note.fileName}
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="bg-white rounded-[32px] border border-gray-100 p-12 shadow-sm min-h-[300px] flex flex-col items-center justify-center text-center space-y-4">
-                  <div className="bg-indigo-55/40 text-indigo-100 p-5 rounded-full">
-                    <Save className="w-12 h-12 text-gray-200 mx-auto" />
-                  </div>
-                  <div>
-                    <h5 className="text-gray-400 text-xs font-black uppercase tracking-widest">Sổ tay ghi chú còn trống</h5>
-                    <p className="text-gray-400 text-[9px] uppercase tracking-widest mt-2 max-w-xs leading-relaxed">
-                      Lưu trữ các câu trả lời kỹ thuật từ mục "Hỏi đáp" bằng nút <strong>"Lưu ghi chú"</strong>.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
         ) : (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
@@ -2440,73 +3617,99 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
       </div>
 
       {((mode === "general_chat" && generalMessages.length > 0) || (activeFile && mode === "chat")) && (
-        <div className={cn(
-          "absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-[#f4f7fa] via-[#f4f7fa]/95 to-transparent pointer-events-none flex flex-col z-20 transition-all duration-300",
-          isScrolled 
-            ? "opacity-35 hover:opacity-100 focus-within:opacity-100" 
-            : "opacity-100"
-        )}>
-          <div className="bg-white border border-gray-200 rounded-[24px] p-3 shadow-xl shadow-indigo-100/10 focus-within:ring-2 focus-within:ring-indigo-100 transition-all font-sans flex flex-col gap-2 pointer-events-auto">
-            {selectedImage && (
-              <div className="px-3 pt-1 flex flex-wrap gap-2 animate-in fade-in duration-200">
-                <div className="relative w-14 h-14 rounded-lg overflow-hidden border border-gray-150 shadow-sm group">
-                  <img src={selectedImage} alt="Selected" className="w-full h-full object-cover" />
-                  <button 
-                    onClick={removeSelectedImage}
-                    className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                  >
-                    <X className="w-2.5 h-2.5" />
-                  </button>
+        <>
+          {/* Main compact bottom input area (visible only at the bottom/not scrolled, or automatically hidden on scroll) */}
+          <div className={cn(
+            "absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#f4f7fa] via-[#f4f7fa]/90 to-transparent pointer-events-none flex flex-col z-20 transition-all duration-500 ease-in-out",
+            isScrolled 
+              ? "translate-y-28 opacity-0 pointer-events-none scale-95" 
+              : "translate-y-0 opacity-100"
+          )}>
+            <div className="bg-white border border-gray-250/80 rounded-2xl p-2 shadow-lg shadow-indigo-100/10 focus-within:ring-2 focus-within:ring-indigo-100 transition-all font-sans flex flex-col gap-1.5 pointer-events-auto">
+              {selectedImage && (
+                <div className="px-2 pt-1 flex flex-wrap gap-1.5 animate-in fade-in duration-200">
+                  <div className="relative w-11 h-11 rounded-lg overflow-hidden border border-gray-150 shadow-sm group">
+                    <img src={selectedImage} alt="Selected" className="w-full h-full object-cover" />
+                    <button 
+                      onClick={removeSelectedImage}
+                      className="absolute top-0.5 right-0.5 p-0.5 bg-red-500 text-white rounded-full opacity-100 transition-opacity cursor-pointer"
+                    >
+                      <X className="w-2 h-2" />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            )}
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
-              placeholder="Nhập câu hỏi kỹ thuật (Ví dụ: Quy định chiều dày lớp bê tông bảo vệ cốt thép dầm sàn hay khoảng cách an toàn PCCC, mật độ xây dựng)..."
-              className="w-full bg-transparent border-none py-1.5 px-3 text-sm sm:text-base font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-20 text-gray-800 placeholder:text-gray-400"
-            />
-            <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-50">
-              <div className="flex items-center gap-2">
-                <input 
-                  type="file" 
-                  ref={fileInputRef} 
-                  onChange={handleImageChange} 
-                  accept="image/*" 
-                  className="hidden" 
-                />
+              )}
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                placeholder="Đặt câu hỏi tra cứu, tìm thông số chuẩn..."
+                className="w-full bg-transparent border-none py-1.5 px-3 text-xs sm:text-sm font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-10 text-gray-800 placeholder:text-gray-400 no-scrollbar overflow-y-auto leading-normal"
+              />
+              <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100">
+                <div className="flex items-center gap-2">
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={handleImageChange} 
+                    accept="image/*" 
+                    className="hidden" 
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
+                    title="Thêm hình ảnh"
+                  >
+                    <Camera className="w-4 h-4" />
+                  </button>
+                  <span className="text-[8px] text-gray-400 font-extrabold uppercase tracking-widest">
+                    🔍 Global Engine
+                  </span>
+                </div>
                 <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
-                  title="Thêm hình ảnh"
+                  onClick={handleSend}
+                  disabled={(!input.trim() && !selectedImage) || isProcessing}
+                  className="p-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-full shadow-md shadow-indigo-600/10 transition-all cursor-pointer flex items-center justify-center"
                 >
-                  <Camera className="w-5 h-5" />
+                  {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                 </button>
-                <span className="text-[9px] text-gray-400 font-extrabold uppercase tracking-wider">
-                  🔍 Global Search
-                </span>
               </div>
-              <button
-                onClick={handleSend}
-                disabled={(!input.trim() && !selectedImage) || isProcessing}
-                className="p-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-full shadow-lg shadow-indigo-600/15 transition-all cursor-pointer"
-              >
-                {isProcessing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              </button>
             </div>
           </div>
-        </div>
+
+          {/* Collapsed floating pill button when scrolled down */}
+          {isScrolled && !isComposerExpanded && (
+            <button
+              onClick={() => setIsComposerExpanded(true)}
+              className="absolute bottom-6 right-6 z-30 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold uppercase tracking-widest text-[9px] sm:text-[10px] py-2.5 px-4 rounded-full shadow-2xl transition-all duration-300 hover:scale-[1.05] cursor-pointer animate-in fade-in slide-in-from-bottom-4 border border-indigo-500/30"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-violet-200 fill-violet-200/20" />
+              <span>HỎI THÊM AI</span>
+            </button>
+          )}
+
+          {/* Elegant floating overlay dialog for easy popup queries */}
+          {isComposerExpanded && (
+            <QuickComposerOverlay
+              onSend={(text, image) => {
+                onSendMessage(text, image || undefined, mode === "general_chat", mode === "general_chat" ? selectedGeneralDocIds : undefined);
+                setIsComposerExpanded(false);
+              }}
+              onClose={() => setIsComposerExpanded(false)}
+              isProcessing={isProcessing}
+            />
+          )}
+        </>
       )}
 
       {/* Gemini Quick-Summarizer Assistant Modal */}
-      {summarizingText !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+      {summarizingText !== null && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
           <div className="bg-white rounded-[32px] border border-gray-100 max-w-2xl w-full p-8 shadow-2xl space-y-6 animate-in zoom-in-95 duration-200 flex flex-col max-h-[85vh]">
             <div className="flex items-center justify-between border-b border-gray-100 pb-4">
               <div className="flex items-center gap-3">
@@ -2544,7 +3747,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         "px-3.5 py-1.5 rounded-xl text-xs font-black transition-all cursor-pointer",
                         bulletCount === num 
                           ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20" 
-                          : "bg-white text-gray-500 hover:text-gray-900 border border-gray-100"
+                          : "bg-white text-gray-500 hover:text-gray-905 border border-gray-100"
                       )}
                     >
                       {num} Ý
@@ -2561,12 +3764,12 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     <Sparkles className="w-4 h-4 text-purple-500 absolute -top-1 -right-1 animate-pulse" />
                   </div>
                   <div className="text-center space-y-1">
-                    <p className="text-xs font-black text-gray-900 uppercase tracking-widest animate-pulse">Sử dụng Gemini 3.5 Flash...</p>
+                    <p className="text-xs font-black text-gray-950 uppercase tracking-widest animate-pulse">Sử dụng Gemini 3.5 Flash...</p>
                     <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">Đang bóc tách số liệu & làm gọn văn bản</p>
                   </div>
                 </div>
               ) : summarizeError ? (
-                <div className="bg-rose-50/70 border border-rose-200 rounded-2xl p-5 text-center space-y-2">
+                <div className="bg-rose-50/70 border border-rose-250 rounded-2xl p-5 text-center space-y-2">
                   <span className="text-2xl">⚠️</span>
                   <p className="text-xs font-bold text-rose-600 uppercase tracking-wider">{summarizeError}</p>
                   <button 
@@ -2600,18 +3803,49 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
               )}
             </div>
 
-            <div className="flex gap-3 pt-4 border-t border-gray-100 shrink-0">
+            <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-gray-100 shrink-0">
               <button 
                 onClick={() => setSummarizingText(null)}
-                className="flex-1 py-4 bg-gray-55 hover:bg-gray-100 text-gray-500 rounded-2xl font-black text-xs uppercase tracking-widest transition-all cursor-pointer text-center"
+                className="px-6 py-4 bg-gray-50 hover:bg-gray-100 active:bg-gray-200 text-gray-500 rounded-2xl font-black text-xs uppercase tracking-widest transition-all cursor-pointer text-center"
               >
                 Hủy bỏ
               </button>
+
+              {onSaveNote && (
+                <button
+                  disabled={isSummarizing || !summaryResult || isSavingSummaryToNote}
+                  onClick={handleSaveSummaryToNote}
+                  className={cn(
+                    "flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all cursor-pointer flex items-center justify-center gap-2 border shadow-xs active:scale-98",
+                    savedSummaryToNote
+                      ? "bg-emerald-50 border-emerald-250 text-emerald-700 hover:bg-emerald-100/70"
+                      : "bg-white border-gray-200 hover:border-indigo-200 hover:bg-indigo-50/30 text-indigo-750"
+                  )}
+                >
+                  {isSavingSummaryToNote ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-indigo-550" />
+                      <span>ĐANG LƯU...</span>
+                    </>
+                  ) : savedSummaryToNote ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-500 animate-bounce" />
+                      <span>ĐÃ LƯU SỔ TAY</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      <span>LƯU SỔ TAY GHI CHÚ</span>
+                    </>
+                  )}
+                </button>
+              )}
+
               <button 
                 disabled={isSummarizing || !summaryResult}
                 onClick={async () => {
                   try {
-                    await navigator.clipboard.writeText(summaryResult);
+                    await navigator.clipboard.writeText(cleanLatexForClipboard(summaryResult));
                     setCopiedSummary(true);
                     setTimeout(() => {
                       setCopiedSummary(false);
@@ -2621,7 +3855,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     console.error(err);
                   }
                 }}
-                className="flex-1 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-lg hover:shadow-indigo-600/15 cursor-pointer flex items-center justify-center gap-2 animate-pulse-duration"
+                className="flex-1 py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-250 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-lg hover:shadow-indigo-600/15 cursor-pointer flex items-center justify-center gap-2 active:scale-98"
               >
                 {copiedSummary ? (
                   <>
@@ -2637,8 +3871,285 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
+
+      {/* PowerPoint & Gamma AI Presentation Exporter Modal */}
+      {pptModalData && pptModalData.isOpen && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white rounded-[32px] border border-gray-100 max-w-3xl w-full p-8 shadow-2xl space-y-6 animate-in zoom-in-95 duration-200 flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-violet-500 to-indigo-600 flex items-center justify-center text-white shadow-md">
+                  <Presentation className="w-5 h-5 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+                    Xuất Bản Thuyết Trình (PowerPoint / Gamma AI)
+                  </h3>
+                  <p className="text-[10px] text-gray-400 font-extrabold uppercase tracking-widest mt-0.5">Biến câu trả lời kỹ thuật thành bài trình chiếu chuyên nghiệp</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setPptModalData(null)}
+                className="p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-6 pr-2 no-scrollbar">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* PPTX Option */}
+                <div className="bg-[#f8fafc] rounded-3xl border border-gray-200/60 p-6 flex flex-col justify-between space-y-6 hover:shadow-md transition-all duration-300">
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 text-indigo-900">
+                      <Presentation className="w-4 h-4" />
+                      <h4 className="text-xs font-black uppercase tracking-wider text-indigo-950">1. Tải PPTX Truyền Thống</h4>
+                    </div>
+                    <p className="text-[11px] text-gray-500 leading-relaxed font-semibold">
+                      Tự động chuyển đổi câu trả lời thành một file PowerPoint (.pptx). Hệ thống sẽ tự động bóc tách các đề mục lớn để định hình cấu trúc slide riêng biệt, bố cục 16:9 phối màu Navy đậm đà tối giản, hoàn hảo cho báo cáo hội nghị.
+                    </p>
+                    <ul className="text-[10px] text-gray-400 space-y-1 font-bold uppercase tracking-wide">
+                      <li>• Thiết kế trang bìa riêng biệt</li>
+                      <li>• Thanh điểm nhấn màu Indigo</li>
+                      <li>• Cấu trúc gạch đầu dòng lý tưởng</li>
+                    </ul>
+                  </div>
+
+                  <button
+                    disabled={isGeneratingPpt}
+                    onClick={() => handleExportToPPTX(pptModalData.content)}
+                    className="w-full py-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-md shadow-indigo-600/10 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    {isGeneratingPpt ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin text-white" />
+                        <span>ĐANG KHỞI TẠO FILE PPTX...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        <span>TẢI FILE POWERPOINT (.PPTX)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Gamma Option */}
+                <div className="bg-gradient-to-br from-violet-50/20 to-indigo-50/20 rounded-3xl border border-violet-100/55 p-6 flex flex-col justify-between space-y-6 hover:shadow-md transition-all duration-300">
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 text-violet-700">
+                      <Sparkles className="w-4 h-4 animate-pulse" />
+                      <h4 className="text-xs font-black uppercase tracking-wider text-violet-950">2. Nhập Sang Gamma AI</h4>
+                    </div>
+                    <p className="text-[11px] text-gray-500 leading-relaxed font-semibold">
+                      Dàn ý (Outline) kỹ thuật được thiết kế tinh giản, tương thích tối đa để nhập trực tiếp vào dịch vụ thiết kế bài giảng thông minh <strong>Gamma (gamma.app)</strong> hỗ trợ AI sinh ảnh và bố cục tự động cao cấp.
+                    </p>
+                    <div className="bg-white/80 border border-violet-100 rounded-xl p-3 text-[10px] text-gray-400 font-bold space-y-1 uppercase tracking-wider">
+                      <p className="text-violet-650 font-black mb-1">Quy trình 3 bước siêu tốc:</p>
+                      <p>1. Ấn nút sao chép Dàn ý Markdown</p>
+                      <p>2. Mở Gamma.app ➜ Chọn 'Import File or Text'</p>
+                      <p>3. Dán mã dàn ý vào và để Gamma AI hoàn thiện bài trình diễn</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const outline = generateGammaOutline(pptModalData.content);
+                          await navigator.clipboard.writeText(outline);
+                          setCopiedGammaOutline(true);
+                          setTimeout(() => setCopiedGammaOutline(false), 2000);
+                        } catch (err) {
+                          console.error(err);
+                        }
+                      }}
+                      className="flex-1 py-4 bg-violet-600 hover:bg-violet-700 text-white rounded-2xl font-black text-xs uppercase tracking-widest transition-all shadow-md shadow-violet-600/10 cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      {copiedGammaOutline ? (
+                        <>
+                          <Check className="w-4 h-4 text-emerald-300 animate-bounce" />
+                          <span>ĐÃ SAO CHÉP OUTLINE!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-4 h-4" />
+                          <span>SAO CHÉP DÀN Ý</span>
+                        </>
+                      )}
+                    </button>
+
+                    <a
+                      href="https://gamma.app"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="py-4 px-5 bg-white hover:bg-violet-50 text-violet-750 border border-violet-200/60 rounded-2xl font-black text-xs uppercase tracking-widest transition-all cursor-pointer flex items-center justify-center gap-2 shadow-sm"
+                    >
+                      <span>MỞ GAMMA</span>
+                      <ExternalLink className="w-4 h-4 shrink-0" />
+                    </a>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Collapsible preview box of mapped slide deck */}
+              <div className="space-y-2">
+                <span className="text-[10px] text-gray-400 font-black uppercase tracking-widest block">Xem thử bố cục Slide ({parseContentToSlides(pptModalData.content).length} trang):</span>
+                <div className="bg-slate-50 border border-slate-200/50 rounded-2xl p-4 max-h-40 overflow-y-auto pr-2 no-scrollbar space-y-3">
+                  {parseContentToSlides(pptModalData.content).map((slide, sIdx) => (
+                    <div key={sIdx} className="border-b border-gray-200/45 pb-3 last:border-0 last:pb-0">
+                      <h5 className="text-[11px] font-black text-slate-800 uppercase tracking-wider">{sIdx + 1}. {slide.title}</h5>
+                      <ul className="list-disc pl-4 mt-1 text-[10px] text-gray-500 font-semibold space-y-0.5">
+                        {slide.bullets.map((b, bIdx) => (
+                          <li key={bIdx} className="truncate">{b}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex pt-4 border-t border-gray-100 shrink-0">
+              <button 
+                onClick={() => setPptModalData(null)}
+                className="w-full py-4 bg-gray-55 hover:bg-gray-100 text-gray-500 rounded-2xl font-black text-xs uppercase tracking-widest transition-all cursor-pointer text-center"
+              >
+                Đóng lại
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  );
+}
+
+interface QuickComposerOverlayProps {
+  onSend: (text: string, image: string | null) => void;
+  onClose: () => void;
+  isProcessing: boolean;
+}
+
+function QuickComposerOverlay({
+  onSend,
+  onClose,
+  isProcessing
+}: QuickComposerOverlayProps) {
+  const [localInput, setLocalInput] = useState("");
+  const [localImage, setLocalImage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setLocalImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const handleSend = () => {
+    if (!localInput.trim() && !localImage) return;
+    if (isProcessing) return;
+    onSend(localInput, localImage);
+    setLocalInput("");
+    setLocalImage(null);
+  };
+
+  return (
+    <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-xs z-30 flex items-end justify-center p-4 sm:p-6 animate-in fade-in duration-200 pointer-events-auto">
+      <div className="bg-white border border-gray-200 rounded-[24px] p-4 shadow-2xl w-full max-w-md mb-2 relative animate-in slide-in-from-bottom-6 zoom-in-95 duration-300 flex flex-col gap-2.5">
+        <div className="flex items-center justify-between border-b border-gray-100 pb-1.5">
+          <div className="flex items-center gap-1.5 text-indigo-600">
+            <Sparkles className="w-4 h-4 fill-indigo-100 animate-pulse text-indigo-500" />
+            <span className="text-[9px] font-black uppercase tracking-[0.15em]">ĐẶT CÂU HỎI NHANH</span>
+          </div>
+          <button 
+            onClick={onClose}
+            className="p-1 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-all opacity-70 hover:opacity-100"
+            title="Đóng popup"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        
+        {localImage && (
+          <div className="px-1 flex flex-wrap gap-1.5 animate-in fade-in duration-200">
+            <div className="relative w-11 h-11 rounded-lg overflow-hidden border border-gray-150 shadow-sm group">
+              <img src={localImage} alt="Selected" className="w-full h-full object-cover" />
+              <button 
+                onClick={() => setLocalImage(null)}
+                className="absolute top-0.5 right-0.5 p-0.5 bg-red-500 text-white rounded-full cursor-pointer hover:scale-105 transition-all"
+              >
+                <X className="w-2 h-2" />
+              </button>
+            </div>
+          </div>
+        )}
+        
+        <textarea
+          value={localInput}
+          onChange={(e) => setLocalInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              handleSend();
+            }
+          }}
+          placeholder="Hỏi tiếp thông tin hoặc quy định kỹ thuật khác..."
+          className="w-full bg-[#f8f9fa] border border-gray-100 rounded-xl py-2 px-3 text-xs sm:text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-100 transition-all resize-none h-16 text-gray-800 placeholder:text-gray-400 leading-normal"
+          autoFocus
+        />
+        
+        <div className="flex items-center justify-between pt-1">
+          <div className="flex items-center gap-2">
+            <input 
+              type="file" 
+              ref={fileInputRef} 
+              onChange={handleImageChange} 
+              accept="image/*" 
+              className="hidden" 
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
+              title="Thêm hình ảnh"
+            >
+              <Camera className="w-4 h-4" />
+            </button>
+            <span className="text-[8px] text-gray-400 font-extrabold uppercase tracking-widest leading-none">
+              AI Engine
+            </span>
+          </div>
+          
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-500 rounded-lg font-black text-[9px] uppercase tracking-wider transition-all cursor-pointer"
+            >
+              Thu nhỏ
+            </button>
+            <button
+              onClick={handleSend}
+              disabled={(!localInput.trim() && !localImage) || isProcessing}
+              className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-lg font-black text-[9px] uppercase tracking-wider transition-all flex items-center gap-1.5 shadow-md shadow-indigo-600/10 cursor-pointer"
+            >
+              {isProcessing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+              <span>GỬI ĐI</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
