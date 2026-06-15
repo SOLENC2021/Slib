@@ -503,10 +503,10 @@ async function startServer() {
     try {
       const model = "gemini-3.5-flash";
       
-      // OPTIMIZATION: Limit chat history to max 4 QA pairs (8 messages) to prevent token multiplication cost
+      // OPTIMIZATION: Limit chat history to max 3 QA pairs (6 messages) to prevent token multiplication cost
       let trimmedHistory = history || [];
-      if (trimmedHistory.length > 8) {
-        trimmedHistory = trimmedHistory.slice(-8);
+      if (trimmedHistory.length > 6) {
+        trimmedHistory = trimmedHistory.slice(-6);
         console.log(`Optimization: Trimmed history from ${history.length} to ${trimmedHistory.length} messages.`);
       }
 
@@ -567,7 +567,7 @@ async function startServer() {
             contents,
             config: {
               systemInstruction: chatSystemInstruction,
-              temperature: 0.7,
+              temperature: 0.15, // Low temperature for high precision, objective answers
               topP: 0.95,
             },
           }));
@@ -577,7 +577,7 @@ async function startServer() {
         let finalFiles = referencedFiles ? JSON.parse(JSON.stringify(referencedFiles)) : [];
         let newlyReRegistered: any[] = [];
 
-        // 1. Pre-fetch text content and evaluate keyword relevance scores in parallel
+        // 1. Pre-fetch text content and evaluate keyword relevance scores in parallel (optimized to max 3 chunks)
         const scoredFilesTemp = await Promise.all(finalFiles.map(async (file: any) => {
           let fileText = file.text || "";
           if (file.textUrl) {
@@ -605,7 +605,7 @@ async function startServer() {
           let relevantParts = "";
           let score = 0;
           if (fileText) {
-            relevantParts = retrieveRelevantChunks(fileText, prompt, 4);
+            relevantParts = retrieveRelevantChunks(fileText, prompt, 3); // Optimize to max 3 parent chunks
             if (relevantParts && relevantParts.trim().length > 0) {
               score = relevantParts.length;
             }
@@ -622,21 +622,24 @@ async function startServer() {
         // Sort by relevance score (highest first)
         const sortedScoredFiles = scoredFilesTemp.sort((a, b) => b.score - a.score);
 
-        // 2. Build the combined text context using RAG snippets
+        // 2. To maintain low-latency, keep under model token limits and optimize quota consumption, filter to only the top 2 most matching files
+        const topScoredFilesForContext = sortedScoredFiles.filter(f => f.score > 0).slice(0, 2);
+        const contextFilesToUse = topScoredFilesForContext.length > 0 
+          ? topScoredFilesForContext 
+          : sortedScoredFiles.slice(0, 1);
+
+        // 3. Build the combined text context using RAG snippets
         let compiledContext = "";
-        sortedScoredFiles.forEach(file => {
+        contextFilesToUse.forEach(file => {
           if (file.relevantParts && file.relevantParts.trim().length > 0) {
             compiledContext += `--- [BẮT ĐẦU TRÍCH ĐOẠN PHÙ HỢP CÔNG TRÌNH - TÀI LIỆU: ${file.name}] ---\n${file.relevantParts}\n--- [KẾT THÚC TRÍCH ĐOẠN - TÀI LIỆU: ${file.name}] ---\n\n`;
           }
         });
 
-        // 3. To maintain supreme low-latency and keep under model token limits, restrict rich document attachments
-        // inside the general chat parameters to at most the top 2 files matching the query
-        const attachableFiles = sortedScoredFiles
-          .filter(f => f.score > 0 || !compiledContext.trim().length)
-          .slice(0, 2);
+        // 4. Also restrict rich document attachments to exactly these top context files
+        const attachableFiles = contextFilesToUse.filter(f => f.score > 0 || !compiledContext.trim().length);
 
-        // 4. On-demand heal only the chosen 1 or 2 files if they have expired representation.
+        // 5. On-demand heal only the chosen 1 or 2 files if they have expired representation.
         // If they are not expired, checking/healing time is exactly 0ms.
         for (let i = 0; i < attachableFiles.length; i++) {
           const file = attachableFiles[i];

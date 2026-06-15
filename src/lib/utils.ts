@@ -153,17 +153,15 @@ export function getApiUrl(path: string): string {
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
   const hostname = typeof window !== "undefined" ? window.location.hostname : "";
   
-  // Local environment and development preview run relative
-  const isLocalOrPreview = 
-    !hostname ||
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname.includes("run.app") ||
-    hostname.includes("aistudio.google") ||
-    hostname.includes("googleusercontent.com") ||
-    hostname.includes("web-dev-server");
+  // If running on a static-only hosting environment, route to Cloud Run dev/pre backend fallback.
+  // Otherwise, fallback directly to same-origin relative paths to guarantee zero CORS or network routing blocks.
+  const isStaticHost = 
+    hostname.includes("github.io") ||
+    hostname.includes("vercel.app") ||
+    hostname.includes("netlify.app") ||
+    hostname.includes("pages.dev");
 
-  if (!isLocalOrPreview) {
+  if (isStaticHost) {
     if (cachedApiUrl) {
       // Final security guard validation before returning a cached URL in production environment
       if (
