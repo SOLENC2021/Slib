@@ -513,7 +513,6 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  // API 1-S: Chat stream endpoint (Proxy for Gemini with streaming output)
   app.post("/api/chat-stream", async (req, res) => {
     const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl } = req.body;
     
@@ -521,8 +520,10 @@ async function startServer() {
       return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
     }
 
+    // Crucial optimizations for streaming on live static proxies like Hostinger/Nginx
     res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("X-Accel-Buffering", "no");
     res.setHeader("Connection", "keep-alive");
     if (res.flushHeaders) {
       res.flushHeaders();
@@ -585,88 +586,135 @@ async function startServer() {
           return (b.uploadDate || 0) - (a.uploadDate || 0);
         });
 
-        const filesToDeepScan = sortedByMetadata.slice(0, 3);
+        const contextFiles = sortedByMetadata.slice(0, 2);
+        console.log(`[Stream RAG] Selected general context files:`, contextFiles.map((f: any) => f.name));
 
-        const scoredFilesTemp = await Promise.all(filesToDeepScan.map(async (file: any) => {
-          let fileText = file.text || "";
-          
-          if (fileText && file.textUrl && !textCollectionCache.has(file.textUrl)) {
-            textCollectionCache.set(file.textUrl, fileText);
-          }
+        let upgradedReferencedFiles: any[] = [];
 
-          if (file.textUrl) {
-            if (textCollectionCache.has(file.textUrl)) {
-              fileText = textCollectionCache.get(file.textUrl) || "";
-            } else {
-              try {
-                const fullDownloadedText = await fetchTextWithTimeout(file.textUrl, 2500);
-                if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
-                  fileText = fullDownloadedText;
-                  textCollectionCache.set(file.textUrl, fileText);
+        const buildGeneralContents = async (useFilesApi: boolean, excludedFileId?: string) => {
+          const userParts: any[] = [];
+          let textContext = "";
+
+          for (const file of contextFiles) {
+            if (useFilesApi && file.geminiFileUri && file.id !== excludedFileId) {
+              console.log(`[Stream RAG] Attaching native Gemini File API Uri: ${file.name}`);
+              userParts.push({
+                fileData: {
+                  fileUri: file.geminiFileUri,
+                  mimeType: "application/pdf"
                 }
-              } catch (err) {}
+              });
+            } else {
+              let fileText = file.text || "";
+              if (file.textUrl) {
+                if (textCollectionCache.has(file.textUrl)) {
+                  fileText = textCollectionCache.get(file.textUrl) || "";
+                } else {
+                  try {
+                    fileText = await fetchTextWithTimeout(file.textUrl, 2500);
+                    if (fileText) {
+                      textCollectionCache.set(file.textUrl, fileText);
+                    }
+                  } catch (err) {}
+                }
+              }
+              if (fileText) {
+                const relevantParts = retrieveRelevantChunks(fileText, prompt, 3);
+                textContext += `--- [BẮT ĐẦU TRÍCH ĐOẠN PHÙ HỢP CÔNG TRÌNH - TÀI LIỆU: ${file.name}] ---\n${relevantParts}\n--- [KẾT THÚC TRÍCH ĐOẠN - TÀI LIỆU: ${file.name}] ---\n\n`;
+              }
             }
           }
-          
-          let relevantParts = "";
-          let score = 0;
-          if (fileText) {
-            relevantParts = retrieveRelevantChunks(fileText, prompt, 3);
-            if (relevantParts && relevantParts.trim().length > 0) {
-              score = relevantParts.length;
+
+          if (textContext.trim().length > 0) {
+            userParts.push({ text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${textContext}` });
+          }
+
+          if (image) {
+            const base64Data = image.split(",")[1] || image;
+            userParts.push({
+              inlineData: {
+                mimeType: "image/jpeg",
+                data: base64Data
+              }
+            });
+          }
+
+          if (textContext.trim().length > 0) {
+            userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên [DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN] đã được nhồi trực tiếp ở trên và kiến thức chuyên ngành. Hãy trích dẫn chuẩn xác các điều khoản kỹ thuật, số liệu, bảng biểu có trong context:\n\nYêu cầu câu hỏi kỹ thuật: ${prompt}` });
+          } else {
+            userParts.push({ text: prompt });
+          }
+
+          return [
+            ...trimmedHistory,
+            {
+              role: "user",
+              parts: userParts
             }
-          }
-          return { ...file, relevantParts, score };
-        }));
+          ];
+        };
 
-        const sortedScoredFiles = scoredFilesTemp.sort((a, b) => b.score - a.score);
-        const topScoredFilesForContext = sortedScoredFiles.filter(f => f.score > 0).slice(0, 2);
-        const contextFilesToUse = topScoredFilesForContext.length > 0 ? topScoredFilesForContext : sortedScoredFiles.slice(0, 1);
+        const runStreamGeneral = async (contentsArr: any[]) => {
+          return await callAIWithRetry((aiClient) => aiClient.models.generateContentStream({
+            model: "gemini-3.5-flash",
+            contents: contentsArr,
+            config: {
+              systemInstruction: SYSTEM_INSTRUCTION,
+              temperature: 0.15,
+              topP: 0.95,
+            },
+          }));
+        };
 
-        let compiledContext = "";
-        contextFilesToUse.forEach(file => {
-          if (file.relevantParts && file.relevantParts.trim().length > 0) {
-            compiledContext += `--- [BẮT ĐẦU TRÍCH ĐOẠN PHÙ HỢP CÔNG TRÌNH - TÀI LIỆU: ${file.name}] ---\n${file.relevantParts}\n--- [KẾT THÚC TRÍCH ĐOẠN - TÀI LIỆU: ${file.name}] ---\n\n`;
-          }
-        });
+        let streamResponse;
+        let contents = await buildGeneralContents(true);
 
-        const userParts: any[] = [];
-        if (compiledContext.trim().length > 0) {
-          userParts.push({ text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${compiledContext}` });
-        }
-        if (image) {
-          const base64Data = image.split(",")[1] || image;
-          userParts.push({
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: base64Data
+        try {
+          streamResponse = await runStreamGeneral(contents);
+        } catch (proErr: any) {
+          if (isGeminiFileError(proErr)) {
+            console.log("[Auto Self-Healing General Stream] Expired file caught. Restoring files to Gemini Files API...");
+            let healSucceeded = false;
+            try {
+              for (const file of contextFiles) {
+                if (file.geminiFileUri && file.url) {
+                  const newReg = await reRegisterFileWithGemini(file.url, file.name);
+                  if (newReg && newReg.uri) {
+                    file.geminiFileUri = newReg.uri;
+                    upgradedReferencedFiles.push({
+                      id: file.id,
+                      geminiFileUri: newReg.uri,
+                      geminiFileName: newReg.name
+                    });
+                  }
+                }
+              }
+
+              if (upgradedReferencedFiles.length > 0) {
+                healSucceeded = true;
+                contents = await buildGeneralContents(true);
+                streamResponse = await runStreamGeneral(contents);
+              }
+            } catch (healErr) {
+              console.error("[Auto Self-Healing General Stream] Re-registration heal sequence failed:", healErr);
             }
-          });
-        }
 
-        if (compiledContext.trim().length > 0) {
-          userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên [DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN] đã được nhồi trực tiếp ở trên và kiến thức chuyên ngành. Hãy trích dẫn chuẩn xác các điều khoản kỹ thuật, số liệu, bảng biểu có trong context:\n\nYêu cầu câu hỏi kỹ thuật: ${prompt}` });
-        } else {
-          userParts.push({ text: prompt });
-        }
-
-        const contents = [
-          ...trimmedHistory,
-          {
-            role: "user",
-            parts: userParts
+            if (!healSucceeded) {
+              console.log("[Auto Self-Healing General Stream] Hard fallback to optimized local text parsing...");
+              contents = await buildGeneralContents(false);
+              streamResponse = await runStreamGeneral(contents);
+            }
+          } else {
+            console.warn("[General Stream API] Non-file error caught, falling back to text-mode:", proErr.message || proErr);
+            contents = await buildGeneralContents(false);
+            streamResponse = await runStreamGeneral(contents);
           }
-        ];
+        }
 
-        const streamResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContentStream({
-          model: "gemini-3.5-flash",
-          contents,
-          config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            temperature: 0.15,
-            topP: 0.95,
-          },
-        }));
+        // Send upgraded file info back in the stream if healed
+        if (upgradedReferencedFiles.length > 0) {
+          writeStreamChunk({ upgradedReferencedFiles });
+        }
 
         for await (const chunk of streamResponse) {
           if (chunk.text) {
@@ -675,6 +723,7 @@ async function startServer() {
         }
         res.write("data: [DONE]\n\n");
         return res.end();
+
       } else {
         console.log("Processing specific chat query using gemini-3.5-flash with STREAMING...");
         let resolvedText = text || "";
@@ -695,49 +744,89 @@ async function startServer() {
           }
         }
 
-        const parts: any[] = [];
-        if (geminiFileUri) {
-          parts.push({
-            fileData: {
-              fileUri: geminiFileUri,
-              mimeType: "application/pdf"
-            }
-          });
-        } else if (resolvedText) {
-          const relevantParts = retrieveRelevantChunks(resolvedText, prompt, 4);
-          parts.push({ text: `[DỮ LIỆU TÀI LIỆU GỐC (RAG CHUNKS)]\n${relevantParts}\n[KẾT THÚC DỮ LIỆU TÀI LIỆU]` });
-        }
+        let finalFileUri = geminiFileUri;
+        let upgradedFile: any = null;
 
-        if (image) {
-          const base64Data = image.split(",")[1] || image;
-          parts.push({
-            inlineData: {
-              mimeType: "image/jpeg",
-              data: base64Data
-            }
-          });
-        }
-
-        const contents = [
-          ...trimmedHistory,
-          {
-            role: "user",
-            parts: [
-              ...parts,
-              { text: `Dựa trên tài liệu trên, hãy trả lời câu hỏi: ${prompt}` }
-            ]
+        const runStream = async (uri: string | undefined) => {
+          const parts: any[] = [];
+          if (uri) {
+            parts.push({
+              fileData: {
+                fileUri: uri,
+                mimeType: "application/pdf"
+              }
+            });
+          } else if (resolvedText) {
+            const relevantParts = retrieveRelevantChunks(resolvedText, prompt, 4);
+            parts.push({ text: `[DỮ LIỆU TÀI LIỆU GỐC (RAG CHUNKS)]\n${relevantParts}\n[KẾT THÚC DỮ LIỆU TÀI LIỆU]` });
           }
-        ];
 
-        const streamResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContentStream({
-          model: "gemini-3.5-flash",
-          contents,
-          config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            temperature: 0.1,
-            topP: 0.95,
-          },
-        }), 2);
+          if (image) {
+            const base64Data = image.split(",")[1] || image;
+            parts.push({
+              inlineData: {
+                mimeType: "image/jpeg",
+                data: base64Data
+              }
+            });
+          }
+
+          const contents = [
+            ...trimmedHistory,
+            {
+              role: "user",
+              parts: [
+                ...parts,
+                { text: `Dựa trên tài liệu trên, hãy trả lời câu hỏi: ${prompt}` }
+              ]
+            }
+          ];
+
+          return await callAIWithRetry((aiClient) => aiClient.models.generateContentStream({
+            model: "gemini-3.5-flash",
+            contents,
+            config: {
+              systemInstruction: SYSTEM_INSTRUCTION,
+              temperature: 0.1,
+              topP: 0.95,
+            },
+          }), 2);
+        };
+
+        let streamResponse;
+        try {
+          streamResponse = await runStream(finalFileUri);
+        } catch (proErr: any) {
+          if (isGeminiFileError(proErr) && fileUrl) {
+            console.log("[Auto Self-Healing Stream] Specific file error. Re-registering file on-the-fly...");
+            try {
+              const newReg = await reRegisterFileWithGemini(fileUrl, fileName);
+              if (newReg && newReg.uri) {
+                finalFileUri = newReg.uri;
+                upgradedFile = {
+                  fileId,
+                  geminiFileUri: newReg.uri,
+                  geminiFileName: newReg.name
+                };
+                console.log(`[Auto Self-Healing Stream] Re-registration successful -> retrying stream...`);
+                streamResponse = await runStream(finalFileUri);
+              } else {
+                throw new Error("Blank URI returned");
+              }
+            } catch (reRegErr) {
+              console.error("[Auto Self-Healing Stream] Re-registration retry failed. Falling back to text mode...", reRegErr);
+              streamResponse = await runStream(undefined);
+            }
+          } else {
+            console.warn("[Specific Stream] Falling back to text mode due to error:", proErr.message || proErr);
+            streamResponse = await runStream(undefined);
+          }
+        }
+
+        // Send upgraded file back in stream if healed
+        if (upgradedFile) {
+          writeStreamChunk({ upgradedFile });
+        }
 
         for await (const chunk of streamResponse) {
           if (chunk.text) {

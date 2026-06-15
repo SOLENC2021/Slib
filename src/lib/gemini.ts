@@ -106,6 +106,8 @@ export async function chatWithDocumentStream(
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
     let fullText = "";
+    let upgradedFile: any = undefined;
+    let upgradedReferencedFiles: any = undefined;
 
     while (true) {
       const { value, done } = await reader.read();
@@ -131,6 +133,10 @@ export async function chatWithDocumentStream(
               if (onChunk) {
                 onChunk(parsed.text);
               }
+            } else if (parsed.upgradedFile) {
+              upgradedFile = parsed.upgradedFile;
+            } else if (parsed.upgradedReferencedFiles) {
+              upgradedReferencedFiles = parsed.upgradedReferencedFiles;
             } else if (parsed.error) {
               throw new Error(parsed.error);
             }
@@ -153,12 +159,16 @@ export async function chatWithDocumentStream(
             if (onChunk) {
               onChunk(parsed.text);
             }
+          } else if (parsed.upgradedFile) {
+            upgradedFile = parsed.upgradedFile;
+          } else if (parsed.upgradedReferencedFiles) {
+            upgradedReferencedFiles = parsed.upgradedReferencedFiles;
           }
         } catch (e) {}
       }
     }
 
-    return { text: fullText };
+    return { text: fullText, upgradedFile, upgradedReferencedFiles };
   } catch (error: any) {
     console.error("Chat with document stream error:", error);
     throw error;
