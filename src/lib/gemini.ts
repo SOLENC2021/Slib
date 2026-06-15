@@ -51,6 +51,120 @@ export async function chatWithDocument(
   }
 }
 
+export async function chatWithDocumentStream(
+  text: string,
+  prompt: string,
+  history: any[] = [],
+  image?: string,
+  geminiFileUri?: string,
+  isGeneral?: boolean,
+  referencedFiles?: any[],
+  fileUrl?: string,
+  fileName?: string,
+  fileId?: string,
+  textUrl?: string,
+  onChunk?: (chunk: string) => void
+) {
+  try {
+    const response = await fetch(getApiUrl("/api/chat-stream"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        text,
+        prompt,
+        history,
+        image,
+        geminiFileUri,
+        isGeneral,
+        referencedFiles,
+        fileUrl,
+        fileName,
+        fileId,
+        textUrl
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      let errorMsg = "Lỗi khi gọi API Chat Stream";
+      try {
+        const errorJson = JSON.parse(errorText);
+        errorMsg = errorJson.error || errorMsg;
+      } catch (e) {
+        errorMsg = errorText.substring(0, 100) || `${response.statusText} (${response.status})`;
+      }
+      throw new Error(errorMsg);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("Không thể khởi tạo luồng dữ liệu (ReadableStream không khả dụng)");
+    }
+
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let fullText = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      
+      // Save last incomplete line back to buffer
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (trimmedLine.startsWith("data: ")) {
+          const dataStr = trimmedLine.substring(6).trim();
+          if (dataStr === "[DONE]") {
+            continue;
+          }
+          try {
+            const parsed = JSON.parse(dataStr);
+            if (parsed.text) {
+              fullText += parsed.text;
+              if (onChunk) {
+                onChunk(parsed.text);
+              }
+            } else if (parsed.error) {
+              throw new Error(parsed.error);
+            }
+          } catch (e) {
+            // Ignore parse errors from temporary partial packets
+          }
+        }
+      }
+    }
+
+    // Flush remaining buffer
+    const trimmedBuffer = buffer.trim();
+    if (trimmedBuffer.startsWith("data: ")) {
+      const dataStr = trimmedBuffer.substring(6).trim();
+      if (dataStr !== "[DONE]") {
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (parsed.text) {
+            fullText += parsed.text;
+            if (onChunk) {
+              onChunk(parsed.text);
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    return { text: fullText };
+  } catch (error: any) {
+    console.error("Chat with document stream error:", error);
+    throw error;
+  }
+}
+
 export async function extractDataFromText(
   text: string,
   fields: ExtractionField[],

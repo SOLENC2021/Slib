@@ -9,7 +9,7 @@ import { PDFViewer } from "./components/PDFViewer";
 import { ChatPanel } from "./components/ChatPanel";
 import { UploadModal } from "./components/UploadModal";
 import { PDFFile, Message, ExtractionField, OperationType, PageData, Note } from "./types";
-import { chatWithDocument, extractDataFromText } from "./lib/gemini";
+import { chatWithDocument, chatWithDocumentStream, extractDataFromText } from "./lib/gemini";
 import { LayoutGrid, Sparkles, LogOut, Loader2, X, FileText } from "lucide-react";
 import { useAuth } from "./components/FirebaseProvider";
 import { db } from "./lib/firebase";
@@ -568,12 +568,44 @@ export default function App() {
             });
         }
 
-        const result = await chatWithDocument("", content, history, image, undefined, true, referencedFilesPayload);
-        const aiResponse = result?.text;
+        const aiMsgId = (Date.now() + 1).toString();
+        const placeholderMsg: Message = {
+          id: aiMsgId,
+          role: "ai",
+          content: "",
+          timestamp: Date.now(),
+        };
+        setGeneralMessages((prev) => [...prev, placeholderMsg]);
 
-        if (result?.upgradedReferencedFiles && Array.isArray(result.upgradedReferencedFiles)) {
+        let accumulatedText = "";
+        const result = await chatWithDocumentStream(
+          "",
+          content,
+          history,
+          image,
+          undefined,
+          true,
+          referencedFilesPayload,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          (chunk) => {
+            accumulatedText += chunk;
+            setGeneralMessages((prev) =>
+              prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText } : m))
+            );
+          }
+        );
+
+        if (result?.text) {
+          accumulatedText = result.text;
+        }
+
+        // Just in case the fallback response had upgraded referenced files (though stream endpoint does not generate them by default)
+        if (result && (result as any).upgradedReferencedFiles && Array.isArray((result as any).upgradedReferencedFiles)) {
           console.log("[Auto Self-Healing] Received upgraded referenced files. Storing in Firestore...");
-          result.upgradedReferencedFiles.forEach((upRef: any) => {
+          (result as any).upgradedReferencedFiles.forEach((upRef: any) => {
             updateDoc(doc(db, "files", upRef.id), {
               geminiFileUri: upRef.geminiFileUri,
               geminiFileName: upRef.geminiFileName,
@@ -581,15 +613,6 @@ export default function App() {
             }).catch((e) => console.error("Auto self-healing database write failed:", e));
           });
         }
-        
-        const aiMsg: Message = {
-          id: (Date.now() + 1).toString(),
-          role: "ai",
-          content: aiResponse || "Xin lỗi, tôi gặp trục trặc khi suy nghĩ.",
-          timestamp: Date.now(),
-        };
-
-        setGeneralMessages((prev) => [...prev, aiMsg]);
       } catch (error: any) {
         console.error("Lỗi AI Chung:", error);
         
@@ -691,7 +714,17 @@ export default function App() {
         }
       }
 
-      const result = await chatWithDocument(
+      const aiMsgId = (Date.now() + 1).toString();
+      const placeholderMsg: Message = {
+        id: aiMsgId,
+        role: "ai",
+        content: "",
+        timestamp: Date.now(),
+      };
+      setMessages((prev) => [...prev, placeholderMsg]);
+
+      let accumulatedText = "";
+      const result = await chatWithDocumentStream(
         activeFile.text,
         content,
         history,
@@ -702,29 +735,28 @@ export default function App() {
         activeFile.url,
         activeFile.name,
         activeFile.id,
-        activeFile.textUrl
+        activeFile.textUrl,
+        (chunk) => {
+          accumulatedText += chunk;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText } : m))
+          );
+        }
       );
-      
-      const aiResponse = result?.text;
 
-      if (result?.upgradedFile) {
+      if (result?.text) {
+        accumulatedText = result.text;
+      }
+      
+      if (result && (result as any).upgradedFile) {
         console.log("[Auto Self-Healing] Received upgraded active file. Storing in Firestore...");
-        const up = result.upgradedFile;
+        const up = (result as any).upgradedFile;
         updateDoc(doc(db, "files", up.fileId), {
           geminiFileUri: up.geminiFileUri,
           geminiFileName: up.geminiFileName,
           uploadDate: Date.now()
         }).catch(e => console.error("Auto self-healing database write failed:", e));
       }
-      
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "ai",
-        content: aiResponse || "Xin lỗi, tôi gặp trục trặc khi suy nghĩ.",
-        timestamp: Date.now(),
-      };
-
-      setMessages((prev) => [...prev, aiMsg]);
     } catch (error: any) {
       console.error("Lỗi AI:", error);
 

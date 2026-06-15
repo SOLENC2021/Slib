@@ -513,6 +513,248 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
+  // API 1-S: Chat stream endpoint (Proxy for Gemini with streaming output)
+  app.post("/api/chat-stream", async (req, res) => {
+    const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl } = req.body;
+    
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    if (res.flushHeaders) {
+      res.flushHeaders();
+    }
+
+    const writeStreamChunk = (data: any) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      let trimmedHistory = history || [];
+      if (trimmedHistory.length > 6) {
+        trimmedHistory = trimmedHistory.slice(-6);
+        console.log(`Optimization: Trimmed stream history from ${history.length} to ${trimmedHistory.length} messages.`);
+      }
+
+      const fetchTextWithTimeout = async (url: string, timeoutMs = 2500): Promise<string> => {
+        const controller = new AbortController();
+        const id = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+          const res = await fetch(url, { signal: controller.signal });
+          clearTimeout(id);
+          if (res.ok) {
+            return await res.text();
+          }
+          return "";
+        } catch (err) {
+          clearTimeout(id);
+          console.warn(`[RAG Timeout Fetch Stream] Failed or timed out fetching text from: ${url}`);
+          return "";
+        }
+      };
+
+      if (isGeneral) {
+        console.log("Processing general chat query using gemini-3.5-flash with STREAMING...");
+        let finalFiles = referencedFiles ? JSON.parse(JSON.stringify(referencedFiles)) : [];
+        
+        const queryWordsForPreFilter = prompt.toLowerCase().trim()
+          .replace(/[^a-z0-9áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/gi, " ")
+          .split(/\s+/)
+          .filter((word: string) => word.length >= 2 || /^\d+$/.test(word))
+          .slice(0, 15);
+
+        const filesWithMetadataScores = finalFiles.map((file: any) => {
+          let score = 0;
+          const nameLower = (file.name || "").toLowerCase();
+          const categoryLower = (file.category || "").toLowerCase();
+          
+          queryWordsForPreFilter.forEach((word: string) => {
+            if (nameLower.includes(word)) score += 200;
+            if (categoryLower.includes(word)) score += 50;
+          });
+          return { ...file, metadataScore: score };
+        });
+
+        const sortedByMetadata = filesWithMetadataScores.sort((a, b) => {
+          if (b.metadataScore !== a.metadataScore) {
+            return b.metadataScore - a.metadataScore;
+          }
+          return (b.uploadDate || 0) - (a.uploadDate || 0);
+        });
+
+        const filesToDeepScan = sortedByMetadata.slice(0, 3);
+
+        const scoredFilesTemp = await Promise.all(filesToDeepScan.map(async (file: any) => {
+          let fileText = file.text || "";
+          
+          if (fileText && file.textUrl && !textCollectionCache.has(file.textUrl)) {
+            textCollectionCache.set(file.textUrl, fileText);
+          }
+
+          if (file.textUrl) {
+            if (textCollectionCache.has(file.textUrl)) {
+              fileText = textCollectionCache.get(file.textUrl) || "";
+            } else {
+              try {
+                const fullDownloadedText = await fetchTextWithTimeout(file.textUrl, 2500);
+                if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
+                  fileText = fullDownloadedText;
+                  textCollectionCache.set(file.textUrl, fileText);
+                }
+              } catch (err) {}
+            }
+          }
+          
+          let relevantParts = "";
+          let score = 0;
+          if (fileText) {
+            relevantParts = retrieveRelevantChunks(fileText, prompt, 3);
+            if (relevantParts && relevantParts.trim().length > 0) {
+              score = relevantParts.length;
+            }
+          }
+          return { ...file, relevantParts, score };
+        }));
+
+        const sortedScoredFiles = scoredFilesTemp.sort((a, b) => b.score - a.score);
+        const topScoredFilesForContext = sortedScoredFiles.filter(f => f.score > 0).slice(0, 2);
+        const contextFilesToUse = topScoredFilesForContext.length > 0 ? topScoredFilesForContext : sortedScoredFiles.slice(0, 1);
+
+        let compiledContext = "";
+        contextFilesToUse.forEach(file => {
+          if (file.relevantParts && file.relevantParts.trim().length > 0) {
+            compiledContext += `--- [BẮT ĐẦU TRÍCH ĐOẠN PHÙ HỢP CÔNG TRÌNH - TÀI LIỆU: ${file.name}] ---\n${file.relevantParts}\n--- [KẾT THÚC TRÍCH ĐOẠN - TÀI LIỆU: ${file.name}] ---\n\n`;
+          }
+        });
+
+        const userParts: any[] = [];
+        if (compiledContext.trim().length > 0) {
+          userParts.push({ text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${compiledContext}` });
+        }
+        if (image) {
+          const base64Data = image.split(",")[1] || image;
+          userParts.push({
+            inlineData: {
+              mimeType: "image/jpeg",
+              data: base64Data
+            }
+          });
+        }
+
+        if (compiledContext.trim().length > 0) {
+          userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên [DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN] đã được nhồi trực tiếp ở trên và kiến thức chuyên ngành. Hãy trích dẫn chuẩn xác các điều khoản kỹ thuật, số liệu, bảng biểu có trong context:\n\nYêu cầu câu hỏi kỹ thuật: ${prompt}` });
+        } else {
+          userParts.push({ text: prompt });
+        }
+
+        const contents = [
+          ...trimmedHistory,
+          {
+            role: "user",
+            parts: userParts
+          }
+        ];
+
+        const streamResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContentStream({
+          model: "gemini-3.5-flash",
+          contents,
+          config: {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            temperature: 0.15,
+            topP: 0.95,
+          },
+        }));
+
+        for await (const chunk of streamResponse) {
+          if (chunk.text) {
+            writeStreamChunk({ text: chunk.text });
+          }
+        }
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      } else {
+        console.log("Processing specific chat query using gemini-3.5-flash with STREAMING...");
+        let resolvedText = text || "";
+        
+        if (textUrl && (!resolvedText || resolvedText.length < 150000)) {
+          if (textCollectionCache.has(textUrl)) {
+            resolvedText = textCollectionCache.get(textUrl) || "";
+          } else {
+            try {
+              const fullDownloadedText = await fetchTextWithTimeout(textUrl, 3000);
+              if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
+                resolvedText = fullDownloadedText;
+                textCollectionCache.set(textUrl, resolvedText);
+              }
+            } catch (fetchErr) {
+              console.error("[RAG Stream Specific] Error loading textUrl:", fetchErr);
+            }
+          }
+        }
+
+        const parts: any[] = [];
+        if (geminiFileUri) {
+          parts.push({
+            fileData: {
+              fileUri: geminiFileUri,
+              mimeType: "application/pdf"
+            }
+          });
+        } else if (resolvedText) {
+          const relevantParts = retrieveRelevantChunks(resolvedText, prompt, 4);
+          parts.push({ text: `[DỮ LIỆU TÀI LIỆU GỐC (RAG CHUNKS)]\n${relevantParts}\n[KẾT THÚC DỮ LIỆU TÀI LIỆU]` });
+        }
+
+        if (image) {
+          const base64Data = image.split(",")[1] || image;
+          parts.push({
+            inlineData: {
+              mimeType: "image/jpeg",
+              data: base64Data
+            }
+          });
+        }
+
+        const contents = [
+          ...trimmedHistory,
+          {
+            role: "user",
+            parts: [
+              ...parts,
+              { text: `Dựa trên tài liệu trên, hãy trả lời câu hỏi: ${prompt}` }
+            ]
+          }
+        ];
+
+        const streamResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContentStream({
+          model: "gemini-3.5-flash",
+          contents,
+          config: {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            temperature: 0.1,
+            topP: 0.95,
+          },
+        }), 2);
+
+        for await (const chunk of streamResponse) {
+          if (chunk.text) {
+            writeStreamChunk({ text: chunk.text });
+          }
+        }
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+    } catch (err: any) {
+      console.error("Stream API Error:", err);
+      writeStreamChunk({ error: err.message || "Lỗi AI trong quá trình nạp luồng dữ liệu" });
+      res.write("data: [DONE]\n\n");
+      return res.end();
+    }
+  });
+
   // API 1: Chat endpoint (Proxy for Gemini with RAG and history limits)
   app.post("/api/chat", async (req, res) => {
     const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl } = req.body;
