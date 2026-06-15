@@ -13,6 +13,24 @@ import { PDFDocument } from "pdf-lib";
 
 dotenv.config();
 
+// Defensive API Key fallback resolving
+if (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY.trim() === "" || process.env.GEMINI_API_KEY === "MY_GEMINI_API_KEY") {
+  const fallbackKeys = [
+    process.env.API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.VITE_GEMINI_API_KEY,
+    process.env.VITE_GOOGLE_API_KEY,
+    process.env.DEFAULT_GEMINI_PROJECT
+  ];
+  for (const fallback of fallbackKeys) {
+    if (fallback && fallback.trim() !== "" && fallback !== "MY_GEMINI_API_KEY") {
+      process.env.GEMINI_API_KEY = fallback.trim();
+      console.log(`[API Key Fallback] Successfully set GEMINI_API_KEY from alternative environment variable: ${fallback.substring(0, 8)}...`);
+      break;
+    }
+  }
+}
+
 // Initialize AI client only when needed or with proper check
 const getAIClient = () => {
   const apiKey = process.env.GEMINI_API_KEY;
