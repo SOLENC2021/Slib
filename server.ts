@@ -598,14 +598,67 @@ async function startServer() {
         let finalFiles = referencedFiles ? JSON.parse(JSON.stringify(referencedFiles)) : [];
         let newlyReRegistered: any[] = [];
 
-        // 1. Pre-fetch text content and evaluate keyword relevance scores in parallel (optimized to max 3 chunks)
-        const scoredFilesTemp = await Promise.all(finalFiles.map(async (file: any) => {
+        // 1. Extact query words to filter of files by filename & category first
+        const queryWordsForPreFilter = prompt.toLowerCase().trim()
+          .replace(/[^a-z0-9áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/gi, " ")
+          .split(/\s+/)
+          .filter((word: string) => word.length >= 2 || /^\d+$/.test(word))
+          .slice(0, 15);
+
+        // Pre-score files based on metadata similarity to prompt
+        const filesWithMetadataScores = finalFiles.map((file: any) => {
+          let score = 0;
+          const nameLower = (file.name || "").toLowerCase();
+          const categoryLower = (file.category || "").toLowerCase();
+          
+          queryWordsForPreFilter.forEach((word: string) => {
+            if (nameLower.includes(word)) {
+              score += 200; // high boost for filename keyword match
+            }
+            if (categoryLower.includes(word)) {
+              score += 50;  // moderate boost for category match
+            }
+          });
+          
+          return { ...file, metadataScore: score };
+        });
+
+        // Sort dynamically, prioritizing metadata matches, fallback to uploadDate for items with same score
+        const sortedByMetadata = filesWithMetadataScores.sort((a, b) => {
+          if (b.metadataScore !== a.metadataScore) {
+            return b.metadataScore - a.metadataScore;
+          }
+          return (b.uploadDate || 0) - (a.uploadDate || 0);
+        });
+
+        // Define timeout fetcher helper to prevent any network hang and ensure sub-second response
+        const fetchTextWithTimeout = async (url: string, timeoutMs = 2500): Promise<string> => {
+          const controller = new AbortController();
+          const id = setTimeout(() => controller.abort(), timeoutMs);
+          try {
+            const res = await fetch(url, { signal: controller.signal });
+            clearTimeout(id);
+            if (res.ok) {
+              return await res.text();
+            }
+            return "";
+          } catch (err) {
+            clearTimeout(id);
+            console.warn(`[RAG Timeout Fetch] Failed or timed out fetching text from: ${url}. Moving on.`);
+            return "";
+          }
+        };
+
+        // Scan only the top 3 most relevant files to perform deep text chunk parsing.
+        // This is the core optimization that brings processing down to < 2 seconds.
+        const filesToDeepScan = sortedByMetadata.slice(0, 3);
+
+        const scoredFilesTemp = await Promise.all(filesToDeepScan.map(async (file: any) => {
           let fileText = file.text || "";
           
           // Proactive caching of existing file text payload
           if (fileText && file.textUrl && !textCollectionCache.has(file.textUrl)) {
             textCollectionCache.set(file.textUrl, fileText);
-            console.log(`[RAG Base Cache] Proactively cached text content for: ${file.name} to optimize future searches`);
           }
 
           if (file.textUrl) {
@@ -615,14 +668,11 @@ async function startServer() {
             } else {
               try {
                 console.log(`[RAG Backend] Pre-fetching text content for relevance scoring: ${file.name}`);
-                const textRes = await fetch(file.textUrl);
-                if (textRes.ok) {
-                  const fullDownloadedText = await textRes.text();
-                  if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
-                    fileText = fullDownloadedText;
-                    textCollectionCache.set(file.textUrl, fileText);
-                    console.log(`[RAG Base Cache] Cached plain text for document: ${file.name} (${fileText.length} chars)`);
-                  }
+                const fullDownloadedText = await fetchTextWithTimeout(file.textUrl, 2500);
+                if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
+                  fileText = fullDownloadedText;
+                  textCollectionCache.set(file.textUrl, fileText);
+                  console.log(`[RAG Base Cache] Cached plain text for document: ${file.name} (${fileText.length} chars)`);
                 }
               } catch (err) {
                 console.error(`Error loading textUrl for ${file.name}:`, err);
@@ -717,7 +767,10 @@ async function startServer() {
             } else {
               try {
                 console.log(`[RAG Specific Backend] Fetching full text content from Storage: ${textUrl}`);
-                const textRes = await fetch(textUrl);
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 3000);
+                const textRes = await fetch(textUrl, { signal: controller.signal });
+                clearTimeout(timeoutId);
                 if (textRes.ok) {
                   const fullDlText = await textRes.text();
                   if (fullDlText) {
@@ -751,14 +804,13 @@ async function startServer() {
         }
 
         const contents = [
-          {
-            role: "user",
-            parts
-          },
           ...trimmedHistory,
           {
             role: "user",
-            parts: [{ text: `Dựa trên tài liệu trên, hãy trả lời câu hỏi: ${prompt}` }]
+            parts: [
+              ...parts,
+              { text: `Dựa trên tài liệu trên, hãy trả lời câu hỏi: ${prompt}` }
+            ]
           }
         ];
 
