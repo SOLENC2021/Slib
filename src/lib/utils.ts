@@ -147,7 +147,7 @@ export function getApiUrl(path: string): string {
     hostname.includes("googleusercontent.com") ||
     hostname.includes("web-dev-server");
 
-  if (!isLocalOrPreview && hostname.includes("github.io")) {
+  if (!isLocalOrPreview) {
     return `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
   }
   return cleanPath;

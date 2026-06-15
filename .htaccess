@@ -1,0 +1,13 @@
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # 1. Rewrite all root/asset traffic into the compiled 'dist' directory
+    RewriteCond %{REQUEST_URI} !^/dist/
+    RewriteRule ^(.*)$ dist/$1 [L]
+
+    # 2. Support React Router SPA fallback inside the 'dist' directory for clean client-side URLs
+    RewriteCond %{DOCUMENT_ROOT}/dist/$1 !-f
+    RewriteCond %{DOCUMENT_ROOT}/dist/$1 !-d
+    RewriteRule ^dist/(.*)$ dist/index.html [L]
+</IfModule>
