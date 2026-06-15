@@ -112,6 +112,57 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
               setProfile(existingData as UserProfile);
             }
           }
+
+          // 1. Load settings for dynamic backend API URL (For all users)
+          try {
+            const apiRef = doc(db, 'settings', 'api');
+            const apiSnap = await getDoc(apiRef);
+            if (apiSnap.exists()) {
+              const apiData = apiSnap.data();
+              if (apiData.url) {
+                const loadedUrl = apiData.url;
+                // Only load and cache if the loaded URL is a valid public container URL
+                if (
+                  loadedUrl && 
+                  !loadedUrl.includes("localhost") && 
+                  !loadedUrl.includes("127.0.0.1") && 
+                  !loadedUrl.includes("-dev-")
+                ) {
+                  const { setDynamicApiUrl } = await import('../lib/utils');
+                  setDynamicApiUrl(loadedUrl);
+                  console.log("[Dynamic API] Loaded active backend API URL from Firestore settings:", loadedUrl);
+                }
+              }
+            }
+          } catch (apiErr) {
+            console.warn("[Dynamic API] Failed to fetch settings/api from Firestore:", apiErr);
+          }
+
+          // 2. If Admin logs in from workspace, auto-heal and publish active PUBLIC container backend URL
+          const isAdminUser = isDefaultAdmin || (userSnap.exists() && (userSnap.data() as any).role === 'admin');
+          if (isAdminUser && typeof window !== 'undefined') {
+            const hostname = window.location.hostname || "";
+            const isCloudRun = hostname.includes("run.app");
+              
+            if (isCloudRun) {
+              try {
+                // If the URL is a development container, convert it to the public stable preview URL
+                let cleanPublicOrigin = window.location.origin;
+                if (cleanPublicOrigin.includes("-dev-")) {
+                  cleanPublicOrigin = cleanPublicOrigin.replace("-dev-", "-pre-");
+                }
+                
+                const apiRef = doc(db, 'settings', 'api');
+                await setDoc(apiRef, {
+                  url: cleanPublicOrigin,
+                  updatedAt: Date.now()
+                }, { merge: true });
+                console.log("[Dynamic API] Auto-healed and updated active backend API URL in Firestore settings as:", cleanPublicOrigin);
+              } catch (setApiErr) {
+                console.warn("[Dynamic API] Failed to update backend URL in Firestore settings:", setApiErr);
+              }
+            }
+          }
         } catch (syncError) {
           console.warn("Gracefully bypassed non-blocking user sync to Firestore due to transient database service unavailability:", syncError);
         }

@@ -109,9 +109,21 @@ service cloud.firestore {
 
       // Sub-collection for lazy loading/OCR results per page
       match /pages/{pageNumber} {
-        allow get: if isSignedIn() && (get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == request.auth.uid);
-        allow write: if isSignedIn() && (get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == request.auth.uid) && isValidPageData(incoming());
+        allow get: if isSignedIn() && (
+          get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == request.auth.uid || 
+          get(/databases/$(database)/documents/files/$(fileId)).data.isPublic == true
+        );
+        allow write: if isSignedIn() && (
+          get(/databases/$(database)/documents/files/$(fileId)).data.ownerId == request.auth.uid ||
+          isAdmin()
+        ) && isValidPageData(incoming());
       }
+    }
+
+    // Settings collection for dynamically adjusting backend URL
+    match /settings/{settingId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
 
     // Notes collection

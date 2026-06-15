@@ -128,6 +128,23 @@ export function cleanLatexForClipboard(text: string): string {
   return res.trim();
 }
 
+let cachedApiUrl = typeof window !== "undefined" ? window.localStorage.getItem("backend_api_url") : null;
+
+export function setDynamicApiUrl(url: string) {
+  if (typeof window !== "undefined" && url) {
+    const cleanUrl = url.endsWith("/") ? url.slice(0, -1) : url;
+    // Strictly prevent local development or private development container URLs from poisoning public cache
+    if (
+      !cleanUrl.includes("localhost") &&
+      !cleanUrl.includes("127.0.0.1") &&
+      !cleanUrl.includes("-dev-")
+    ) {
+      cachedApiUrl = cleanUrl;
+      window.localStorage.setItem("backend_api_url", cleanUrl);
+    }
+  }
+}
+
 export function getApiUrl(path: string): string {
   if (!path) return "";
   if (path.startsWith("http://") || path.startsWith("https://")) {
@@ -136,7 +153,7 @@ export function getApiUrl(path: string): string {
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
   const hostname = typeof window !== "undefined" ? window.location.hostname : "";
   
-  // If running on GitHub Pages (solenc2021.github.io) or another external static host, route to Cloud Run dev/pre backend
+  // If running on GitHub Pages or another external static host, route to Cloud Run dev/pre backend
   // We exclude localhost, 127.0.0.1, run.app, google.com, aistudio.google, googleusercontent.com to keep local dev and cloud preview pointing to the active container backend
   const isLocalOrPreview = 
     !hostname ||
@@ -148,6 +165,17 @@ export function getApiUrl(path: string): string {
     hostname.includes("web-dev-server");
 
   if (!isLocalOrPreview) {
+    if (cachedApiUrl) {
+      // Final security guard validation before returning a cached URL in production environment
+      if (
+        (cachedApiUrl.startsWith("https://") || cachedApiUrl.startsWith("http://")) &&
+        !cachedApiUrl.includes("localhost") &&
+        !cachedApiUrl.includes("127.0.0.1") &&
+        !cachedApiUrl.includes("-dev-")
+      ) {
+        return `${cachedApiUrl}${cleanPath}`;
+      }
+    }
     return `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
   }
   return cleanPath;
