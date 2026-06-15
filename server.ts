@@ -215,10 +215,13 @@ function retrieveRelevantChunks(text: string, query: string, maxChunks = 4, chil
 
   // 3. Normalize and tokenize query
   const normalizedQuery = query.toLowerCase().trim();
-  const queryWords = normalizedQuery
+  const rawWords = normalizedQuery
     .replace(/[^a-z0-9áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/gi, " ")
     .split(/\s+/)
     .filter(word => word.length >= 2 || /^\d+$/.test(word));
+  
+  // Guard loop performance: Limit maximum unique keywords to match in simple CPU loops
+  const queryWords = rawWords.slice(0, 15);
 
   if (queryWords.length === 0) {
     // Zero semantic words: fallback to first 2 parents
@@ -235,8 +238,8 @@ function retrieveRelevantChunks(text: string, query: string, maxChunks = 4, chil
       score += 1500;
     }
 
-    // N-gram Multi-word transition boosts (2-4 words sequences)
-    const qWords = normalizedQuery.split(/\s+/).filter(w => w.length > 0);
+    // N-gram Multi-word transition boosts (2-4 words sequences), capped on query length to protect cpu loops
+    const qWords = rawWords.slice(0, 10);
     for (let len = Math.min(4, qWords.length); len >= 2; len--) {
       for (let sIdx = 0; sIdx <= qWords.length - len; sIdx++) {
         const phraseTerm = qWords.slice(sIdx, sIdx + len).join(" ");
@@ -513,7 +516,7 @@ async function startServer() {
       if (isGeneral) {
         console.log("Processing general chat query using gemini-3.5-flash...");
         
-        const runGeneralChat = async (filesToAttach: any[], useFileUris = true) => {
+        const runGeneralChat = async (filesToAttach: any[], useFileUris = false) => {
           const userParts: any[] = [];
           
           if (compiledContext.trim().length > 0) {
@@ -580,6 +583,13 @@ async function startServer() {
         // 1. Pre-fetch text content and evaluate keyword relevance scores in parallel (optimized to max 3 chunks)
         const scoredFilesTemp = await Promise.all(finalFiles.map(async (file: any) => {
           let fileText = file.text || "";
+          
+          // Proactive caching of existing file text payload
+          if (fileText && file.textUrl && !textCollectionCache.has(file.textUrl)) {
+            textCollectionCache.set(file.textUrl, fileText);
+            console.log(`[RAG Base Cache] Proactively cached text content for: ${file.name} to optimize future searches`);
+          }
+
           if (file.textUrl) {
             if (textCollectionCache.has(file.textUrl)) {
               fileText = textCollectionCache.get(file.textUrl) || "";
@@ -639,42 +649,12 @@ async function startServer() {
         // 4. Also restrict rich document attachments to exactly these top context files
         const attachableFiles = contextFilesToUse.filter(f => f.score > 0 || !compiledContext.trim().length);
 
-        // 5. On-demand heal only the chosen 1 or 2 files if they have expired representation.
-        // If they are not expired, checking/healing time is exactly 0ms.
-        for (let i = 0; i < attachableFiles.length; i++) {
-          const file = attachableFiles[i];
-          const isExpired = file.uploadDate && (Date.now() - file.uploadDate > 40 * 60 * 60 * 1000);
-          if (file.geminiFileUri && isExpired && file.url) {
-            try {
-              console.log(`[Auto Self-Healing] On-demand healing of relevant general chat file: ${file.name}`);
-              const newReg = await reRegisterFileWithGemini(file.url, file.name);
-              if (newReg && newReg.uri) {
-                attachableFiles[i].geminiFileUri = newReg.uri;
-                attachableFiles[i].geminiFileName = newReg.name;
-                
-                // Track back in finalFiles list to return healed representation details
-                const origIdx = finalFiles.findIndex((f: any) => f.id === file.id);
-                if (origIdx !== -1) {
-                  finalFiles[origIdx].geminiFileUri = newReg.uri;
-                  finalFiles[origIdx].geminiFileName = newReg.name;
-                }
-                
-                newlyReRegistered.push({
-                  id: file.id,
-                  geminiFileUri: newReg.uri,
-                  geminiFileName: newReg.name
-                });
-                console.log(`[Auto Self-Healing] On-demand healed relevant file: ${file.name}`);
-              }
-            } catch (reRegErr: any) {
-              console.error(`[Auto Self-Healing] On-demand healing failed for ${file.name}:`, reRegErr);
-              attachableFiles[i].geminiFileUri = undefined;
-            }
-          }
-        }
+        // 5. In general chat, with text-only RAG enabled, we completely bypass full PDF fileUri on-the-fly healing
+        // because we don't need to load the full heavy documents over the Gemini File API.
+        // This avoids unnecessary network checks and gives instant results.
 
         try {
-          response = await runGeneralChat(attachableFiles);
+          response = await runGeneralChat(attachableFiles, false);
         } catch (genErr: any) {
           if (isTokenLimitError(genErr)) {
             console.log("[Auto Self-Healing] Token limit exceeded in general chat. Falling back to text-only mode immediately...");
@@ -683,14 +663,6 @@ async function startServer() {
             } catch (limitFallbackErr: any) {
               throw limitFallbackErr;
             }
-          } else if (isGeminiFileError(genErr)) {
-            console.log("[Auto Self-Healing] Gemini File error in general chat retry. Falling back to plain text context representation.");
-            try {
-              const plainAttachableFiles = attachableFiles.map(f => ({ ...f, geminiFileUri: undefined }));
-              response = await runGeneralChat(plainAttachableFiles);
-            } catch (retryErr: any) {
-              throw retryErr;
-            }
           } else {
             throw genErr;
           }
@@ -698,7 +670,7 @@ async function startServer() {
 
         return res.json({ 
           text: response.text,
-          upgradedReferencedFiles: newlyReRegistered.length > 0 ? newlyReRegistered : undefined
+          upgradedReferencedFiles: undefined
         });
       }
 
