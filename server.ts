@@ -145,6 +145,9 @@ function cleanExtractedText(text: string): string {
   return filteredLines.join("\n").trim();
 }
 
+// Memory cache for standard technical document plain texts to prevent massive re-downloading latency
+const textCollectionCache = new Map<string, string>();
+
 /**
  * Parent-Child Retrieval (RAG):
  * Splits text into Parent chunks (~1500 chars) for rich full contextual structure, and Child chunks (~500 chars with 100 overlap)
@@ -578,17 +581,24 @@ async function startServer() {
         const scoredFilesTemp = await Promise.all(finalFiles.map(async (file: any) => {
           let fileText = file.text || "";
           if (file.textUrl) {
-            try {
-              console.log(`[RAG Backend] Pre-fetching text content for relevance scoring: ${file.name}`);
-              const textRes = await fetch(file.textUrl);
-              if (textRes.ok) {
-                const fullDownloadedText = await textRes.text();
-                if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
-                  fileText = fullDownloadedText;
+            if (textCollectionCache.has(file.textUrl)) {
+              fileText = textCollectionCache.get(file.textUrl) || "";
+              console.log(`[RAG Base Cache] Serving in-memory cached content for document: ${file.name}`);
+            } else {
+              try {
+                console.log(`[RAG Backend] Pre-fetching text content for relevance scoring: ${file.name}`);
+                const textRes = await fetch(file.textUrl);
+                if (textRes.ok) {
+                  const fullDownloadedText = await textRes.text();
+                  if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
+                    fileText = fullDownloadedText;
+                    textCollectionCache.set(file.textUrl, fileText);
+                    console.log(`[RAG Base Cache] Cached plain text for document: ${file.name} (${fileText.length} chars)`);
+                  }
                 }
+              } catch (err) {
+                console.error(`Error loading textUrl for ${file.name}:`, err);
               }
-            } catch (err) {
-              console.error(`Error loading textUrl for ${file.name}:`, err);
             }
           }
           
@@ -708,18 +718,24 @@ async function startServer() {
         } else {
           let resolvedText = text || "";
           if (textUrl && (!resolvedText || resolvedText.length < 150000)) {
-            try {
-              console.log(`[RAG Specific Backend] Fetching full text content from Storage: ${textUrl}`);
-              const textRes = await fetch(textUrl);
-              if (textRes.ok) {
-                const fullDlText = await textRes.text();
-                if (fullDlText) {
-                  resolvedText = fullDlText;
-                  console.log(`[RAG Specific Backend] Successfully retrieved total of ${resolvedText.length} characters of text.`);
+            if (textCollectionCache.has(textUrl)) {
+              resolvedText = textCollectionCache.get(textUrl) || "";
+              console.log(`[RAG Specific Cache] Serving cached textUrl content`);
+            } else {
+              try {
+                console.log(`[RAG Specific Backend] Fetching full text content from Storage: ${textUrl}`);
+                const textRes = await fetch(textUrl);
+                if (textRes.ok) {
+                  const fullDlText = await textRes.text();
+                  if (fullDlText) {
+                    resolvedText = fullDlText;
+                    textCollectionCache.set(textUrl, resolvedText);
+                    console.log(`[RAG Specific Cache] Cached textUrl (${resolvedText.length} chars)`);
+                  }
                 }
+              } catch (fetchErr) {
+                console.error("[RAG Specific Backend] Error fetching textUrl:", fetchErr);
               }
-            } catch (fetchErr) {
-              console.error("[RAG Specific Backend] Error fetching textUrl:", fetchErr);
             }
           }
 
