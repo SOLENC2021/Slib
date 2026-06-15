@@ -138,17 +138,19 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
             console.warn("[Dynamic API] Failed to fetch settings/api from Firestore:", apiErr);
           }
 
-          // 2. If Admin logs in from workspace, auto-heal and publish active PUBLIC container backend URL
+          // 2. If Admin logs in from workspace or production domain, auto-heal and publish active PUBLIC container backend URL
           const isAdminUser = isDefaultAdmin || (userSnap.exists() && (userSnap.data() as any).role === 'admin');
           if (isAdminUser && typeof window !== 'undefined') {
             const hostname = window.location.hostname || "";
-            const isCloudRun = hostname.includes("run.app");
+            const isPublishableOrigin = hostname.includes("run.app") || hostname === "solencdesigncloud.com";
               
-            if (isCloudRun) {
+            if (isPublishableOrigin) {
               try {
-                // If the URL is a development container, convert it to the public stable preview URL
                 let cleanPublicOrigin = window.location.origin;
-                if (cleanPublicOrigin.includes("-dev-")) {
+                // If the URL is custom domain, use it directly. Otherwise help route via the stable custom domain or fallback
+                if (hostname === "solencdesigncloud.com") {
+                  cleanPublicOrigin = "https://solencdesigncloud.com";
+                } else if (cleanPublicOrigin.includes("-dev-")) {
                   cleanPublicOrigin = cleanPublicOrigin.replace("-dev-", "-pre-");
                 }
                 

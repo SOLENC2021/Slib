@@ -153,8 +153,8 @@ export function getApiUrl(path: string): string {
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
   const hostname = typeof window !== "undefined" ? window.location.hostname : "";
   
-  // If running on GitHub Pages or another external static host, route to Cloud Run dev/pre backend
-  // We exclude localhost, 127.0.0.1, run.app, google.com, aistudio.google, googleusercontent.com to keep local dev and cloud preview pointing to the active container backend
+  // If running on local dev, preview containers, or the live full-stack production domain (solencdesigncloud.com),
+  // we use standard relative paths (same origin) to prevent CORS issues, stale endpoints, or authorization blocks on preview containers.
   const isLocalOrPreview = 
     !hostname ||
     hostname === "localhost" ||
@@ -162,7 +162,9 @@ export function getApiUrl(path: string): string {
     hostname.includes("run.app") ||
     hostname.includes("aistudio.google") ||
     hostname.includes("googleusercontent.com") ||
-    hostname.includes("web-dev-server");
+    hostname.includes("web-dev-server") ||
+    hostname.includes("solencdesigncloud.com") ||
+    !hostname.includes("github.io"); // Any other custom domain mapped to this express application
 
   if (!isLocalOrPreview) {
     if (cachedApiUrl) {
@@ -176,7 +178,8 @@ export function getApiUrl(path: string): string {
         return `${cachedApiUrl}${cleanPath}`;
       }
     }
-    return `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
+    // Primary stable public fallback is the production domain solencdesigncloud.com
+    return `https://solencdesigncloud.com${cleanPath}`;
   }
   return cleanPath;
 }
