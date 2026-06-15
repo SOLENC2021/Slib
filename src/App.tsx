@@ -576,7 +576,8 @@ export default function App() {
           result.upgradedReferencedFiles.forEach((upRef: any) => {
             updateDoc(doc(db, "files", upRef.id), {
               geminiFileUri: upRef.geminiFileUri,
-              geminiFileName: upRef.geminiFileName
+              geminiFileName: upRef.geminiFileName,
+              uploadDate: Date.now()
             }).catch((e) => console.error("Auto self-healing database write failed:", e));
           });
         }
@@ -681,7 +682,8 @@ export default function App() {
             // Background update firestore
             updateDoc(doc(db, "files", activeFile.id), {
               geminiFileUri: registration.uri,
-              geminiFileName: registration.name || null
+              geminiFileName: registration.name || null,
+              uploadDate: Date.now()
             }).catch(e => console.error("Failed to update firestore with registered gemini files uri:", e));
           }
         } catch (regErr) {
@@ -710,7 +712,8 @@ export default function App() {
         const up = result.upgradedFile;
         updateDoc(doc(db, "files", up.fileId), {
           geminiFileUri: up.geminiFileUri,
-          geminiFileName: up.geminiFileName
+          geminiFileName: up.geminiFileName,
+          uploadDate: Date.now()
         }).catch(e => console.error("Auto self-healing database write failed:", e));
       }
       

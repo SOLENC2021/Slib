@@ -510,43 +510,18 @@ async function startServer() {
       if (isGeneral) {
         console.log("Processing general chat query using gemini-3.5-flash...");
         
-        const runGeneralChat = async (currentFiles: any[], useFileUris = true) => {
+        const runGeneralChat = async (filesToAttach: any[], useFileUris = true) => {
           const userParts: any[] = [];
-          let compiledContext = "";
           
-          if (currentFiles && Array.isArray(currentFiles)) {
-            for (const file of currentFiles) {
-              let fileText = file.text || "";
-              
-              if (file.textUrl) {
-                try {
-                  console.log(`[RAG Backend] Fetching full text content from Storage for ${file.name}: ${file.textUrl}`);
-                  const textRes = await fetch(file.textUrl);
-                  if (textRes.ok) {
-                    const fullDownloadedText = await textRes.text();
-                    if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
-                      fileText = fullDownloadedText;
-                      console.log(`[RAG Backend] Successfully retrieved total of ${fileText.length} characters of text for ${file.name}.`);
-                    }
-                  } else {
-                    console.warn(`[RAG Backend] Failed to fetch full text from ${file.textUrl}. Status: ${textRes.status}`);
-                  }
-                } catch (fetchErr) {
-                  console.error(`[RAG Backend] Error fetching textUrl for ${file.name}:`, fetchErr);
-                }
-              }
+          if (compiledContext.trim().length > 0) {
+            userParts.push({
+              text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${compiledContext}`
+            });
+          }
 
-              // 1. If text is available, perform keyword-based chunk matching (RAG) to fulfill rule #2
-              if (fileText) {
-                console.log(`General Chat RAG: Extracting relevant keyword chunks from ${file.name}`);
-                const relevantParts = retrieveRelevantChunks(fileText, prompt, 4);
-                if (relevantParts && relevantParts.trim().length > 0) {
-                  compiledContext += `--- [BẮT ĐẦU TRÍCH ĐOẠN PHÙ HỢP CÔNG TRÌNH - TÀI LIỆU: ${file.name}] ---\n${relevantParts}\n--- [KẾT THÚC TRÍCH ĐOẠN - TÀI LIỆU: ${file.name}] ---\n\n`;
-                }
-              }
-              
-              // 2. Also reference the Gemini File URI if available as supplementary input
-              if (useFileUris && file.geminiFileUri) {
+          if (useFileUris) {
+            filesToAttach.forEach((file) => {
+              if (file.geminiFileUri) {
                 console.log(`General Chat: supplemented referencing PDF ${file.name} (URI: ${file.geminiFileUri})`);
                 userParts.push({
                   fileData: {
@@ -555,12 +530,6 @@ async function startServer() {
                   }
                 });
               }
-            }
-          }
-
-          if (compiledContext.trim().length > 0) {
-            userParts.push({
-              text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${compiledContext}`
             });
           }
 
@@ -574,7 +543,7 @@ async function startServer() {
             });
           }
 
-          if (compiledContext.trim().length > 0 || (currentFiles && currentFiles.length > 0)) {
+          if (compiledContext.trim().length > 0 || filesToAttach.length > 0) {
             userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên [DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN] đã được nhồi trực tiếp ở trên và kiến thức chuyên ngành. Hãy trích dẫn chuẩn xác các điều khoản kỹ thuật, số liệu, bảng biểu có trong context:\n\nYêu cầu câu hỏi kỹ thuật: ${prompt}` });
           } else {
             userParts.push({ text: prompt });
@@ -605,106 +574,109 @@ async function startServer() {
         let finalFiles = referencedFiles ? JSON.parse(JSON.stringify(referencedFiles)) : [];
         let newlyReRegistered: any[] = [];
 
-        // Proactively heal any files known to have expired (older than 40 hours) before executing runGeneralChat
-        let needsPreemptiveHealing = false;
-        for (const file of finalFiles) {
+        // 1. Pre-fetch text content and evaluate keyword relevance scores in parallel
+        const scoredFilesTemp = await Promise.all(finalFiles.map(async (file: any) => {
+          let fileText = file.text || "";
+          if (file.textUrl) {
+            try {
+              console.log(`[RAG Backend] Pre-fetching text content for relevance scoring: ${file.name}`);
+              const textRes = await fetch(file.textUrl);
+              if (textRes.ok) {
+                const fullDownloadedText = await textRes.text();
+                if (fullDownloadedText && fullDownloadedText.trim().length > 0) {
+                  fileText = fullDownloadedText;
+                }
+              }
+            } catch (err) {
+              console.error(`Error loading textUrl for ${file.name}:`, err);
+            }
+          }
+          
+          let relevantParts = "";
+          let score = 0;
+          if (fileText) {
+            relevantParts = retrieveRelevantChunks(fileText, prompt, 4);
+            if (relevantParts && relevantParts.trim().length > 0) {
+              score = relevantParts.length;
+            }
+          }
+          
+          return {
+            ...file,
+            textLoaded: fileText,
+            relevantParts,
+            score
+          };
+        }));
+
+        // Sort by relevance score (highest first)
+        const sortedScoredFiles = scoredFilesTemp.sort((a, b) => b.score - a.score);
+
+        // 2. Build the combined text context using RAG snippets
+        let compiledContext = "";
+        sortedScoredFiles.forEach(file => {
+          if (file.relevantParts && file.relevantParts.trim().length > 0) {
+            compiledContext += `--- [BẮT ĐẦU TRÍCH ĐOẠN PHÙ HỢP CÔNG TRÌNH - TÀI LIỆU: ${file.name}] ---\n${file.relevantParts}\n--- [KẾT THÚC TRÍCH ĐOẠN - TÀI LIỆU: ${file.name}] ---\n\n`;
+          }
+        });
+
+        // 3. To maintain supreme low-latency and keep under model token limits, restrict rich document attachments
+        // inside the general chat parameters to at most the top 2 files matching the query
+        const attachableFiles = sortedScoredFiles
+          .filter(f => f.score > 0 || !compiledContext.trim().length)
+          .slice(0, 2);
+
+        // 4. On-demand heal only the chosen 1 or 2 files if they have expired representation.
+        // If they are not expired, checking/healing time is exactly 0ms.
+        for (let i = 0; i < attachableFiles.length; i++) {
+          const file = attachableFiles[i];
           const isExpired = file.uploadDate && (Date.now() - file.uploadDate > 40 * 60 * 60 * 1000);
-          if (file.geminiFileUri && isExpired) {
-            needsPreemptiveHealing = true;
-            break;
+          if (file.geminiFileUri && isExpired && file.url) {
+            try {
+              console.log(`[Auto Self-Healing] On-demand healing of relevant general chat file: ${file.name}`);
+              const newReg = await reRegisterFileWithGemini(file.url, file.name);
+              if (newReg && newReg.uri) {
+                attachableFiles[i].geminiFileUri = newReg.uri;
+                attachableFiles[i].geminiFileName = newReg.name;
+                
+                // Track back in finalFiles list to return healed representation details
+                const origIdx = finalFiles.findIndex((f: any) => f.id === file.id);
+                if (origIdx !== -1) {
+                  finalFiles[origIdx].geminiFileUri = newReg.uri;
+                  finalFiles[origIdx].geminiFileName = newReg.name;
+                }
+                
+                newlyReRegistered.push({
+                  id: file.id,
+                  geminiFileUri: newReg.uri,
+                  geminiFileName: newReg.name
+                });
+                console.log(`[Auto Self-Healing] On-demand healed relevant file: ${file.name}`);
+              }
+            } catch (reRegErr: any) {
+              console.error(`[Auto Self-Healing] On-demand healing failed for ${file.name}:`, reRegErr);
+              attachableFiles[i].geminiFileUri = undefined;
+            }
           }
         }
 
-        if (needsPreemptiveHealing) {
-          console.log("[Auto Self-Healing] Proactively detecting expired Gemini Files before general chat. Re-registering...");
-          await Promise.all(finalFiles.map(async (file, i) => {
-            const isExpired = file.uploadDate && (Date.now() - file.uploadDate > 40 * 60 * 60 * 1000);
-            if (file.geminiFileUri && isExpired && file.url) {
-              try {
-                const newReg = await reRegisterFileWithGemini(file.url, file.name);
-                if (newReg && newReg.uri) {
-                  finalFiles[i].geminiFileUri = newReg.uri;
-                  finalFiles[i].geminiFileName = newReg.name;
-                  newlyReRegistered.push({
-                    id: file.id,
-                    geminiFileUri: newReg.uri,
-                    geminiFileName: newReg.name
-                  });
-                  console.log(`[Auto Self-Healing] Proactively re-registered ${file.name} -> new URI: ${newReg.uri}`);
-                }
-              } catch (reRegErr: any) {
-                console.error(`[Auto Self-Healing] Proactive re-registration failed for ${file.name}:`, reRegErr.message || reRegErr);
-                // Clear state URI so direct text/RAG query is used instead of failing
-                finalFiles[i].geminiFileUri = undefined;
-              }
-            }
-          }));
-        }
-
         try {
-          response = await runGeneralChat(finalFiles);
+          response = await runGeneralChat(attachableFiles);
         } catch (genErr: any) {
           if (isTokenLimitError(genErr)) {
-            console.log("[Auto Self-Healing] Token limit exceeded in general chat. Falling back to text-only (RAG) mode immediately...");
+            console.log("[Auto Self-Healing] Token limit exceeded in general chat. Falling back to text-only mode immediately...");
             try {
-              response = await runGeneralChat(finalFiles, false);
+              response = await runGeneralChat(attachableFiles, false);
             } catch (limitFallbackErr: any) {
               throw limitFallbackErr;
             }
           } else if (isGeminiFileError(genErr)) {
-            console.log("[Auto Self-Healing] Gemini File error in general chat. Attempting to on-the-fly re-register referenced files...");
+            console.log("[Auto Self-Healing] Gemini File error in general chat retry. Falling back to plain text context representation.");
             try {
-              const healedFiles = await Promise.all(finalFiles.map(async (file) => {
-                const healed = { ...file };
-                if (healed.geminiFileUri) {
-                  let reRegistered = false;
-                  if (healed.url) {
-                    try {
-                      const newReg = await reRegisterFileWithGemini(healed.url, healed.name);
-                      if (newReg && newReg.uri) {
-                        healed.geminiFileUri = newReg.uri;
-                        healed.geminiFileName = newReg.name;
-                        reRegistered = true;
-                        
-                        newlyReRegistered.push({
-                          id: healed.id,
-                          geminiFileUri: newReg.uri,
-                          geminiFileName: newReg.name
-                        });
-                        console.log(`[Auto Self-Healing] Successfully re-registered ${healed.name} -> new URI: ${newReg.uri}`);
-                      }
-                    } catch (reRegErr: any) {
-                      console.error(`[Auto Self-Healing] Failed to re-register ${healed.name}:`, reRegErr.message || reRegErr);
-                    }
-                  }
-                  
-                  if (!reRegistered) {
-                    // Force-clear the expired URI so standard text RAG is utilized as a robust fallback
-                    console.log(`[Auto Self-Healing] Clearing stale geminiFileUri for file: ${healed.name} to allow direct RAG text context fallback.`);
-                    healed.geminiFileUri = undefined;
-                  }
-                }
-                return healed;
-              }));
-              // Try again with updated file URIs (fully resolved or safely bypassed)
-              response = await runGeneralChat(healedFiles);
+              const plainAttachableFiles = attachableFiles.map(f => ({ ...f, geminiFileUri: undefined }));
+              response = await runGeneralChat(plainAttachableFiles);
             } catch (retryErr: any) {
-              if (isTokenLimitError(retryErr)) {
-                console.warn("[Auto Self-Healing] Token limit exceeded during retry. Falling back to text-only (RAG) mode.");
-                try {
-                  response = await runGeneralChat(finalFiles, false);
-                } catch (tokErr) {
-                  throw tokErr;
-                }
-              } else {
-                console.warn("[Auto Self-Healing] Retry with newly registered files failed. Falling back to plain text content.", retryErr.message || retryErr);
-                const plainFiles = finalFiles.map((f: any) => ({ ...f, geminiFileUri: undefined }));
-                try {
-                  response = await runGeneralChat(plainFiles);
-                } catch (fallbackErr: any) {
-                  throw fallbackErr;
-                }
-              }
+              throw retryErr;
             }
           } else {
             throw genErr;
