@@ -121,9 +121,10 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
               const apiData = apiSnap.data();
               if (apiData.url) {
                 const loadedUrl = apiData.url;
-                // Only load and cache if the loaded URL is a valid public container URL
+                // Only load and cache if the loaded URL is a valid public container URL belonging to this project
                 if (
                   loadedUrl && 
+                  loadedUrl.includes("rcoaoicqj56hwshueq7jte") &&
                   !loadedUrl.includes("localhost") && 
                   !loadedUrl.includes("127.0.0.1") && 
                   !loadedUrl.includes("-dev-")
@@ -131,6 +132,8 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
                   const { setDynamicApiUrl } = await import('../lib/utils');
                   setDynamicApiUrl(loadedUrl);
                   console.log("[Dynamic API] Loaded active backend API URL from Firestore settings:", loadedUrl);
+                } else {
+                  console.warn("[Dynamic API] Ignored loaded api.url due to mismatch with current project instance:", loadedUrl);
                 }
               }
             }

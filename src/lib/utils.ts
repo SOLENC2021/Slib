@@ -165,20 +165,33 @@ export function getApiUrl(path: string): string {
 
   const isStaticHost = !isLocalOrDirectBackend;
 
+  let resolvedUrl = cleanPath;
+
   if (isStaticHost) {
     if (cachedApiUrl) {
-      // Final security guard validation before returning a cached URL in production environment
+      // Validate that cachedApiUrl contains the correct app prefix to avoid database poisoning
       if (
         (cachedApiUrl.startsWith("https://") || cachedApiUrl.startsWith("http://")) &&
+        cachedApiUrl.includes("rcoaoicqj56hwshueq7jte") &&
         !cachedApiUrl.includes("localhost") &&
         !cachedApiUrl.includes("127.0.0.1") &&
         !cachedApiUrl.includes("-dev-")
       ) {
-        return `${cachedApiUrl}${cleanPath}`;
+        resolvedUrl = `${cachedApiUrl}${cleanPath}`;
+      } else {
+        // Obsolete or poisoned cached URL, discard and use default
+        resolvedUrl = `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
       }
+    } else {
+      // Primary stable public fallback is the Cloud Run production-preview container URL
+      resolvedUrl = `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
     }
-    // Primary stable public fallback is the Cloud Run production-preview container URL
-    return `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
   }
-  return cleanPath;
+
+  // Print single-line debug info to browser console in production-like environments
+  if (isStaticHost) {
+    console.log(`[API Proxy] ${path} -> ${resolvedUrl}`);
+  }
+
+  return resolvedUrl;
 }
