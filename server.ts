@@ -489,9 +489,15 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // CORS middleware for external clients (like GitHub Pages)
+  // CORS middleware for external clients allowing credentials and dynamic origin matching
   app.use((req, res, next) => {
-    res.header("Access-Control-Allow-Origin", "*");
+    const origin = req.headers.origin;
+    if (origin) {
+      res.header("Access-Control-Allow-Origin", origin);
+      res.header("Access-Control-Allow-Credentials", "true");
+    } else {
+      res.header("Access-Control-Allow-Origin", "*");
+    }
     res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
     res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, Content-Length");
     if (req.method === "OPTIONS") {
@@ -531,6 +537,9 @@ async function startServer() {
 
     const writeStreamChunk = (data: any) => {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
+      if (typeof (res as any).flush === "function") {
+        (res as any).flush();
+      }
     };
 
     try {
