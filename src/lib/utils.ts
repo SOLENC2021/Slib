@@ -161,8 +161,7 @@ export function getApiUrl(path: string): string {
     hostname === "127.0.0.1" ||
     hostname.includes("run.app") ||
     hostname.includes("googleusercontent.com") ||
-    hostname.includes("aistudio.google") ||
-    hostname.includes("solencdesigncloud.com");
+    hostname.includes("aistudio.google");
 
   const isStaticHost = !isLocalOrDirectBackend;
 
