@@ -498,7 +498,8 @@ async function startServer() {
   app.use(cors({
     origin: function (origin, callback) {
       if (!origin || 
-          allowedOrigins.indexOf(origin) !== -1 ||
+          origin === 'https://solencdesigncloud.com' ||
+          origin === 'http://localhost:5173' ||
           origin.includes('run.app') ||
           origin.includes('googleusercontent.com') ||
           origin.includes('aistudio.google') ||
@@ -507,7 +508,8 @@ async function startServer() {
           origin.includes('127.0.0.1')) {
         callback(null, true);
       } else {
-        callback(new Error('CORS Error'));
+        // Safe rejection without throwing unhandled Error
+        callback(null, false);
       }
     },
     credentials: true,
@@ -616,6 +618,24 @@ async function startServer() {
           let textContext = "";
 
           for (const file of contextFiles) {
+            // Proactive on-the-fly registration to prevent manual PDF text extraction!
+            if (useFilesApi && !file.geminiFileUri && file.url) {
+              console.log(`[Stream General RAG] File "${file.name}" lacks geminiFileUri. Registering on-the-fly...`);
+              try {
+                const newReg = await reRegisterFileWithGemini(file.url, file.name);
+                if (newReg && newReg.uri) {
+                  file.geminiFileUri = newReg.uri;
+                  upgradedReferencedFiles.push({
+                    id: file.id,
+                    geminiFileUri: newReg.uri,
+                    geminiFileName: newReg.name
+                  });
+                }
+              } catch (regErr: any) {
+                console.error(`[Stream General RAG] On-the-fly registration failed for "${file.name}":`, regErr.message || regErr);
+              }
+            }
+
             if (useFilesApi && file.geminiFileUri && file.id !== excludedFileId) {
               console.log(`[Stream RAG] Attaching native Gemini File API Uri: ${file.name}`);
               userParts.push({
@@ -766,6 +786,24 @@ async function startServer() {
 
         let finalFileUri = geminiFileUri;
         let upgradedFile: any = null;
+
+        if (!finalFileUri && fileUrl) {
+          console.log(`[Stream Specific] Missing geminiFileUri but has fileUrl. Registering on-the-fly...`);
+          try {
+            const newReg = await reRegisterFileWithGemini(fileUrl, fileName);
+            if (newReg && newReg.uri) {
+              finalFileUri = newReg.uri;
+              upgradedFile = {
+                fileId,
+                geminiFileUri: newReg.uri,
+                geminiFileName: newReg.name
+              };
+              console.log(`[Stream Specific] Registered successfully: ${finalFileUri}`);
+            }
+          } catch (regErr: any) {
+            console.error(`[Stream Specific] On-the-fly registration failed:`, regErr.message || regErr);
+          }
+        }
 
         const runStream = async (uri: string | undefined) => {
           const parts: any[] = [];
@@ -1096,6 +1134,24 @@ async function startServer() {
       let response;
       let finalFileUri = geminiFileUri;
       let dynamicNewRegistration: any = null;
+
+      if (!finalFileUri && fileUrl) {
+        console.log(`[Non-Stream Specific] Missing geminiFileUri but has fileUrl. Registering on-the-fly...`);
+        try {
+          const newReg = await reRegisterFileWithGemini(fileUrl, fileName);
+          if (newReg && newReg.uri) {
+            finalFileUri = newReg.uri;
+            dynamicNewRegistration = {
+              id: fileId,
+              geminiFileUri: newReg.uri,
+              geminiFileName: newReg.name
+            };
+            console.log(`[Non-Stream Specific] Registered successfully: ${finalFileUri}`);
+          }
+        } catch (regErr: any) {
+          console.error(`[Non-Stream Specific] On-the-fly registration failed:`, regErr.message || regErr);
+        }
+      }
 
       const runSpecificChat = async (uri: string | undefined) => {
         const parts: any[] = [];

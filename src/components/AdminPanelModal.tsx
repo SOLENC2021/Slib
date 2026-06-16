@@ -5,7 +5,7 @@ import {
   Search, Check, ShieldAlert, Award
 } from "lucide-react";
 import { 
-  collection, query, orderBy, onSnapshot, 
+  collection, query, orderBy, getDocs, 
   doc, updateDoc 
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
@@ -23,27 +23,31 @@ export function AdminPanelModal({ isOpen, onClose, currentAdminEmail }: AdminPan
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(true);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [trigger, setTrigger] = useState(0);
 
   useEffect(() => {
     if (!isOpen) return;
 
-    setLoading(true);
-    const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const uList = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        uid: doc.id
-      })) as UserProfile[];
-      setUsers(uList);
-      setLoading(false);
-    }, (error) => {
-      console.error("Failed to fetch department users in real-time:", error);
-      setLoading(false);
-    });
+    const fetchUsers = async () => {
+      setLoading(true);
+      try {
+        const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
+        console.log("[AdminPanelModal] Fetching system users list via getDocs ONE-TIME...");
+        const snapshot = await getDocs(q);
+        const uList = snapshot.docs.map(doc => ({
+          ...doc.data(),
+          uid: doc.id
+        })) as UserProfile[];
+        setUsers(uList);
+      } catch (error) {
+        console.error("Failed to fetch department users:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
 
-    return () => unsubscribe();
-  }, [isOpen]);
+    fetchUsers();
+  }, [isOpen, trigger]);
 
   if (!isOpen) return null;
 
@@ -69,6 +73,7 @@ export function AdminPanelModal({ isOpen, onClose, currentAdminEmail }: AdminPan
       await updateDoc(userRef, {
         apiLimit: newLimit
       });
+      setTrigger(prev => prev + 1); // Refresh user list immediately after change succeeds
     } catch (err) {
       console.error("API Limit update failed:", err);
       alert("Không có quyền cập nhật hoặc gặp lỗi kết nối.");
@@ -84,6 +89,7 @@ export function AdminPanelModal({ isOpen, onClose, currentAdminEmail }: AdminPan
       await updateDoc(userRef, {
         apiUsageCount: 0
       });
+      setTrigger(prev => prev + 1); // Refresh user list immediately after change succeeds
     } catch (err) {
       console.error("API Usage reset failed:", err);
       alert("Không có quyền đặt lại.");
@@ -103,6 +109,7 @@ export function AdminPanelModal({ isOpen, onClose, currentAdminEmail }: AdminPan
         role: newRole,
         apiLimit: newLimit
       });
+      setTrigger(prev => prev + 1); // Refresh user list immediately after change succeeds
     } catch (err) {
       console.error("Role toggle failed:", err);
       alert("Lỗi khi chuyển đổi vai trò.");

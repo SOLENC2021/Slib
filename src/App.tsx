@@ -24,7 +24,8 @@ import {
   setDoc, 
   updateDoc, 
   deleteDoc,
-  orderBy 
+  orderBy,
+  getDocs
 } from "firebase/firestore";
 import { 
   ref, 
@@ -69,7 +70,18 @@ export default function App() {
     };
   }, []);
 
-  const [files, setFiles] = useState<PDFFile[]>([]);
+  const [files, setFiles] = useState<PDFFile[]>(() => {
+    if (typeof window !== "undefined") {
+      const cached = sessionStorage.getItem("solenc_files_cache");
+      if (cached) {
+        try { return JSON.parse(cached); } catch (e) {}
+      }
+    }
+    return [];
+  });
+  const [hasFetchedFiles, setHasFetchedFiles] = useState(false);
+  const [filesTrigger, setFilesTrigger] = useState(0);
+
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
   const activeFile = files.find(f => f.id === activeFileId) || null;
   const [messages, setMessages] = useState<Message[]>([]);
@@ -171,47 +183,54 @@ export default function App() {
     }
   }, [files]);
 
-  // Sync files from Firestore
+  // Sync files from Firestore (No real-time snapshot listeners - Quota safety)
   useEffect(() => {
     if (isFirestoreSuspended() || isDbSuspended) {
-      console.warn("[App] Firestore is suspended, bypassing files real-time listener.");
+      console.warn("[App] Firestore is suspended, bypassing files fetch.");
       return;
     }
 
     if (!user) {
       setFiles([]);
+      if (typeof window !== "undefined") sessionStorage.removeItem("solenc_files_cache");
       return;
     }
 
-    const isAdminUser = profile?.role === "admin" || user?.email === "solenc2021@gmail.com";
-    // If Admin and in Admin View Mode, query their own uploaded assets.
-    // Otherwise, query public assets (which isPublic == true).
-    const q = (isAdminUser && viewMode === "admin")
-      ? query(
-          collection(db, "files"),
-          where("ownerId", "==", user.uid)
-        )
-      : query(
-          collection(db, "files"),
-          where("isPublic", "==", true)
-        );
+    // Lock fetch if already populated in session, unless manually triggered (invalidate)
+    if (hasFetchedFiles && filesTrigger === 0 && files.length > 0) {
+      console.log("[App] Serving cached files list from local state.");
+      return;
+    }
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedFiles = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        id: doc.id
-      })) as PDFFile[];
-      
-      // Sort in memory to avoid Firestore composite index requirements
-      fetchedFiles.sort((a, b) => (b.uploadDate || 0) - (a.uploadDate || 0));
-      
-      setFiles(fetchedFiles);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, "files");
-    });
+    const loadFiles = async () => {
+      try {
+        const isAdminUser = profile?.role === "admin" || user?.email === "solenc2021@gmail.com";
+        const q = (isAdminUser && viewMode === "admin")
+          ? query(collection(db, "files"), where("ownerId", "==", user.uid))
+          : query(collection(db, "files"), where("isPublic", "==", true));
 
-    return () => unsubscribe();
-  }, [user, profile, viewMode, isDbSuspended]);
+        console.log("[App] Querying Firestore 'files' list using getDocs ONE-TIME...");
+        const snapshot = await getDocs(q);
+        const fetchedFiles = snapshot.docs.map(doc => ({
+          ...doc.data(),
+          id: doc.id
+        })) as PDFFile[];
+        
+        // Sort in memory to avoid Firestore composite index requirements
+        fetchedFiles.sort((a, b) => (b.uploadDate || 0) - (a.uploadDate || 0));
+        
+        setFiles(fetchedFiles);
+        setHasFetchedFiles(true);
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem("solenc_files_cache", JSON.stringify(fetchedFiles));
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, "files");
+      }
+    };
+
+    loadFiles();
+  }, [user, profile, viewMode, isDbSuspended, filesTrigger]);
 
   // Self-healing: Ensure existing documents have isPublic = true so they are visible to members
   useEffect(() => {
@@ -232,38 +251,64 @@ export default function App() {
     }
   }, [files, profile, user, viewMode, isDbSuspended]);
 
-  const [notes, setNotes] = useState<Note[]>([]);
+  const [notes, setNotes] = useState<Note[]>(() => {
+    if (typeof window !== "undefined") {
+      const cached = sessionStorage.getItem("solenc_notes_cache");
+      if (cached) {
+        try { return JSON.parse(cached); } catch (e) {}
+      }
+    }
+    return [];
+  });
+  const [hasFetchedNotes, setHasFetchedNotes] = useState(false);
+  const [notesTrigger, setNotesTrigger] = useState(0);
 
-  // Sync notes from Firestore
+  // Sync notes from Firestore (No real-time snapshot listeners - Quota safety)
   useEffect(() => {
     if (isFirestoreSuspended() || isDbSuspended) {
-      console.warn("[App] Firestore is suspended, bypassing notes real-time listener.");
+      console.warn("[App] Firestore is suspended, bypassing notes fetch.");
       return;
     }
 
     if (!user) {
       setNotes([]);
+      if (typeof window !== "undefined") sessionStorage.removeItem("solenc_notes_cache");
       return;
     }
 
-    const q = query(
-      collection(db, "notes"),
-      where("ownerId", "==", user.uid),
-      orderBy("createdAt", "desc")
-    );
+    // Lock fetch if already populated in session, unless manually triggered (invalidate)
+    if (hasFetchedNotes && notesTrigger === 0 && notes.length > 0) {
+      console.log("[App] Serving cached notes list from local state.");
+      return;
+    }
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedNotes = snapshot.docs.map(doc => ({
-        ...doc.data(),
-        id: doc.id
-      })) as Note[];
-      setNotes(fetchedNotes);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, "notes");
-    });
+    const loadNotes = async () => {
+      try {
+        const q = query(
+          collection(db, "notes"),
+          where("ownerId", "==", user.uid),
+          orderBy("createdAt", "desc")
+        );
 
-    return () => unsubscribe();
-  }, [user, isDbSuspended]);
+        console.log("[App] Querying Firestore 'notes' list using getDocs ONE-TIME...");
+        const snapshot = await getDocs(q);
+        const fetchedNotes = snapshot.docs.map(doc => ({
+          ...doc.data(),
+          id: doc.id
+        })) as Note[];
+        
+        setNotes(fetchedNotes);
+        setHasFetchedNotes(true);
+        if (typeof window !== "undefined") {
+          sessionStorage.setItem("solenc_notes_cache", JSON.stringify(fetchedNotes));
+        }
+      } catch (error) {
+        handleFirestoreError(error, OperationType.LIST, "notes");
+      }
+    };
+
+    loadNotes();
+  }, [user, isDbSuspended, notesTrigger]);
 
   const getCategoryLabel = (id: string) => {
     switch (id) {
@@ -527,6 +572,8 @@ export default function App() {
         `files/${fileId}`
       );
       
+      setFilesTrigger(prev => prev + 1); // Refresh the files query list!
+
       setUploadStage("done");
       setUploadProgress(100);
       
@@ -940,6 +987,7 @@ export default function App() {
         OperationType.UPDATE,
         `files/${activeFileId}`
       );
+      setFilesTrigger(prev => prev + 1); // Invalidate files list cache
       console.log(`Đã cập nhật Gemini File API URI thành công cho file ${activeFileId}`);
     } catch (err) {
       console.error("Lỗi cập nhật Firestore Gemini File API URI:", err);
@@ -953,6 +1001,7 @@ export default function App() {
         OperationType.UPDATE,
         `files/${fileId}`
       );
+      setFilesTrigger(prev => prev + 1); // Invalidate files list cache
       console.log(`Đã cập nhật trạng thái đồng bộ cho file ${fileId}`);
     } catch (err) {
       console.error("Lỗi cập nhật Firestore cho file:", err);
@@ -976,6 +1025,7 @@ export default function App() {
         OperationType.CREATE,
         `notes/${noteId}`
       );
+      setNotesTrigger(prev => prev + 1); // Invalidate notes list cache
       console.log(`Đã lưu ghi chú thành công: ${noteId}`);
     } catch (err: any) {
       console.error("Lỗi khi lưu ghi chú vào Firestore:", err);
@@ -991,6 +1041,7 @@ export default function App() {
         OperationType.DELETE,
         `notes/${noteId}`
       );
+      setNotesTrigger(prev => prev + 1); // Invalidate notes list cache
       console.log(`Đã xóa ghi chú thành công: ${noteId}`);
     } catch (err: any) {
       console.error("Lỗi khi xóa ghi chú trong Firestore:", err);
@@ -1022,6 +1073,7 @@ export default function App() {
         setActiveFileId(null);
         setMessages([]);
       }
+      setFilesTrigger(prev => prev + 1); // Invalidate files list cache
       setFileToDelete(null);
     } catch (error) {
       console.error("Delete error:", error);
@@ -1043,6 +1095,7 @@ export default function App() {
         OperationType.UPDATE,
         `files/${fileToEdit.id}`
       );
+      setFilesTrigger(prev => prev + 1); // Invalidate files list cache
       
       setFileToEdit(null);
     } catch (error) {
