@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import multer from "multer";
+import cors from "cors";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const pdf = require("pdf-parse");
@@ -489,22 +490,17 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // CORS middleware for external clients allowing credentials and dynamic origin matching
-  app.use((req, res, next) => {
-    const origin = req.headers.origin;
-    if (origin) {
-      res.header("Access-Control-Allow-Origin", origin);
-      res.header("Access-Control-Allow-Credentials", "true");
-    } else {
-      res.header("Access-Control-Allow-Origin", "*");
-    }
-    res.header("Access-Control-Allow-Methods", "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization, Content-Length");
-    if (req.method === "OPTIONS") {
-      return res.sendStatus(200);
-    }
-    next();
-  });
+  // Bulletproof CORS configuration using express cors package (allows dynamic matching, credentials & preflights)
+  app.use(cors({
+    origin: (origin, callback) => {
+      // Allow any origin requesting this backend to pass through securely
+      callback(null, true);
+    },
+    credentials: true,
+    methods: "GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS",
+    allowedHeaders: "Origin, X-Requested-With, Content-Type, Accept, Authorization, Content-Length",
+    optionsSuccessStatus: 200
+  }));
 
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "20mb", extended: true }));
