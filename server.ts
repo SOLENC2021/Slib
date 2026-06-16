@@ -497,30 +497,23 @@ async function startServer() {
 
   app.use(cors({
     origin: function (origin, callback) {
-      if (!origin) {
-        callback(null, true);
-        return;
-      }
-      const isAllowed = 
-        allowedOrigins.indexOf(origin) !== -1 ||
-        origin.includes('run.app') ||
-        origin.includes('googleusercontent.com') ||
-        origin.includes('aistudio.google') ||
-        origin.includes('localhost') ||
-        origin.includes('127.0.0.1');
-
-      if (isAllowed) {
+      if (!origin || 
+          allowedOrigins.indexOf(origin) !== -1 ||
+          origin.includes('run.app') ||
+          origin.includes('googleusercontent.com') ||
+          origin.includes('aistudio.google') ||
+          origin.includes('localhost') ||
+          origin.includes('127.0.0.1')) {
         callback(null, true);
       } else {
-        callback(new Error('Blocked by CORS'));
+        callback(new Error('CORS Error'));
       }
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept', 'Content-Length']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
   }));
 
-  // Handle preflight OPTIONS requests immediately
   app.options('*', cors());
 
   app.use(express.json({ limit: "20mb" }));
