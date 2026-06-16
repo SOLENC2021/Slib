@@ -136,8 +136,7 @@ export function setDynamicApiUrl(url: string) {
     // Strictly prevent local development or private development container URLs from poisoning public cache
     if (
       !cleanUrl.includes("localhost") &&
-      !cleanUrl.includes("127.0.0.1") &&
-      !cleanUrl.includes("-dev-")
+      !cleanUrl.includes("127.0.0.1")
     ) {
       cachedApiUrl = cleanUrl;
       window.localStorage.setItem("backend_api_url", cleanUrl);
@@ -174,8 +173,7 @@ export function getApiUrl(path: string): string {
         (cachedApiUrl.startsWith("https://") || cachedApiUrl.startsWith("http://")) &&
         cachedApiUrl.includes("rcoaoicqj56hwshueq7jte") &&
         !cachedApiUrl.includes("localhost") &&
-        !cachedApiUrl.includes("127.0.0.1") &&
-        !cachedApiUrl.includes("-dev-")
+        !cachedApiUrl.includes("127.0.0.1")
       ) {
         resolvedUrl = `${cachedApiUrl}${cleanPath}`;
       } else {

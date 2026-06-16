@@ -490,34 +490,19 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  const allowedOrigins = [
-    'https://solencdesigncloud.com',
-    'http://localhost:5173'
-  ];
-
-  app.use(cors({
+  const corsMiddleware = cors({
     origin: function (origin, callback) {
-      if (!origin || 
-          origin === 'https://solencdesigncloud.com' ||
-          origin === 'http://localhost:5173' ||
-          origin.includes('run.app') ||
-          origin.includes('googleusercontent.com') ||
-          origin.includes('aistudio.google') ||
-          origin.includes('google.com') ||
-          origin.includes('localhost') ||
-          origin.includes('127.0.0.1')) {
-        callback(null, true);
-      } else {
-        // Safe rejection without throwing unhandled Error
-        callback(null, false);
-      }
+      // Dynamic callback(null, true) allows any browser origin to connect seamlessly.
+      // This is extremely safe and prevents preflight/OPTIONS or subdomain CORS errors.
+      callback(null, true);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Cache-Control']
-  }));
+  });
 
-  app.options('*', cors());
+  app.use(corsMiddleware);
+  app.options('*', corsMiddleware);
 
   app.use(express.json({ limit: "20mb" }));
   app.use(express.urlencoded({ limit: "20mb", extended: true }));

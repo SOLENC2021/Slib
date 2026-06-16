@@ -162,8 +162,7 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
                   loadedUrl && 
                   loadedUrl.includes("rcoaoicqj56hwshueq7jte") &&
                   !loadedUrl.includes("localhost") && 
-                  !loadedUrl.includes("127.0.0.1") && 
-                  !loadedUrl.includes("-dev-")
+                  !loadedUrl.includes("127.0.0.1")
                 ) {
                   const { setDynamicApiUrl } = await import('../lib/utils');
                   setDynamicApiUrl(loadedUrl);
