@@ -8,7 +8,7 @@ import {
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase';
-import { withFirestoreRetry } from '../lib/firestoreUtils';
+import { withFirestoreRetry, isFirestoreSuspended } from '../lib/firestoreUtils';
 import { OperationType } from '../types';
 
 export interface UserProfile {
@@ -48,6 +48,27 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
       if (firebaseUser) {
         setUser(firebaseUser);
         try {
+          const isDefaultAdmin = firebaseUser.email === 'solenc2021@gmail.com';
+          const todayStr = new Date().toLocaleDateString('vi-VN');
+
+          if (isFirestoreSuspended()) {
+            console.warn("[FirebaseProvider] Firestore is suspended, initializing mock offline profile.");
+            const mockProfile: UserProfile = {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              displayName: firebaseUser.displayName || 'Kỹ sư (Offline)',
+              photoURL: firebaseUser.photoURL || '',
+              createdAt: new Date().toISOString(),
+              role: isDefaultAdmin ? 'admin' : 'user',
+              apiLimit: isDefaultAdmin ? 999999 : 30,
+              apiUsageCount: 0,
+              lastRequestDate: todayStr
+            };
+            setProfile(mockProfile);
+            setLoading(false);
+            return;
+          }
+
           // Sync user to Firestore using the retry mechanism
           const userRef = doc(db, 'users', firebaseUser.uid);
           const userSnap = await withFirestoreRetry(
@@ -56,8 +77,23 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
             `users/${firebaseUser.uid}`
           );
           
-          const isDefaultAdmin = firebaseUser.email === 'solenc2021@gmail.com';
-          const todayStr = new Date().toLocaleDateString('vi-VN');
+          if (!userSnap) {
+            console.warn("[FirebaseProvider] Failed to fetch profile from Firestore, falling back to mock offline profile.");
+            const mockProfile: UserProfile = {
+              uid: firebaseUser.uid,
+              email: firebaseUser.email || '',
+              displayName: firebaseUser.displayName || 'Kỹ sư (Offline)',
+              photoURL: firebaseUser.photoURL || '',
+              createdAt: new Date().toISOString(),
+              role: isDefaultAdmin ? 'admin' : 'user',
+              apiLimit: isDefaultAdmin ? 999999 : 30,
+              apiUsageCount: 0,
+              lastRequestDate: todayStr
+            };
+            setProfile(mockProfile);
+            setLoading(false);
+            return;
+          }
           
           if (!userSnap.exists()) {
             const newProfile: UserProfile = {
@@ -221,6 +257,13 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
 
   const incrementApiUsage = async (): Promise<boolean> => {
     if (!user) return false;
+    
+    // Bypass immediately if Firestore database is suspended/running in offline mock fallback
+    if (isFirestoreSuspended()) {
+      console.log("[incrementApiUsage] Firestore is suspended or flagged, bypassing quota check & allowing query.");
+      return true;
+    }
+
     try {
       const userRef = doc(db, 'users', user.uid);
       const userSnap = await getDoc(userRef);

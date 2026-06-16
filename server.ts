@@ -502,6 +502,7 @@ async function startServer() {
           origin.includes('run.app') ||
           origin.includes('googleusercontent.com') ||
           origin.includes('aistudio.google') ||
+          origin.includes('google.com') ||
           origin.includes('localhost') ||
           origin.includes('127.0.0.1')) {
         callback(null, true);
@@ -511,7 +512,7 @@ async function startServer() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Cache-Control']
   }));
 
   app.options('*', cors());

@@ -10,7 +10,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import { UploadModal } from "./components/UploadModal";
 import { PDFFile, Message, ExtractionField, OperationType, PageData, Note } from "./types";
 import { chatWithDocument, chatWithDocumentStream, extractDataFromText } from "./lib/gemini";
-import { LayoutGrid, Sparkles, LogOut, Loader2, X, FileText } from "lucide-react";
+import { LayoutGrid, Sparkles, LogOut, Loader2, X, FileText, ShieldAlert } from "lucide-react";
 import { useAuth } from "./components/FirebaseProvider";
 import { db } from "./lib/firebase";
 import { cn, getApiUrl } from "./lib/utils";
@@ -33,7 +33,7 @@ import {
   getDownloadURL,
   deleteObject
 } from "firebase/storage";
-import { handleFirestoreError, withFirestoreRetry } from "./lib/firestoreUtils";
+import { handleFirestoreError, withFirestoreRetry, isFirestoreSuspended } from "./lib/firestoreUtils";
 import { storage } from "./lib/firebase";
 import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { EditFileModal } from "./components/EditFileModal";
@@ -47,6 +47,27 @@ export default function App() {
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isQuotaExceededModalOpen, setIsQuotaExceededModalOpen] = useState(false);
   const [quotaLimitValue, setQuotaLimitValue] = useState(30);
+
+  const [isDbSuspended, setIsDbSuspended] = useState(() => isFirestoreSuspended());
+  const [dbSuspendedReason, setDbSuspendedReason] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return (window as any).firestoreSuspendedReason || "";
+    }
+    return "";
+  });
+
+  useEffect(() => {
+    const handleSuspended = (e: any) => {
+      setIsDbSuspended(true);
+      if (e.detail && e.detail.reason) {
+        setDbSuspendedReason(e.detail.reason);
+      }
+    };
+    window.addEventListener('firestore-suspended', handleSuspended);
+    return () => {
+      window.removeEventListener('firestore-suspended', handleSuspended);
+    };
+  }, []);
 
   const [files, setFiles] = useState<PDFFile[]>([]);
   const [activeFileId, setActiveFileId] = useState<string | null>(null);
@@ -152,6 +173,11 @@ export default function App() {
 
   // Sync files from Firestore
   useEffect(() => {
+    if (isFirestoreSuspended() || isDbSuspended) {
+      console.warn("[App] Firestore is suspended, bypassing files real-time listener.");
+      return;
+    }
+
     if (!user) {
       setFiles([]);
       return;
@@ -185,10 +211,11 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user, profile, viewMode]);
+  }, [user, profile, viewMode, isDbSuspended]);
 
   // Self-healing: Ensure existing documents have isPublic = true so they are visible to members
   useEffect(() => {
+    if (isFirestoreSuspended() || isDbSuspended) return;
     const isAdminUser = profile?.role === "admin" || user?.email === "solenc2021@gmail.com";
     if (isAdminUser && files.length > 0 && viewMode === "admin") {
       files.forEach(async (file) => {
@@ -203,12 +230,17 @@ export default function App() {
         }
       });
     }
-  }, [files, profile, user, viewMode]);
+  }, [files, profile, user, viewMode, isDbSuspended]);
 
   const [notes, setNotes] = useState<Note[]>([]);
 
   // Sync notes from Firestore
   useEffect(() => {
+    if (isFirestoreSuspended() || isDbSuspended) {
+      console.warn("[App] Firestore is suspended, bypassing notes real-time listener.");
+      return;
+    }
+
     if (!user) {
       setNotes([]);
       return;
@@ -231,7 +263,7 @@ export default function App() {
     });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, isDbSuspended]);
 
   const getCategoryLabel = (id: string) => {
     switch (id) {
@@ -1205,6 +1237,21 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {isDbSuspended && (
+        <div className="bg-[#fffbeb] border-b border-amber-200/60 px-8 py-3 flex items-center justify-between shrink-0 z-40 shadow-xs">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center shrink-0">
+              <ShieldAlert className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <p className="text-xs font-black text-amber-800 uppercase tracking-tight">Hệ thống đang hoạt động ở chế độ Offline / Giới hạn</p>
+              <p className="text-[11px] font-bold text-amber-600/90 mt-0.5">{dbSuspendedReason}</p>
+            </div>
+          </div>
+          <p className="text-[9px] font-black text-amber-500 uppercase tracking-widest border border-amber-300 rounded px-2 py-0.5 bg-white shrink-0">Bảo vệ tự động</p>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {pendingFile && (
