@@ -122,7 +122,7 @@ service cloud.firestore {
 
     // Settings collection for dynamically adjusting backend URL
     match /settings/{settingId} {
-      allow read: if isSignedIn();
+      allow read: if true;
       allow write: if isAdmin();
     }
 
