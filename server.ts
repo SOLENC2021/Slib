@@ -531,15 +531,33 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // 1. Handcrafted manual CORS & Preflight middleware to guarantee headers are set and OPTIONS succeeds immediately
+  app.use((req, res, next) => {
+    const origin = req.headers.origin || "*";
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    
+    const requestHeaders = req.headers["access-control-request-headers"];
+    if (requestHeaders) {
+      res.setHeader("Access-Control-Allow-Headers", requestHeaders);
+    } else {
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, Accept, Cache-Control, X-Client-Version");
+    }
+    
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Max-Age", "86400"); // 24 hours cache
+
+    if (req.method === "OPTIONS") {
+      return res.status(200).end();
+    }
+    next();
+  });
+
   const corsMiddleware = cors({
-    origin: function (origin, callback) {
-      // Dynamic callback(null, true) allows any browser origin to connect seamlessly.
-      // This is extremely safe and prevents preflight/OPTIONS or subdomain CORS errors.
-      callback(null, true);
-    },
+    origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Cache-Control']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Cache-Control', 'X-Client-Version']
   });
 
   app.use(corsMiddleware);
@@ -2139,6 +2157,28 @@ HƯỚNG DẪN CÚ PHÁP MERMAID MINDMAP PHẢI TUÂN THỦ:
   // Fall-through 404 for unmatched API routes of any method (GET, POST etc.)
   app.all("/api/*", (req, res) => {
     res.status(404).json({ error: `Đường dẫn API này chưa được hỗ trợ hoặc phương thức không đúng: ${req.method} ${req.url}` });
+  });
+
+  // Global express error handler to ensure CORS headers and JSON errors are always returned for API routes
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("[Global Error Handler] Caught error:", err);
+    
+    // Explicitly set CORS headers on error responses
+    const origin = req.headers.origin || "*";
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", req.headers["access-control-request-headers"] || "Content-Type, Authorization, X-Requested-With, Accept, Cache-Control, X-Client-Version");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+
+    if (res.headersSent) {
+      return next(err);
+    }
+
+    const statusCode = err.status || err.statusCode || 500;
+    res.status(statusCode).json({
+      error: err.message || "Đã xảy ra lỗi hệ thống không mong muốn.",
+      code: err.code || "INTERNAL_SERVER_ERROR"
+    });
   });
 
   // Vite middleware setup

@@ -168,16 +168,16 @@ export function getApiUrl(path: string): string {
 
   if (isStaticHost) {
     if (cachedApiUrl) {
-      // Validate that cachedApiUrl contains the correct app prefix to avoid database poisoning
-      if (
+      // Validate that cachedApiUrl contains a valid public URL to support custom Cloud Run endpoints
+      const isUrlValid = 
         (cachedApiUrl.startsWith("https://") || cachedApiUrl.startsWith("http://")) &&
-        cachedApiUrl.includes("rcoaoicqj56hwshueq7jte") &&
         !cachedApiUrl.includes("localhost") &&
-        !cachedApiUrl.includes("127.0.0.1")
-      ) {
+        !cachedApiUrl.includes("127.0.0.1");
+
+      if (isUrlValid) {
         resolvedUrl = `${cachedApiUrl}${cleanPath}`;
       } else {
-        // Obsolete or poisoned cached URL, discard and use default
+        // Discard invalid/localhost URLs and use default production container
         resolvedUrl = `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
       }
     } else {
