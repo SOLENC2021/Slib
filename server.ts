@@ -49,14 +49,34 @@ const getAIClient = () => {
   });
 };
 
-// Helper for retries on server side
-async function callAIWithRetry(fn: (aiClient: GoogleGenAI) => Promise<any>, maxRetries = 5, delay = 1500) {
+// Helper for retries on server side (with automatic model fallback on High Demand 503 errors and network retries)
+async function callAIWithRetry(
+  fn: (aiClient: GoogleGenAI, model: string) => Promise<any>,
+  modelOrRetries: string | number = "gemini-3.5-flash",
+  retriesArg?: number,
+  delayArg: number = 1500
+) {
+  let primaryModel = "gemini-3.5-flash";
+  let maxRetries = 5;
+  let delay = delayArg;
+
+  if (typeof modelOrRetries === "number") {
+    maxRetries = modelOrRetries;
+    primaryModel = "gemini-3.5-flash";
+  } else {
+    primaryModel = modelOrRetries;
+    if (typeof retriesArg === "number") {
+      maxRetries = retriesArg;
+    }
+  }
+
   let lastError;
   const aiClient = getAIClient();
+  let currentModel = primaryModel;
   
   for (let i = 0; i < maxRetries; i++) {
     try {
-      return await fn(aiClient);
+      return await fn(aiClient, currentModel);
     } catch (error: any) {
       lastError = error;
       const fullErrorStr = (error instanceof Error ? error.message : String(error)) + " " + JSON.stringify(error || {});
@@ -80,13 +100,34 @@ async function callAIWithRetry(fn: (aiClient: GoogleGenAI) => Promise<any>, maxR
       const isHighDemand = errorMsg.includes("high demand") || errorMsg.includes("unavailable") || errorMsg.includes("503") || error?.status === 503 || error?.code === 503 || error?.error?.code === 503 || errorMsg.includes("overloaded") || errorMsg.includes("spikes in demand");
       const isInternalError = errorMsg.includes("500") || errorMsg.includes("internal error") || error?.status === 500 || error?.code === 500 || error?.error?.code === 500 || errorMsg.includes("internal");
       const isTimeout = errorMsg.includes("504") || error?.status === 504 || error?.code === 504 || errorMsg.includes("timeout") || errorMsg.includes("deadline exceeded");
+      
+      // Treat standard Node.js/Fetch socket or network errors as transient so they can be retried automatically
+      const isNetworkError = errorMsg.includes("fetch failed") || 
+                             errorMsg.includes("econnrefused") || 
+                             errorMsg.includes("enotfound") || 
+                             errorMsg.includes("etimedout") || 
+                             errorMsg.includes("socket hang up") || 
+                             errorMsg.includes("network error") || 
+                             errorMsg.includes("network") ||
+                             errorMsg.includes("undici") ||
+                             errorMsg.includes("abort");
 
-      if (isRateLimit || isHighDemand || isInternalError || isTimeout) {
+      if (isRateLimit || isHighDemand || isInternalError || isTimeout || isNetworkError) {
+        // Model Fallback Logic: If gemini-3.5-flash is failing due to overloading, retry limit exceeded, or high demand:
+        // Automatically switch the model name on subsequent retry attempts to stable alternatives to maximize user uptime.
+        if (i >= 1 && currentModel === "gemini-3.5-flash") {
+          currentModel = "gemini-3.1-flash-lite";
+          console.log(`[Auto Model Fallback] Model ${primaryModel} is experiencing transient issues or is overloaded. Dynamic fallback switching to: ${currentModel}`);
+        } else if (i >= 1 && currentModel === "gemini-3.1-flash-lite") {
+          currentModel = "gemini-flash-latest";
+          console.log(`[Auto Model Fallback] Model 'gemini-3.1-flash-lite' is also busy. Dynamic fallback switching to: ${currentModel}`);
+        }
+
         // Add randomized jitter to avoid thundering herd problem
         const jitter = Math.floor(Math.random() * 800) + 400; // 400ms to 1200ms of random jitter
         const totalDelay = delay + jitter;
         
-        console.warn(`[Gemini Transient Error Caught] Retrying in ${totalDelay}ms (base ${delay}ms + jitter ${jitter}ms)... (Attempt ${i + 1}/${maxRetries}). Error detail: ${fullErrorStr.substring(0, 300)}`);
+        console.warn(`[Gemini Transient Error Caught] Retrying in ${totalDelay}ms (base ${delay}ms + jitter ${jitter}ms)... (Attempt ${i + 1}/${maxRetries}). Model: ${currentModel}. Error detail: ${fullErrorStr.substring(0, 300)}`);
         await new Promise(resolve => setTimeout(resolve, totalDelay));
         delay = Math.floor(delay * 2.2); // Exponential backoff
         continue;
@@ -680,15 +721,15 @@ async function startServer() {
         };
 
         const runStreamGeneral = async (contentsArr: any[]) => {
-          return await callAIWithRetry((aiClient) => aiClient.models.generateContentStream({
-            model: "gemini-3.5-flash",
+          return await callAIWithRetry((aiClient, model) => aiClient.models.generateContentStream({
+            model: model,
             contents: contentsArr,
             config: {
               systemInstruction: SYSTEM_INSTRUCTION,
               temperature: 0.15,
               topP: 0.95,
             },
-          }));
+          }), "gemini-3.5-flash");
         };
 
         let streamResponse;
@@ -825,15 +866,15 @@ async function startServer() {
             }
           ];
 
-          return await callAIWithRetry((aiClient) => aiClient.models.generateContentStream({
-            model: "gemini-3.5-flash",
+          return await callAIWithRetry((aiClient, model) => aiClient.models.generateContentStream({
+            model: model,
             contents,
             config: {
               systemInstruction: SYSTEM_INSTRUCTION,
               temperature: 0.1,
               topP: 0.95,
             },
-          }), 2);
+          }), "gemini-3.5-flash", 2);
         };
 
         let streamResponse;
@@ -957,15 +998,15 @@ async function startServer() {
 
           const chatSystemInstruction = SYSTEM_INSTRUCTION;
 
-          return await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-            model: "gemini-3.5-flash",
+          return await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+            model: model,
             contents,
             config: {
               systemInstruction: chatSystemInstruction,
               temperature: 0.15, // Low temperature for high precision, objective answers
               topP: 0.95,
             },
-          }));
+          }), "gemini-3.5-flash");
         };
 
         let response;
@@ -1206,15 +1247,15 @@ async function startServer() {
           }
         ];
 
-        return await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-          model: "gemini-3.5-flash",
+        return await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+          model: model,
           contents,
           config: {
             systemInstruction: SYSTEM_INSTRUCTION,
             temperature: 0.1,
             topP: 0.95,
           },
-        }), 2); // Limit to 2 attempts for faster fallback
+        }), "gemini-3.5-flash", 2); // Limit to 2 attempts for faster fallback
       };
 
       try {
@@ -1306,8 +1347,8 @@ Yêu cầu cực kỳ nghiêm ngặt:
           parts.push({ text: `Hãy trích xuất các thông tin sau từ tài liệu PDF này:\n\n${text}` });
         }
 
-        return await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-          model: selectedModel,
+        return await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+          model: model,
           contents: [
             {
               role: "user",
@@ -1320,7 +1361,7 @@ Yêu cầu cực kỳ nghiêm ngặt:
             responseSchema,
             temperature: 0.1,
           },
-        }), 2);
+        }), selectedModel, 2);
       };
 
       try {
@@ -1616,8 +1657,8 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
           }
         ];
 
-        return await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-          model: "gemini-3.5-flash",
+        return await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+          model: model,
           contents,
           config: {
             systemInstruction: isDesignManager 
@@ -1626,7 +1667,7 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
             temperature: 0.1,
             topP: 0.95,
           },
-        }), 2);
+        }), "gemini-3.5-flash", 2);
       };
 
       try {
@@ -1803,8 +1844,8 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
           if (localExtractedText && localExtractedText.trim().length > 30) {
             console.log(`Successfully extracted ${localExtractedText.trim().length} chars of local text on page ${pageNum} via free pdf-parse. Cleaning/formatting with Gemini 3.1 Flash Lite...`);
             try {
-              const cleanupResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-                model: "gemini-3.1-flash-lite",
+              const cleanupResponse = await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+                model: model,
                 contents: `Dưới đây là văn bản kỹ thuật được trích xuất trực tiếp từ trang ${pageNum}.
 Hãy sửa các lỗi chính tả rách dòng hoặc dính chữ ghép từ tiếng Việt thô, cấu trúc lại nội dung logic tốt nhất, giữ nguyên toàn bộ các thông số kỹ thuật, công thức, số liệu và đơn vị đo đạc. Vẽ lại bảng bằng GitHub Markdown nếu có dữ liệu bảng thống kê.
 Tuyệt đối không tự bịa đặt, thay đổi hay suy diễn các thông số số liệu kỹ thuật gốc dưới bất kỳ hình thức nào. Nếu dữ liệu có vẻ sạch đẹp, hãy trả về nguyên trạng.
@@ -1816,7 +1857,7 @@ ${localExtractedText}
                 config: {
                   temperature: 0.1,
                 }
-              }));
+              }), "gemini-3.1-flash-lite");
               aiResponseText = cleanupResponse.text || localExtractedText;
               console.log(`Formatted page ${pageNum} using Gemini 3.1 Flash Lite text-to-text formatting.`);
             } catch (cleanupErr) {
@@ -1827,8 +1868,8 @@ ${localExtractedText}
             // Không tìm thấy text thô hoặc trang là ảnh scan/bản vẽ -> bắt buộc OCR
             console.log(`Page ${pageNum} is a scanned page/image. Running Gemini 3.1 Flash Lite OCR...`);
             try {
-              const aiResponseLite = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-                model: "gemini-3.1-flash-lite",
+              const aiResponseLite = await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+                model: model,
                 contents: [
                   {
                     role: "user",
@@ -1850,14 +1891,14 @@ Constraint: Do not hallucinate values. Mark uncertain text with [?]. Output reco
                 config: {
                   temperature: 0.1,
                 }
-              }));
+              }), "gemini-3.1-flash-lite");
               aiResponseText = aiResponseLite.text || "";
               console.log(`Gemini 3.1 Flash Lite OCR succeeded for page ${pageNum}.`);
             } catch (liteErr: any) {
               console.warn(`Gemini 3.1 Flash Lite OCR failed on page ${pageNum}. Retrying with Gemini 3.5 Flash OCR...`);
               try {
-                const aiResponse = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-                  model: "gemini-3.5-flash",
+                const aiResponse = await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+                  model: model,
                   contents: [
                     {
                       role: "user",
@@ -1877,7 +1918,7 @@ Constraint: Do not hallucinate values. Mark uncertain text with [?]. Output reco
                   config: {
                     temperature: 0.1,
                   }
-                }));
+                }), "gemini-3.5-flash");
                 aiResponseText = aiResponse.text || "";
                 console.log(`Gemini 3.5 Flash OCR succeeded for page ${pageNum}.`);
               } catch (flashErr: any) {
@@ -1948,8 +1989,8 @@ ${safeText}
 ---
 Hãy chỉ trả về duy nhất danh sách tóm tắt cực kỳ ngắn gọn dưới dạng markdown, không có lời mở đầu hay kết thúc dông dài.`;
 
-      const response = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-        model,
+      const response = await callAIWithRetry((aiClient, currentModel) => aiClient.models.generateContent({
+        model: currentModel,
         contents: [
           {
             role: "user",
@@ -1959,7 +2000,7 @@ Hãy chỉ trả về duy nhất danh sách tóm tắt cực kỳ ngắn gọn d
         config: {
           temperature: 0.1,
         },
-      }));
+      }), model);
 
       res.json({ summary: response.text || "" });
     } catch (error: any) {
@@ -1999,8 +2040,8 @@ ${text}
 ---
 Bản dịch chính xác:`;
 
-      const response = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-        model,
+      const response = await callAIWithRetry((aiClient, currentModel) => aiClient.models.generateContent({
+        model: currentModel,
         contents: [
           {
             role: "user",
@@ -2010,7 +2051,7 @@ Bản dịch chính xác:`;
         config: {
           temperature: 0.1,
         },
-      }));
+      }), model);
 
       res.json({ translatedText: response.text || "" });
     } catch (error: any) {
@@ -2065,8 +2106,8 @@ HƯỚNG DẪN CÚ PHÁP MERMAID MINDMAP PHẢI TUÂN THỦ:
 5. Giữ cấu trúc cân đối tối đa 3-4 cấp để hiển thị sơ đồ trực quan rõ ràng nhất, không bị quá rộng.
 6. Chỉ trả về duy nhất mã nguồn Mermaid hợp lệ bắt đầu bằng "mindmap", tuyệt đối không giải thích dông dài, không bọc trong tag markdown \`\`\` hay bất kỳ ký tự nào khác.`;
 
-      const response = await callAIWithRetry((aiClient) => aiClient.models.generateContent({
-        model,
+      const response = await callAIWithRetry((aiClient, currentModel) => aiClient.models.generateContent({
+        model: currentModel,
         contents: [
           {
             role: "user",
@@ -2076,7 +2117,7 @@ HƯỚNG DẪN CÚ PHÁP MERMAID MINDMAP PHẢI TUÂN THỦ:
         config: {
           temperature: 0.1,
         },
-      }));
+      }), model);
 
       let content = response.text || "";
       // Clean up markdown blocks if present
