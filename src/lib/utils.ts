@@ -128,20 +128,8 @@ export function cleanLatexForClipboard(text: string): string {
   return res.trim();
 }
 
-let cachedApiUrl = typeof window !== "undefined" ? window.localStorage.getItem("backend_api_url") : null;
-
 export function setDynamicApiUrl(url: string) {
-  if (typeof window !== "undefined" && url) {
-    const cleanUrl = url.endsWith("/") ? url.slice(0, -1) : url;
-    // Strictly prevent local development or private development container URLs from poisoning public cache
-    if (
-      !cleanUrl.includes("localhost") &&
-      !cleanUrl.includes("127.0.0.1")
-    ) {
-      cachedApiUrl = cleanUrl;
-      window.localStorage.setItem("backend_api_url", cleanUrl);
-    }
-  }
+  // Không cần xử lý logic lưu cache cũ nữa
 }
 
 export function getApiUrl(path: string): string {
@@ -151,32 +139,4 @@ export function getApiUrl(path: string): string {
   }
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
   return cleanPath;
-}
-
-  if (isStaticHost) {
-    if (cachedApiUrl) {
-      // Validate that cachedApiUrl contains a valid public URL to support custom Cloud Run endpoints
-      const isUrlValid = 
-        (cachedApiUrl.startsWith("https://") || cachedApiUrl.startsWith("http://")) &&
-        !cachedApiUrl.includes("localhost") &&
-        !cachedApiUrl.includes("127.0.0.1");
-
-      if (isUrlValid) {
-        resolvedUrl = `${cachedApiUrl}${cleanPath}`;
-      } else {
-        // Discard invalid/localhost URLs and use default production container
-        resolvedUrl = `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
-      }
-    } else {
-      // Primary stable public fallback is the Cloud Run production-preview container URL
-      resolvedUrl = `https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app${cleanPath}`;
-    }
-  }
-
-  // Print single-line debug info to browser console in production-like environments
-  if (isStaticHost) {
-    console.log(`[API Proxy] ${path} -> ${resolvedUrl}`);
-  }
-
-  return resolvedUrl;
 }
