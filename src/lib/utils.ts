@@ -134,11 +134,12 @@ export function setDynamicApiUrl(url: string) {
 
 export function getApiUrl(path: string): string {
   if (!path) return "";
-  // Ép bỏ qua mọi URL tuyệt đối (như cái link run.app từ Firestore truyền vào)
-  // Chỉ lấy phần đuôi endpoint để chạy qua proxy Hostinger
-  const cleanPath = path.includes("/api/") 
-    ? path.substring(path.indexOf("/api/")) 
-    : (path.startsWith("/") ? path : `/${path}`);
-    
-  return cleanPath;
+
+  // Bất kể path truyền vào là link tuyệt đối từ Firestore (như cái link run.app kia)
+  // Chúng ta sẽ cắt bỏ nó, chỉ giữ lại phần tương đối bắt đầu bằng /api
+  if (path.includes("/api/")) {
+    return path.substring(path.indexOf("/api/"));
+  }
+
+  return path.startsWith("/") ? path : `/${path}`;
 }
