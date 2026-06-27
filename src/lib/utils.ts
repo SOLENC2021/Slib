@@ -150,21 +150,8 @@ export function getApiUrl(path: string): string {
     return path;
   }
   const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  const hostname = typeof window !== "undefined" ? window.location.hostname : "";
-  
-  // Any hostname that is not the backend container itself or a local development server
-  // is treated as a static client that must proxy to our Cloud Run backend.
-  const isLocalOrDirectBackend = 
-    !hostname ||
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname.includes("run.app") ||
-    hostname.includes("googleusercontent.com") ||
-    hostname.includes("aistudio.google");
-
-  const isStaticHost = !isLocalOrDirectBackend;
-
-  let resolvedUrl = cleanPath;
+  return cleanPath;
+}
 
   if (isStaticHost) {
     if (cachedApiUrl) {
