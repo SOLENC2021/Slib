@@ -134,9 +134,11 @@ export function setDynamicApiUrl(url: string) {
 
 export function getApiUrl(path: string): string {
   if (!path) return "";
-  if (path.startsWith("http://") || path.startsWith("https://")) {
-    return path;
-  }
-  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  // Ép bỏ qua mọi URL tuyệt đối (như cái link run.app từ Firestore truyền vào)
+  // Chỉ lấy phần đuôi endpoint để chạy qua proxy Hostinger
+  const cleanPath = path.includes("/api/") 
+    ? path.substring(path.indexOf("/api/")) 
+    : (path.startsWith("/") ? path : `/${path}`);
+    
   return cleanPath;
 }
