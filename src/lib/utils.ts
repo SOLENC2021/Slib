@@ -133,13 +133,16 @@ export function setDynamicApiUrl(url: string) {
 }
 
 export function getApiUrl(path: string): string {
-  if (!path) return "";
+  if (!path) return window.location.origin;
 
-  // Bất kể path truyền vào là link tuyệt đối từ Firestore (như cái link run.app kia)
-  // Chúng ta sẽ cắt bỏ nó, chỉ giữ lại phần tương đối bắt đầu bằng /api
+  // Nếu là link tuyệt đối từ Firestore truyền vào (chứa /api/)
   if (path.includes("/api/")) {
-    return path.substring(path.indexOf("/api/"));
+    // Trả về chính domain hiện tại của website (Hostinger) kèm phần đuôi /api/...
+    // Cách này vừa giữ được cấu trúc http/https hợp lệ, vừa đưa request về đúng server của bạn
+    return window.location.origin + path.substring(path.indexOf("/api/"));
   }
 
-  return path.startsWith("/") ? path : `/${path}`;
+  // Trường hợp truyền path dạng endpoint ngắn (ví dụ: "api/chat-stream")
+  const cleanPath = path.startsWith("/") ? path : `/${path}`;
+  return window.location.origin + cleanPath;
 }
