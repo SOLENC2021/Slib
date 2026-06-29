@@ -3,9 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import multer from "multer";
 import cors from "cors";
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const pdf = require("pdf-parse");
+import pdf from "pdf-parse";
 import fs from "fs";
 import os from "os";
 import { GoogleGenAI } from "@google/genai";
@@ -554,11 +552,11 @@ async function startServer() {
   });
 
  const corsMiddleware = cors({
-  origin: [
-    'https://solencdesigncloud.com',
-    'http://localhost:3000',
-    'http://localhost:5173'
-  ],
+  origin: function (origin, callback) {
+    // Dynamic callback(null, true) allows any browser origin to connect seamlessly,
+    // which prevents preflight/OPTIONS or subdomain CORS errors.
+    callback(null, true);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Cache-Control', 'X-Client-Version']
