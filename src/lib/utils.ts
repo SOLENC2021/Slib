@@ -128,22 +128,53 @@ export function cleanLatexForClipboard(text: string): string {
   return res.trim();
 }
 
+let cachedApiUrl = typeof window !== "undefined" ? window.localStorage.getItem("backend_api_url") : null;
+
 export function setDynamicApiUrl(url: string) {
-  // Không cần xử lý logic lưu cache cũ nữa
+  if (typeof window !== "undefined" && url) {
+    const cleanUrl = url.endsWith("/") ? url.slice(0, -1) : url;
+    if (
+      (cleanUrl.startsWith("https://") || cleanUrl.startsWith("http://")) &&
+      !cleanUrl.includes("localhost") &&
+      !cleanUrl.includes("127.0.0.1")
+    ) {
+      cachedApiUrl = cleanUrl;
+      window.localStorage.setItem("backend_api_url", cleanUrl);
+      console.log("[Dynamic API] Cached backend URL successfully:", cleanUrl);
+    }
+  }
 }
 
 export function getApiUrl(path: string): string {
-  if (!path) return "/";
-  
-  // Nếu hệ thống vô tình truyền vào một Object thay vì chuỗi, biến nó thành chuỗi rỗng để không bị lỗi [object Object]
-  const pathStr = typeof path === 'object' ? '' : String(path);
+  if (!path) return "";
 
-  // Nếu path lấy từ Firestore là link tuyệt đối chứa domain (ví dụ: https://...run.app/api/chat-stream)
-  if (pathStr.includes("/api/")) {
-    // Cắt bỏ phần domain cũ, chỉ giữ lại phần tương đối bắt đầu từ "/api/..." để đi qua Hostinger
-    return pathStr.substring(pathStr.indexOf("/api/"));
+  // Bất kể path truyền vào là link tuyệt đối từ Firestore (như cái link run.app kia)
+  // Chúng ta sẽ cắt bỏ nó, chỉ giữ lại phần tương đối bắt đầu bằng /api
+  const cleanPath = path.includes("/api/") 
+    ? path.substring(path.indexOf("/api/")) 
+    : (path.startsWith("/") ? path : `/${path}`);
+
+  if (typeof window === "undefined") {
+    return cleanPath;
   }
 
-  // Đối với các API tĩnh khác (như lấy danh sách file, ghi log), giữ nguyên đường dẫn tương đối của chúng
-  return pathStr.startsWith("/") ? pathStr : `/${pathStr}`;
+  const hostname = window.location.hostname;
+  
+  // Kiểm tra xem có đang chạy trên localhost hoặc domain của chính AI Studio không
+  const isLocalOrDirectBackend = 
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname.includes("run.app") ||
+    hostname.includes("googleusercontent.com") ||
+    hostname.includes("aistudio.google");
+
+  // Nếu đang chạy trên static client ngoài (như Hostinger), ép buộc sử dụng URL tuyệt đối của Cloud Run backend
+  if (!isLocalOrDirectBackend) {
+    const activeBackend = cachedApiUrl || "https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app";
+    const resolvedUrl = `${activeBackend}${cleanPath}`;
+    console.log(`[API Redirect] External host detected. Redirecting request: ${cleanPath} -> ${resolvedUrl}`);
+    return resolvedUrl;
+  }
+
+  return cleanPath;
 }
