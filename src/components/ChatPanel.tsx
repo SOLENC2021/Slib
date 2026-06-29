@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
+import { fetchEventSource } from '@microsoft/fetch-event-source';
 import { 
   Send, Zap, ListFilter, Save, CheckCircle2, 
   AlertCircle, Loader2, Copy, Maximize2, Download,
