@@ -133,16 +133,7 @@ export function setDynamicApiUrl(url: string) {
 }
 
 export function getApiUrl(path: string): string {
-  if (!path) return window.location.origin;
-
-  // Nếu là link tuyệt đối từ Firestore truyền vào (chứa /api/)
-  if (path.includes("/api/")) {
-    // Trả về chính domain hiện tại của website (Hostinger) kèm phần đuôi /api/...
-    // Cách này vừa giữ được cấu trúc http/https hợp lệ, vừa đưa request về đúng server của bạn
-    return window.location.origin + path.substring(path.indexOf("/api/"));
-  }
-
-  // Trường hợp truyền path dạng endpoint ngắn (ví dụ: "api/chat-stream")
-  const cleanPath = path.startsWith("/") ? path : `/${path}`;
-  return window.location.origin + cleanPath;
+  // Ép Frontend luôn luôn gọi về endpoint tương đối trên Hostinger
+  // Bỏ qua mọi object hoặc link tuyệt đối từ Firestore truyền vào
+  return "/api/chat-stream";
 }
