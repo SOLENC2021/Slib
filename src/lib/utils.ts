@@ -133,7 +133,17 @@ export function setDynamicApiUrl(url: string) {
 }
 
 export function getApiUrl(path: string): string {
-  // Ép Frontend luôn luôn gọi về endpoint tương đối trên Hostinger
-  // Bỏ qua mọi object hoặc link tuyệt đối từ Firestore truyền vào
-  return "/api/chat-stream";
+  if (!path) return "/";
+  
+  // Nếu hệ thống vô tình truyền vào một Object thay vì chuỗi, biến nó thành chuỗi rỗng để không bị lỗi [object Object]
+  const pathStr = typeof path === 'object' ? '' : String(path);
+
+  // Nếu path lấy từ Firestore là link tuyệt đối chứa domain (ví dụ: https://...run.app/api/chat-stream)
+  if (pathStr.includes("/api/")) {
+    // Cắt bỏ phần domain cũ, chỉ giữ lại phần tương đối bắt đầu từ "/api/..." để đi qua Hostinger
+    return pathStr.substring(pathStr.indexOf("/api/"));
+  }
+
+  // Đối với các API tĩnh khác (như lấy danh sách file, ghi log), giữ nguyên đường dẫn tương đối của chúng
+  return pathStr.startsWith("/") ? pathStr : `/${pathStr}`;
 }

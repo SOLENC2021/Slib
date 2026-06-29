@@ -580,7 +580,7 @@ async function startServer() {
     res.json({ status: "ok" });
   });
 
-  app.post("/api/chat-stream", async (req, res) => {
+  app.all("/api/chat-stream", async (req, res) => {
     const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl } = req.body;
     
     if (!process.env.GEMINI_API_KEY) {
