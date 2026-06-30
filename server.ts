@@ -126,23 +126,22 @@ async function callAIWithRetry(
         const totalDelay = delay + jitter;
         
         console.warn(`[Gemini Transient Error Caught] Retrying in ${totalDelay}ms (base ${delay}ms + jitter ${jitter}ms)... (Attempt ${i + 1}/${maxRetries}). Model: ${currentModel}. Error detail: ${fullErrorStr.substring(0, 300)}`);
-        await new Promise(resolve => setTimeout(resolve, totalDelay));
-        delay = Math.floor(delay * 2.2); // Exponential backoff
-        continue;
+        delay = Math.floor(delay * 2.2);
+      } else {
+        throw error;
       }
-      throw error;
     }
   }
-  throw lastError;
+  throw lastError || new Error(`Failed to communicate with Gemini API after ${maxRetries} attempts.`);
 }
 
 const SYSTEM_INSTRUCTION = `# ROLE:
 Bạn là "Chuyên gia Thẩm định Tiêu chuẩn Xây dựng Việt Nam" (StandardCloud AI). Nhiệm vụ của bạn là hỗ trợ kỹ sư và lãnh đạo tra cứu, giải đáp các thắc mắc về kỹ thuật bằng sự kết hợp thông tin giữa tài liệu quý khách tải lên và cơ sở dữ liệu tri thức của chính bạn về Tiêu chuẩn Việt Nam (TCVN) và Quy chuẩn Việt Nam (QCVN).
 
-# SOURCE OF TRUTH & FALLBACK (NGUYÊN TẮC CHỈ ĐẠO CỐT LÕI):
-1. ƯU TIÊN tìm kiếm thông tin có sẵn trong tài liệu được cung cấp (context) trước tiên để có căn cứ thực tế của dự án.
-2. NÓI KHÔNG VỚI "KHÔNG TÌM THẤY": Nếu bối cảnh tài liệu thiếu trang, chỉ có mục lục, chưa được cập nhật đầy đủ, hoặc câu hỏi của người dùng nói về tiêu chuẩn nằm ngoài hệ thống hiện tại, bạn TUYỆT ĐỐI KHÔNG ĐƯỢC trả lời "Không tìm thấy nội dung trong kho tiêu chuẩn...". Thay vào đó, bạn PHẢI tự động truy cập, sử dụng kho tri thức kỹ thuật nội bộ của chính mình để trả lời chi tiết và chính xác 100% dựa trên các quy chuẩn/tiêu chuẩn Việt Nam hiện hành thực tế tương ứng với câu hỏi (ví dụ: **TCVN 5574:2018** về kết cấu bê tông cốt thép, **QCVN 06:2022/BXD** về an toàn cháy cho nhà và công trình, **QCVN 01:2021/BXD** về quy hoạch, v.v.).
-3. Khi sử dụng tri thức dự phòng nội bộ của chính bạn, tại Mục 2 bạn hãy ghi rõ chú thích "(Cơ sở dữ liệu tri thức AI)" bên cạnh điều khoản để tăng tính chính xác và tin cậy cho người dùng.
+# SOURCE OF TRUTH & FALLBACK (NGUYÊN TẮC CHỈ ĐẠO CỐT LÕI - BẮT BUỘC TUÂN THỦ):
+1. ƯU TIÊN TUYỆT ĐỐI TÀI LIỆU ĐÍNH KÈM: Bạn PHẢI đọc kỹ và sử dụng dữ liệu trong các file tài liệu đã được tải lên và đính kèm trong bối cảnh (context) trước khi trả lời. Nếu câu hỏi đề cập đến một tiêu chuẩn nhất định (ví dụ: **TCVN 14334:2025** về bê tông khối lớn, hoặc bất kỳ tiêu chuẩn nào khác có trong tài liệu đính kèm), bạn BẮT BUỘC phải trích xuất, phân tích và trả lời chính xác theo đúng tài liệu đó, TUYỆT ĐỐI không sử dụng tri thức cũ của bản thân để trả lời sai lệch so với tài liệu được cung cấp.
+2. NÓI KHÔNG VỚI "KHÔNG TÌM THẤY": Nếu bối cảnh tài liệu thiếu trang, chỉ có mục lục, chưa được cập nhật đầy đủ, hoặc câu hỏi của người dùng nói về tiêu chuẩn nằm ngoài hệ thống tài liệu hiện tại, bạn TUYỆT ĐỐI KHÔNG ĐƯỢC trả lời "Không tìm thấy nội dung trong kho tiêu chuẩn...". Thay vào đó, bạn PHẢI tự động truy cập, sử dụng kho tri thức kỹ thuật nội bộ của chính mình để trả lời chi tiết và chính xác 100% dựa trên các quy chuẩn/tiêu chuẩn Việt Nam hiện hành thực tế tương ứng với câu hỏi (ví dụ: **TCVN 5574:2018** về kết cấu bê tông cốt thép, **QCVN 06:2022/BXD** về an toàn cháy cho nhà và công trình, **QCVN 01:2021/BXD** về quy hoạch, v.v.). Tuy nhiên, nếu tài liệu đính kèm có chứa thông tin của tiêu chuẩn liên quan, bạn PHẢI ưu tiên tuyệt đối tài liệu đính kèm và không được tự ý bịa đặt thông tin trái với tài liệu đính kèm.
+3. NGHIÊM CẤM TỰ BỊA ĐẶT / HALLUCINATION: Bạn tuyệt đối không được tự bịa ra các số hiệu điều khoản, số liệu kỹ thuật hoặc trích đoạn không tồn tại. Nếu sử dụng tri thức dự phòng nội bộ của chính bạn do tài liệu đính kèm thiếu thông tin, bạn phải dựa trên các quy chuẩn hiện hành chính xác 100% và ghi rõ chú thích "(Cơ sở dữ liệu tri thức AI)" bên cạnh điều khoản để tăng tính chính xác và tin cậy cho người dùng.
 
 # CẤU TRÚC CÂU TRẢ LỜI (BẮT BUỘC KHÔNG THAY ĐỔI TIÊU ĐỀ):
 Mọi câu trả lời phải được chia thành đúng 3 phần rõ rệt bằng Markdown theo cấu trúc chính xác dưới đây:
@@ -151,7 +150,7 @@ Mọi câu trả lời phải được chia thành đúng 3 phần rõ rệt b�
 [Phần này chỉ nêu thông tin tổng quan (general) và câu trả lời tóm lược trực diện vào câu hỏi của người dùng, tối đa 3-5 câu ngắn gọn. TUYỆT ĐỐI KHÔNG lặp lại tiêu đề, KHÔNG viết thêm câu hay cụm từ "Trực diện, ngắn gọn" hoặc bất cứ tiền tố thừa nào ở ngay đầu nội dung trả lời, hãy trả lời thẳng vào vấn đề chính một cách tự nhiên.]
 
 ## 2. Căn cứ pháp lý: Liệt kê tên tiêu chuẩn, điều khoản và trích đoạn gốc.
-- **Tên tiêu chuẩn:** [Bắt buộc viết bôi đậm tên quy chuẩn/tiêu chuẩn viết hoa đầy đủ, ví dụ: **QCVN 06:2022/BXD** hoặc **TCVN 5574:2018** để hệ thống tạo Badge làm nổi bật]
+- **Tên tiêu chuẩn:** [Bắt buộc viết bôi đậm tên quy chuẩn/tiêu chuẩn viết hoa đầy đủ, ví dụ: **TCVN 14334:2025** hoặc **TCVN 5574:2018** để hệ thống tạo Badge làm nổi bật. Bạn hãy ghi rõ nguồn từ tài liệu tải lên hoặc từ cơ sở dữ liệu AI]
 - **Điều/Mục:** [Ghi rõ số hiệu điều khoản, mục lục trích xuất. Nếu đây là dữ liệu dự phòng từ AI do tài liệu thiếu chi tiết, ghi thêm: "(Cơ sở dữ liệu AI của Gemini)"]
 - **Trích đoạn tiêu chuẩn:** [Đoạn trích chính xác trực tiếp từ tài liệu gốc, hoặc nếu sử dụng dữ liệu AI nội bộ thì ghi rõ trích đoạn quy chuẩn thực tế tương ứng với độ chính xác cao nhất]
 
@@ -205,6 +204,47 @@ function cleanExtractedText(text: string): string {
 
 // Memory cache for standard technical document plain texts to prevent massive re-downloading latency
 const textCollectionCache = new Map<string, string>();
+
+/**
+ * Advanced keyword extraction and filtering utility for Vietnamese prompts.
+ * Deduplicates and strips common stopwords to prevent filler word pollution
+ * and allow matching core technical elements (e.g. "bê tông", "khối lớn", "móng")
+ * even in very long queries.
+ */
+function extractHighValueKeywords(prompt: string, limit = 50): string[] {
+  const stopWords = new Set([
+    "một", "có", "thì", "theo", "của", "và", "những", "các", "cho", "để", "là", "này", "với", "trong", "được", "bởi", "như", "nào", "ở", "tại", "ra", "vào", "lại", "thế", "gì", "đâu", "đến", "bằng", "về", "đã", "đang", "sẽ", "nhưng", "hoặc", "nếu", "khi", "từ", "lên", "xuống", "qua", "lại", "đúng", "kích", "thước", "hãy", "làm", "sao", "cho", "phải", "cần", "tìm", "kiếm", "tra", "cứu", "đối", "chiếu", "xem", "tự", "bị", "bị", "bởi", "ở"
+  ]);
+
+  const rawWords = prompt.toLowerCase().trim()
+    .replace(/[^a-z0-9áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/gi, " ")
+    .split(/\s+/)
+    .filter((word: string) => word.length >= 2 || /^\d+$/.test(word));
+
+  const uniqueWords: string[] = [];
+  const seen = new Set<string>();
+
+  for (const word of rawWords) {
+    if (!seen.has(word)) {
+      seen.add(word);
+      if (!stopWords.has(word)) {
+        uniqueWords.push(word);
+      }
+    }
+  }
+
+  // Fallback to preserve some keywords if everything got filtered out
+  if (uniqueWords.length < 5) {
+    for (const word of rawWords) {
+      if (uniqueWords.length >= limit) break;
+      if (!uniqueWords.includes(word)) {
+        uniqueWords.push(word);
+      }
+    }
+  }
+
+  return uniqueWords.slice(0, limit);
+}
 
 /**
  * Parent-Child Retrieval (RAG):
@@ -271,15 +311,9 @@ function retrieveRelevantChunks(text: string, query: string, maxChunks = 4, chil
     }
   });
 
-  // 3. Normalize and tokenize query
+  // 3. Normalize and tokenize query using our advanced Vietnamese keyword extractor
   const normalizedQuery = query.toLowerCase().trim();
-  const rawWords = normalizedQuery
-    .replace(/[^a-z0-9áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/gi, " ")
-    .split(/\s+/)
-    .filter(word => word.length >= 2 || /^\d+$/.test(word));
-  
-  // Guard loop performance: Limit maximum unique keywords to match in simple CPU loops
-  const queryWords = rawWords.slice(0, 15);
+  const queryWords = extractHighValueKeywords(query, 45);
 
   if (queryWords.length === 0) {
     // Zero semantic words: fallback to first 2 parents
@@ -296,8 +330,8 @@ function retrieveRelevantChunks(text: string, query: string, maxChunks = 4, chil
       score += 1500;
     }
 
-    // N-gram Multi-word transition boosts (2-4 words sequences), capped on query length to protect cpu loops
-    const qWords = rawWords.slice(0, 10);
+    // N-gram Multi-word transition boosts (2-4 words sequences), using our high value keywords
+    const qWords = queryWords.slice(0, 15);
     for (let len = Math.min(4, qWords.length); len >= 2; len--) {
       for (let sIdx = 0; sIdx <= qWords.length - len; sIdx++) {
         const phraseTerm = qWords.slice(sIdx, sIdx + len).join(" ");
@@ -629,20 +663,18 @@ async function startServer() {
         console.log("Processing general chat query using gemini-3.5-flash with STREAMING...");
         let finalFiles = referencedFiles ? JSON.parse(JSON.stringify(referencedFiles)) : [];
         
-        const queryWordsForPreFilter = prompt.toLowerCase().trim()
-          .replace(/[^a-z0-9áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/gi, " ")
-          .split(/\s+/)
-          .filter((word: string) => word.length >= 2 || /^\d+$/.test(word))
-          .slice(0, 15);
+        const queryWordsForPreFilter = extractHighValueKeywords(prompt, 45);
 
         const filesWithMetadataScores = finalFiles.map((file: any) => {
           let score = 0;
           const nameLower = (file.name || "").toLowerCase();
           const categoryLower = (file.category || "").toLowerCase();
+          const textLower = (file.text || "").toLowerCase();
           
           queryWordsForPreFilter.forEach((word: string) => {
-            if (nameLower.includes(word)) score += 200;
-            if (categoryLower.includes(word)) score += 50;
+            if (nameLower.includes(word)) score += 500; // Boost filename match even more to prioritize standards
+            if (categoryLower.includes(word)) score += 100;
+            if (textLower.includes(word)) score += 30; // content-based search boost for general context matching
           });
           return { ...file, metadataScore: score };
         });
@@ -654,7 +686,8 @@ async function startServer() {
           return (b.uploadDate || 0) - (a.uploadDate || 0);
         });
 
-        const contextFiles = sortedByMetadata.slice(0, 2);
+        // Increase context files up to 6 (or all matching ones) to give Gemini complete vision over multiple standards
+        const contextFiles = sortedByMetadata.slice(0, 6);
         console.log(`[Stream RAG] Selected general context files:`, contextFiles.map((f: any) => f.name));
 
         let upgradedReferencedFiles: any[] = [];
@@ -1033,25 +1066,25 @@ async function startServer() {
         let finalFiles = referencedFiles ? JSON.parse(JSON.stringify(referencedFiles)) : [];
         let newlyReRegistered: any[] = [];
 
-        // 1. Extact query words to filter of files by filename & category first
-        const queryWordsForPreFilter = prompt.toLowerCase().trim()
-          .replace(/[^a-z0-9áàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵđ]/gi, " ")
-          .split(/\s+/)
-          .filter((word: string) => word.length >= 2 || /^\d+$/.test(word))
-          .slice(0, 15);
+        // 1. Extract query words to filter files by filename & category first using Vietnamese keyword extractor
+        const queryWordsForPreFilter = extractHighValueKeywords(prompt, 45);
 
         // Pre-score files based on metadata similarity to prompt
         const filesWithMetadataScores = finalFiles.map((file: any) => {
           let score = 0;
           const nameLower = (file.name || "").toLowerCase();
           const categoryLower = (file.category || "").toLowerCase();
+          const textLower = (file.text || "").toLowerCase();
           
           queryWordsForPreFilter.forEach((word: string) => {
             if (nameLower.includes(word)) {
-              score += 200; // high boost for filename keyword match
+              score += 500; // high boost for filename keyword match (increased to prioritize matching standards)
             }
             if (categoryLower.includes(word)) {
-              score += 50;  // moderate boost for category match
+              score += 100;  // moderate boost for category match
+            }
+            if (textLower.includes(word)) {
+              score += 30;  // content-based search boost
             }
           });
           
@@ -1084,9 +1117,8 @@ async function startServer() {
           }
         };
 
-        // Scan only the top 3 most relevant files to perform deep text chunk parsing.
-        // This is the core optimization that brings processing down to < 2 seconds.
-        const filesToDeepScan = sortedByMetadata.slice(0, 3);
+        // Scan up to 8 files for deep text chunk parsing, allowing all standards to be fully analyzed
+        const filesToDeepScan = sortedByMetadata.slice(0, 8);
 
         const scoredFilesTemp = await Promise.all(filesToDeepScan.map(async (file: any) => {
           let fileText = file.text || "";
@@ -1135,8 +1167,8 @@ async function startServer() {
         // Sort by relevance score (highest first)
         const sortedScoredFiles = scoredFilesTemp.sort((a, b) => b.score - a.score);
 
-        // 2. To maintain low-latency, keep under model token limits and optimize quota consumption, filter to only the top 2 most matching files
-        const topScoredFilesForContext = sortedScoredFiles.filter(f => f.score > 0).slice(0, 2);
+        // 2. Filter to top 6 most matching files to cover broader context of multiple standards
+        const topScoredFilesForContext = sortedScoredFiles.filter(f => f.score > 0).slice(0, 6);
         const contextFilesToUse = topScoredFilesForContext.length > 0 
           ? topScoredFilesForContext 
           : sortedScoredFiles.slice(0, 1);
