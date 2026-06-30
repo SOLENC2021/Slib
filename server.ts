@@ -695,10 +695,14 @@ async function startServer() {
         const buildGeneralContents = async (useFilesApi: boolean, excludedFileId?: string) => {
           const userParts: any[] = [];
           let textContext = "";
+          let filesApiCount = 0;
+          const maxFilesApi = 2; // Limit to at most 2 Files API attachments to avoid 1M token limits
 
           for (const file of contextFiles) {
+            const shouldAttemptFilesApi = useFilesApi && filesApiCount < maxFilesApi && file.id !== excludedFileId;
+
             // Proactive on-the-fly registration to prevent manual PDF text extraction!
-            if (useFilesApi && !file.geminiFileUri && file.url) {
+            if (shouldAttemptFilesApi && !file.geminiFileUri && file.url) {
               console.log(`[Stream General RAG] File "${file.name}" lacks geminiFileUri. Registering on-the-fly...`);
               try {
                 const newReg = await reRegisterFileWithGemini(file.url, file.name);
@@ -715,7 +719,7 @@ async function startServer() {
               }
             }
 
-            if (useFilesApi && file.geminiFileUri && file.id !== excludedFileId) {
+            if (shouldAttemptFilesApi && file.geminiFileUri) {
               console.log(`[Stream RAG] Attaching native Gemini File API Uri: ${file.name}`);
               userParts.push({
                 fileData: {
@@ -723,6 +727,7 @@ async function startServer() {
                   mimeType: "application/pdf"
                 }
               });
+              filesApiCount++;
             } else {
               let fileText = file.text || "";
               if (file.textUrl) {

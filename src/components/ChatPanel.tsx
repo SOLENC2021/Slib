@@ -1352,7 +1352,7 @@ KHOẢN MỤC RÀ SOÁT CHUYÊN BIỆT: ${ruleDesc}
 
 YÊU CẦU TRÌNH BÀY KẾT QUẢ: Hãy viết kết quả bằng TIẾNG VIỆT, mạch lạc, chính xác cao và định dạng bằng Markdown sạch đẹp với cấu trúc hiển thị như sau:
 
-# [BÁO CÁO THẨM ĐỊNH]: ${drawingFile.name.toUpperCase()}
+# [BÁO CÁO THẨM ĐỊNH]: ${drawingFile.name.length > 30 ? drawingFile.name.substring(0, 30).toUpperCase() + "..." : drawingFile.name.toUpperCase()}
 
 ### 1. KẾT LUẬN THẨM TRÌNH CHUNG
 * **Tỷ lệ Tuân thủ**: Nhận xét về độ hòa hợp thiết kế và cho điểm số thẩm định khách quan (từ 1 đến 10).
@@ -2080,7 +2080,11 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => handleDownloadText(complianceResult, `bao_cao_tham_dinh_${activeFile ? activeFile.name.replace(/\.[^/.]+$/, "") : "tieu_chuan"}.txt`)}
+                      onClick={() => {
+                        const rawName = activeFile ? activeFile.name.replace(/\.[^/.]+$/, "") : "tieu_chuan";
+                        const cleanName = rawName.length > 20 ? rawName.substring(0, 20) + "..." : rawName;
+                        handleDownloadText(complianceResult, `bao_cao_tham_dinh_${cleanName}.txt`);
+                      }}
                       className="px-3 py-2 bg-[#f8f9fc] text-gray-500 hover:text-emerald-600 rounded-xl border border-gray-150/40 hover:bg-emerald-50/50 transition-all flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest cursor-pointer shadow-sm active:scale-95"
                       title="Tải báo cáo này về máy dưới dạng tệp văn bản (.txt)"
                     >
@@ -2626,10 +2630,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 max-w-2xl mx-auto">
                       {[
-                        { text: "Bê tông khối lớn được định nghĩa thế nào theo TCVN 305:2004?", label: "TCVN 305:2004" },
-                        { text: "Quy định về chiều dày lớp bê tông bảo vệ cốt thép dầm sàn?", label: "TCVN 5574:2018" },
-                        { text: "Yêu cầu khoảng cách an toàn phòng cháy liên nhà?", label: "QCVN 06:2022/BXD" },
-                        { text: "Tiêu chuẩn neo thép dầm và chiều dài đoạn nối chồng?", label: "Kết cấu thép" }
+                        { text: "Bê tông khối lớn được định nghĩa thế nào theo TCVN 14334:2025?", label: "TCVN 14334:2025" },
+                        { text: "Quy trình kiểm soát nhiệt độ và chống nứt bê tông khối lớn?", label: "TCVN 14334:2025" },
+                        { text: "Yêu cầu thiết kế cấp phối và bảo dưỡng theo TCVN 14334?", label: "Thiết kế & Bảo dưỡng" },
+                        { text: "Quy định quan trắc nhiệt độ khối đổ bê tông theo tiêu chuẩn mới?", label: "Quan trắc nhiệt" }
                       ].map((opt) => (
                         <button
                           key={opt.text}
