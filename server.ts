@@ -613,7 +613,7 @@ async function startServer() {
   });
 
   app.post("/api/chat-stream", async (req, res) => {
-    const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl } = req.body;
+    const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration } = req.body;
     
     if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
@@ -636,6 +636,53 @@ async function startServer() {
     };
 
     try {
+      if (isImageGeneration) {
+        console.log("Generating image using gemini-3.1-flash-image-preview (Streaming wrapper)...");
+        const parts: any[] = [];
+        if (image) {
+          const base64Data = image.split(",")[1] || image;
+          parts.push({
+            inlineData: {
+              data: base64Data,
+              mimeType: "image/jpeg"
+            }
+          });
+        }
+        parts.push({ text: prompt });
+
+        const response = await callAIWithRetry(async (client, modelName) => {
+          return await client.models.generateContent({
+            model: modelName,
+            contents: { parts },
+            config: {
+              imageConfig: {
+                aspectRatio: "1:1",
+                imageSize: "1K"
+              }
+            }
+          });
+        }, "gemini-3.1-flash-image-preview");
+
+        let replyText = "🎨 **StandardCloud AI đã tạo thành công ảnh theo yêu cầu của bạn:**\n\n";
+        let foundImage = false;
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+          if (part.inlineData?.data) {
+            const base64 = part.inlineData.data;
+            replyText += `![AI Generated Image](data:image/png;base64,${base64})\n\n`;
+            foundImage = true;
+          } else if (part.text) {
+            replyText += part.text + "\n";
+          }
+        }
+        if (!foundImage) {
+          replyText += "\n*(Không tìm thấy dữ liệu ảnh trả về từ mô hình)*";
+        }
+
+        writeStreamChunk({ text: replyText });
+        res.write("data: [DONE]\n\n");
+        return res.end();
+      }
+
       let trimmedHistory = history || [];
       if (trimmedHistory.length > 6) {
         trimmedHistory = trimmedHistory.slice(-6);
@@ -779,15 +826,22 @@ async function startServer() {
         };
 
         const runStreamGeneral = async (contentsArr: any[]) => {
-          return await callAIWithRetry((aiClient, model) => aiClient.models.generateContentStream({
-            model: model,
+          const selectedModel = (isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.5-flash";
+          const configObj: any = {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            temperature: 0.15,
+            topP: 0.95,
+          };
+          if (isThinking) {
+            configObj.thinkingConfig = {
+              thinkingLevel: "HIGH"
+            };
+          }
+          return await callAIWithRetry((aiClient, modelName) => aiClient.models.generateContentStream({
+            model: modelName,
             contents: contentsArr,
-            config: {
-              systemInstruction: SYSTEM_INSTRUCTION,
-              temperature: 0.15,
-              topP: 0.95,
-            },
-          }), "gemini-3.5-flash");
+            config: configObj,
+          }), selectedModel);
         };
 
         let streamResponse;
@@ -924,15 +978,23 @@ async function startServer() {
             }
           ];
 
-          return await callAIWithRetry((aiClient, model) => aiClient.models.generateContentStream({
-            model: model,
+          const selectedModel = (isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.5-flash";
+          const configObj: any = {
+            systemInstruction: SYSTEM_INSTRUCTION,
+            temperature: 0.1,
+            topP: 0.95,
+          };
+          if (isThinking) {
+            configObj.thinkingConfig = {
+              thinkingLevel: "HIGH"
+            };
+          }
+
+          return await callAIWithRetry((aiClient, modelName) => aiClient.models.generateContentStream({
+            model: modelName,
             contents,
-            config: {
-              systemInstruction: SYSTEM_INSTRUCTION,
-              temperature: 0.1,
-              topP: 0.95,
-            },
-          }), "gemini-3.5-flash", 2);
+            config: configObj,
+          }), selectedModel, 2);
         };
 
         let streamResponse;
@@ -988,13 +1050,58 @@ async function startServer() {
 
   // API 1: Chat endpoint (Proxy for Gemini with RAG and history limits)
   app.post("/api/chat", async (req, res) => {
-    const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl } = req.body;
+    const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration } = req.body;
     
     if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
     }
 
     try {
+      if (isImageGeneration) {
+        console.log("Generating image using gemini-3.1-flash-image-preview...");
+        const parts: any[] = [];
+        if (image) {
+          const base64Data = image.split(",")[1] || image;
+          parts.push({
+            inlineData: {
+              data: base64Data,
+              mimeType: "image/jpeg"
+            }
+          });
+        }
+        parts.push({ text: prompt });
+
+        const response = await callAIWithRetry(async (client, modelName) => {
+          return await client.models.generateContent({
+            model: modelName,
+            contents: { parts },
+            config: {
+              imageConfig: {
+                aspectRatio: "1:1",
+                imageSize: "1K"
+              }
+            }
+          });
+        }, "gemini-3.1-flash-image-preview");
+
+        let replyText = "🎨 **StandardCloud AI đã tạo thành công ảnh theo yêu cầu của bạn:**\n\n";
+        let foundImage = false;
+        for (const part of response.candidates?.[0]?.content?.parts || []) {
+          if (part.inlineData?.data) {
+            const base64 = part.inlineData.data;
+            replyText += `![AI Generated Image](data:image/png;base64,${base64})\n\n`;
+            foundImage = true;
+          } else if (part.text) {
+            replyText += part.text + "\n";
+          }
+        }
+        if (!foundImage) {
+          replyText += "\n*(Không tìm thấy dữ liệu ảnh trả về từ mô hình)*";
+        }
+
+        return res.json({ text: replyText });
+      }
+
       const model = "gemini-3.5-flash";
       
       // OPTIMIZATION: Limit chat history to max 3 QA pairs (6 messages) to prevent token multiplication cost
@@ -1056,15 +1163,23 @@ async function startServer() {
 
           const chatSystemInstruction = SYSTEM_INSTRUCTION;
 
-          return await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
-            model: model,
+          const selectedModel = (isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.5-flash";
+          const configObj: any = {
+            systemInstruction: chatSystemInstruction,
+            temperature: 0.15, // Low temperature for high precision, objective answers
+            topP: 0.95,
+          };
+          if (isThinking) {
+            configObj.thinkingConfig = {
+              thinkingLevel: "HIGH"
+            };
+          }
+
+          return await callAIWithRetry((aiClient, modelName) => aiClient.models.generateContent({
+            model: modelName,
             contents,
-            config: {
-              systemInstruction: chatSystemInstruction,
-              temperature: 0.15, // Low temperature for high precision, objective answers
-              topP: 0.95,
-            },
-          }), "gemini-3.5-flash");
+            config: configObj,
+          }), selectedModel);
         };
 
         let response;
@@ -1304,15 +1419,23 @@ async function startServer() {
           }
         ];
 
-        return await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
-          model: model,
+        const selectedModel = (isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.5-flash";
+        const configObj: any = {
+          systemInstruction: SYSTEM_INSTRUCTION,
+          temperature: 0.1,
+          topP: 0.95,
+        };
+        if (isThinking) {
+          configObj.thinkingConfig = {
+            thinkingLevel: "HIGH"
+          };
+        }
+
+        return await callAIWithRetry((aiClient, modelName) => aiClient.models.generateContent({
+          model: modelName,
           contents,
-          config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            temperature: 0.1,
-            topP: 0.95,
-          },
-        }), "gemini-3.5-flash", 2); // Limit to 2 attempts for faster fallback
+          config: configObj,
+        }), selectedModel, 2); // Limit to 2 attempts for faster fallback
       };
 
       try {

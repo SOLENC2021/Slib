@@ -17,7 +17,9 @@ export async function chatWithDocument(
   fileUrl?: string,
   fileName?: string,
   fileId?: string,
-  textUrl?: string
+  textUrl?: string,
+  isThinking?: boolean,
+  isImageGeneration?: boolean
 ) {
   try {
     const response = await fetch(getApiUrl("/api/chat"), {
@@ -25,7 +27,7 @@ export async function chatWithDocument(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl }),
+      body: JSON.stringify({ text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration }),
     });
 
     const contentType = response.headers.get("content-type");
@@ -63,6 +65,8 @@ export async function chatWithDocumentStream(
   fileName?: string,
   fileId?: string,
   textUrl?: string,
+  isThinking?: boolean,
+  isImageGeneration?: boolean,
   onChunk?: (chunk: string) => void
 ) {
   try {
@@ -82,7 +86,9 @@ export async function chatWithDocumentStream(
         fileUrl,
         fileName,
         fileId,
-        textUrl
+        textUrl,
+        isThinking,
+        isImageGeneration
       }),
     });
 

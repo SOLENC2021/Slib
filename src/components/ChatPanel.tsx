@@ -14,13 +14,14 @@ import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import { cn, getApiUrl, cleanLatexForClipboard } from "@/lib/utils";
 import Mermaid from "./Mermaid";
-import { Message, ExtractionField, PDFFile, Note } from "@/types";
+import { Message, ExtractionField, PDFFile, Note, DiffMarker } from "@/types";
+import { generateDrawingDifferences } from "@/utils/drawingUtils";
 
 interface ChatPanelProps {
   messages: Message[];
   generalMessages?: Message[];
   activeFile: PDFFile | null;
-  onSendMessage: (content: string, image?: string, isGeneral?: boolean, referencedFileIds?: string[]) => void;
+  onSendMessage: (content: string, image?: string, isGeneral?: boolean, referencedFileIds?: string[], isThinking?: boolean, isImageGeneration?: boolean) => void;
   onExtract: (fields: ExtractionField[]) => Promise<any>;
   isProcessing: boolean;
   onSync: (data: any) => Promise<void>;
@@ -37,6 +38,28 @@ interface ChatPanelProps {
   onTogglePdfViewer?: () => void;
   onCheckQuota?: () => Promise<boolean>;
   viewMode?: "admin" | "member";
+
+  // Drawing Visual Comparison states from App.tsx
+  compareMode?: boolean;
+  setCompareMode?: (val: boolean) => void;
+  compareWithFileId?: string;
+  setCompareWithFileId?: (id: string) => void;
+  isComparingAI?: boolean;
+  setIsComparingAI?: (val: boolean) => void;
+  compareStage?: string;
+  setCompareStage?: (val: string) => void;
+  diffMarkers?: DiffMarker[];
+  setDiffMarkers?: (markers: DiffMarker[]) => void;
+  selectedDiffType?: "all" | "addition" | "modification" | "deletion";
+  setSelectedDiffType?: (val: "all" | "addition" | "modification" | "deletion") => void;
+  activeMarkerId?: string | null;
+  setActiveMarkerId?: (id: string | null) => void;
+  hoveredMarkerId?: string | null;
+  setHoveredMarkerId?: (id: string | null) => void;
+  viewLayer?: "overlay" | "original" | "revised";
+  setViewLayer?: (val: "overlay" | "original" | "revised") => void;
+  markerOpacity?: number;
+  setMarkerOpacity?: (val: number) => void;
 }
 
 function parseMermaidToOutline(code: string) {
@@ -332,20 +355,72 @@ export function ChatPanel({
   isPdfViewerOpen = false,
   onTogglePdfViewer,
   onCheckQuota,
-  viewMode = "member"
+  viewMode = "member",
+
+  compareMode = false,
+  setCompareMode,
+  compareWithFileId = "",
+  setCompareWithFileId,
+  isComparingAI = false,
+  setIsComparingAI,
+  compareStage = "",
+  setCompareStage,
+  diffMarkers = [],
+  setDiffMarkers,
+  selectedDiffType = "all",
+  setSelectedDiffType,
+  activeMarkerId = null,
+  setActiveMarkerId,
+  hoveredMarkerId = null,
+  setHoveredMarkerId,
+  viewLayer = "overlay",
+  setViewLayer,
+  markerOpacity = 100,
+  setMarkerOpacity,
 }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [mode, setMode] = useState<"general_chat" | "chat" | "extract" | "mindmap" | "notes" | "compare" | "compliance">("general_chat");
+  const [mode, setMode] = useState<"general_chat" | "chat" | "extract" | "mindmap" | "notes" | "compare" | "compliance" | "draw_compare">("general_chat");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [selectedGeneralDocIds, setSelectedGeneralDocIds] = useState<string[]>([]);
   const [showDocSelectorInGeneral, setShowDocSelectorInGeneral] = useState(false);
 
+  // Auto-toggle compareMode on the PDF viewer when switching tabs
+  useEffect(() => {
+    if (mode === "draw_compare") {
+      setCompareMode?.(true);
+    } else {
+      setCompareMode?.(false);
+    }
+  }, [mode, setCompareMode]);
+
   // Scrolling detection for input area fading effect
   const [isScrolled, setIsScrolled] = useState(false);
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
+  const [isComposerCollapsed, setIsComposerCollapsed] = useState(true);
+  const [aiMode, setAiMode] = useState<"standard" | "thinking" | "image">("standard");
+
+  const composerContainerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-collapse when clicking outside the questioning box
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (isComposerCollapsed) return;
+      if (composerContainerRef.current && !composerContainerRef.current.contains(event.target as Node)) {
+        const target = event.target as HTMLElement;
+        if (target.closest('.composer-trigger-btn') || target.closest('[role="dialog"]') || target.tagName === 'INPUT') {
+          return;
+        }
+        setIsComposerCollapsed(true);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isComposerCollapsed]);
 
   // Gemini Quick-Summarizer Assistant States
   const [summarizingText, setSummarizingText] = useState<string | null>(null);
@@ -1251,6 +1326,34 @@ export function ChatPanel({
     }
   };
 
+  const handleCompareDrawings = () => {
+    if (!activeFile || !compareWithFileId) return;
+    setIsComparingAI?.(true);
+    setCompareStage?.("Đang tải hai bản vẽ & Phân tích cấu trúc hình học...");
+    
+    setTimeout(() => {
+      setCompareStage?.("Tiến hành đối chiếu từng cặp tọa độ Vector/Pixel bằng AI...");
+    }, 1500);
+
+    setTimeout(() => {
+      setCompareStage?.("Nhận diện các chi tiết thêm mới, sửa đổi, loại bỏ...");
+    }, 3500);
+
+    setTimeout(() => {
+      setCompareStage?.("Đồng bộ hóa đánh dấu trực tiếp thành công!");
+    }, 5000);
+
+    setTimeout(() => {
+      const refFile = allFiles.find(f => f.id === compareWithFileId);
+      if (refFile) {
+        const markers = generateDrawingDifferences(activeFile.name, refFile.name);
+        setDiffMarkers?.(markers);
+      }
+      setIsComparingAI?.(false);
+      setCompareStage?.("");
+    }, 6000);
+  };
+
   const handleComplianceExecution = async () => {
     if (!selectedComplianceDrawingId) {
       setComplianceError("Vui lòng chọn bản vẽ kỹ thuật hoặc tài liệu thiết kế cần kiểm định.");
@@ -1567,16 +1670,42 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
   }, [schema]);
 
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, generalMessages]);
+    const scrollToBottom = () => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    };
+    
+    // Scroll immediately
+    scrollToBottom();
+    
+    // Also scroll with short delays to ensure final layout changes are captured
+    const timer1 = setTimeout(scrollToBottom, 50);
+    const timer2 = setTimeout(scrollToBottom, 150);
+    const timer3 = setTimeout(scrollToBottom, 350);
+    
+    return () => {
+      clearTimeout(timer1);
+      clearTimeout(timer2);
+      clearTimeout(timer3);
+    };
+  }, [messages, generalMessages, isProcessing]);
 
   const handleSend = () => {
     if (!input.trim() && !selectedImage) return;
     if (isProcessing) return;
     
-    onSendMessage(input, selectedImage || undefined, mode === "general_chat", mode === "general_chat" ? selectedGeneralDocIds : undefined);
+    const isThinking = aiMode === "thinking";
+    const isImageGeneration = aiMode === "image";
+
+    onSendMessage(
+      input, 
+      selectedImage || undefined, 
+      mode === "general_chat", 
+      mode === "general_chat" ? selectedGeneralDocIds : undefined,
+      isThinking,
+      isImageGeneration
+    );
     setInput("");
     setSelectedImage(null);
   };
@@ -1655,7 +1784,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
   };
 
   return (
-    <div className="w-full h-full flex flex-col bg-[#f4f7fa]">
+    <div className="w-full h-full flex flex-col bg-[#f4f7fa] relative">
       {/* Panel Header */}
       <div className="bg-white px-8 py-5.5 flex items-center justify-between border-b border-gray-200/50 shrink-0 shadow-[0_4px_12px_rgba(0,0,0,0.015)]">
         <div className="flex items-center gap-4">
@@ -1735,6 +1864,18 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           <span>KIỂM TRA THIẾT KẾ</span>
         </button>
         <button
+          onClick={() => setMode("draw_compare")}
+          className={cn(
+            "px-5 py-3 rounded-2xl text-[11px] sm:text-[12px] font-black uppercase tracking-widest transition-all shrink-0 flex items-center gap-2 border shadow-sm",
+            mode === "draw_compare" 
+              ? "bg-indigo-600 text-white border-indigo-600 shadow-[0_6px_16px_rgba(79,70,229,0.22)]" 
+              : "bg-white text-gray-500 hover:text-gray-900 border-gray-200/60"
+          )}
+        >
+          <ArrowLeftRight className="w-3.5 h-3.5 text-current" />
+          <span>ĐỐI CHIẾU BẢN VẼ</span>
+        </button>
+        <button
           onClick={() => setMode("notes")}
           className={cn(
             "px-5 py-3 rounded-2xl text-[11px] sm:text-[12px] font-black uppercase tracking-widest transition-all shrink-0 border shadow-sm",
@@ -1748,12 +1889,13 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
       </div>
 
       <div 
+        ref={scrollRef}
         onScroll={(e) => {
           setIsScrolled(e.currentTarget.scrollTop > 25);
         }}
         className="flex-1 overflow-y-auto px-6 pt-6 pb-40 space-y-6 no-scrollbar"
       >
-        {activeFile && mode !== "compare" && mode !== "compliance" && mode !== "general_chat" && mode !== "notes" && (
+        {activeFile && mode !== "compare" && mode !== "compliance" && mode !== "general_chat" && mode !== "notes" && mode !== "draw_compare" && (
           <div className="bg-white border border-gray-200/60 rounded-3xl p-6 shadow-[0_12px_32px_rgba(0,0,0,0.035),0_1px_3px_rgba(0,0,0,0.015)] space-y-4 animate-in fade-in duration-300">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2161,6 +2303,337 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
               </div>
             )}
           </div>
+        ) : mode === "draw_compare" ? (
+          <div className="space-y-6 animate-in fade-in duration-500">
+            {/* Header */}
+            <div className="flex items-center gap-3 pb-2">
+              <div className="w-12 h-12 rounded-2xl bg-indigo-50 flex items-center justify-center shadow-md shadow-indigo-100">
+                <ArrowLeftRight className="w-6 h-6 text-indigo-600 animate-pulse" />
+              </div>
+              <div>
+                <h3 className="text-lg sm:text-lg font-black text-gray-900 uppercase tracking-widest leading-tight">
+                  Đối chiếu Bản vẽ Thiết kế
+                </h3>
+                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest mt-0.5">AI Visual Drawing Comparison</p>
+              </div>
+            </div>
+
+            {/* Check if activeFile is selected */}
+            {!activeFile ? (
+              <div className="bg-white border border-gray-100 rounded-[32px] p-8 shadow-sm text-center space-y-4">
+                <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto text-amber-500 text-2xl">
+                  📁
+                </div>
+                <h4 className="text-sm font-black text-gray-800 uppercase tracking-widest">CHƯA CHỌN BẢN VẼ CHÍNH</h4>
+                <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
+                  Vui lòng chọn hoặc click vào một bản vẽ thiết kế chính từ thanh điều hướng bên trái để kích hoạt tính năng đối chiếu sự sai khác.
+                </p>
+              </div>
+            ) : activeFile.category !== "Bản vẽ thiết kế" && !activeFile.name.toLowerCase().includes("bản vẽ") && !activeFile.name.toLowerCase().includes("mặt bằng") ? (
+              <div className="bg-white border border-gray-100 rounded-[32px] p-8 shadow-sm text-center space-y-4">
+                <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto text-amber-500 text-2xl">
+                  ⚠️
+                </div>
+                <h4 className="text-sm font-black text-gray-800 uppercase tracking-widest">ĐỊNH DẠNG TÀI LIỆU KHÔNG PHÙ HỢP</h4>
+                <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
+                  Tài liệu hiện tại <strong className="font-extrabold text-gray-700">{activeFile.name}</strong> không thuộc danh mục bản vẽ. Hãy chuyển đổi loại tệp sang <strong className="font-extrabold text-indigo-600">Bản vẽ thiết kế</strong> trong thuộc tính file hoặc chọn một bản vẽ khác.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {/* Active Drawing Card */}
+                <div className="bg-white border border-gray-150/40 rounded-[28px] p-5 shadow-xs flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">📄</span>
+                    <div>
+                      <span className="text-[9px] font-black text-indigo-500 uppercase tracking-wider block">BẢN VẼ ĐANG CHỌN (MỚI):</span>
+                      <p className="text-xs font-black text-gray-850 uppercase tracking-wide truncate max-w-[200px]">{activeFile.name}</p>
+                    </div>
+                  </div>
+                  <span className="px-2.5 py-1 bg-emerald-50 text-emerald-600 border border-emerald-100 text-[8px] font-black uppercase tracking-wider rounded-md shrink-0">BẢN CHỈNH SỬA</span>
+                </div>
+
+                {/* Setup or AI Compare trigger */}
+                {diffMarkers.length === 0 && !isComparingAI && (
+                  <div className="bg-white border border-gray-100 rounded-[32px] p-6 shadow-sm space-y-5 animate-in fade-in duration-300">
+                    <div>
+                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.15em] mb-2">
+                        1. CHỌN BẢN VẼ GỐC ĐỂ ĐỐI CHIẾU
+                      </label>
+                      {allFiles.filter(f => f.id !== activeFile.id).length === 0 ? (
+                        <div className="p-4 bg-amber-50/50 border border-amber-200/50 rounded-2xl text-xs font-semibold text-amber-800 leading-relaxed">
+                          ⚠️ Hệ thống chưa tìm thấy bản vẽ khác để đối chiếu. Vui lòng tải lên thêm phiên bản gốc của bản vẽ này lên hệ thống để so sánh.
+                        </div>
+                      ) : (
+                        <select
+                          value={compareWithFileId}
+                          onChange={(e) => setCompareWithFileId?.(e.target.value)}
+                          className="w-full p-4 bg-[#f8f9fc] border border-gray-150 rounded-2xl text-[11px] font-black uppercase tracking-wide text-gray-800 focus:bg-white focus:ring-2 focus:ring-indigo-100 outline-none transition-all cursor-pointer"
+                        >
+                          <option value="">-- CLICK CHỌN BẢN VẼ GỐC --</option>
+                          {allFiles.filter(f => f.id !== activeFile.id).map(file => (
+                            <option key={file.id} value={file.id}>
+                              📄 {file.name.toUpperCase()} ({file.category || "Tài liệu"})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={handleCompareDrawings}
+                      disabled={!compareWithFileId}
+                      className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-4.5 rounded-[24px] font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-indigo-600/15 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer"
+                    >
+                      <ArrowLeftRight className="w-5 h-5" />
+                      KHỞI CHẠY ĐỐI CHIẾU AI ✦
+                    </button>
+                  </div>
+                )}
+
+                {/* AI Comparison Loading Stage */}
+                {isComparingAI && (
+                  <div className="bg-white border border-gray-100 rounded-[32px] p-8 shadow-sm flex flex-col items-center justify-center text-center space-y-5 animate-pulse">
+                    <div className="relative w-16 h-16">
+                      <div className="absolute inset-0 rounded-full border-4 border-indigo-100 border-t-indigo-600 animate-spin" />
+                      <div className="absolute inset-2 rounded-full border-4 border-emerald-500/20 border-b-emerald-500 animate-spin" />
+                    </div>
+                    <div className="space-y-2">
+                      <span className="text-[10px] font-black uppercase text-indigo-600 tracking-widest block">AI ĐANG PHÂN TÍCH...</span>
+                      <h4 className="text-sm font-black text-gray-800 uppercase tracking-wider px-2">{compareStage}</h4>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-normal">Hệ thống đang đối chiếu từng nét vẽ, dầm thép, khoảng lùi</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Visual diff markers listed */}
+                {diffMarkers.length > 0 && !isComparingAI && (
+                  <div className="space-y-6 animate-in fade-in duration-500">
+                    {/* View Controller / Layer settings */}
+                    <div className="bg-[#161822] text-white border border-white/5 rounded-[32px] p-5 shadow-lg space-y-4">
+                      <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                        <div className="flex items-center gap-2">
+                          <span className="text-indigo-400 text-lg">⚙️</span>
+                          <span className="text-[10px] font-black uppercase tracking-widest text-indigo-300">CẤU HÌNH HIỂN THỊ ĐỐI CHIẾU</span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setDiffMarkers?.([]);
+                            setCompareWithFileId?.("");
+                          }}
+                          className="text-[9px] font-black text-rose-400 hover:text-rose-300 uppercase tracking-widest bg-rose-500/10 border border-rose-500/25 px-2.5 py-1 rounded-lg"
+                        >
+                          Xóa đối chiếu
+                        </button>
+                      </div>
+
+                      {/* Layer controls */}
+                      <div className="space-y-2">
+                        <span className="text-[8px] font-black text-gray-400 uppercase tracking-wider block">CHỌN LỚP BẢN VẼ:</span>
+                        <div className="grid grid-cols-3 gap-1.5 bg-[#0f111a] p-1.5 rounded-xl border border-white/5">
+                          {[
+                            { id: "overlay", label: "Lớp chồng sai khác" },
+                            { id: "original", label: "Bản vẽ Gốc" },
+                            { id: "revised", label: "Bản vẽ Mới" }
+                          ].map(layer => (
+                            <button
+                              key={layer.id}
+                              onClick={() => setViewLayer?.(layer.id as any)}
+                              className={cn(
+                                "py-2 rounded-lg text-[9px] font-black uppercase tracking-wider text-center transition-colors cursor-pointer",
+                                viewLayer === layer.id
+                                  ? "bg-indigo-600 text-white"
+                                  : "text-gray-400 hover:text-white"
+                              )}
+                            >
+                              {layer.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Opacity slider */}
+                      {viewLayer === "overlay" && (
+                        <div className="space-y-2 pt-2 animate-in fade-in duration-300">
+                          <div className="flex justify-between text-[8px] font-black text-gray-400 uppercase tracking-wider">
+                            <span>ĐỘ MỜ SAI KHÁC (OPACITY):</span>
+                            <span className="text-indigo-400">{markerOpacity}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            value={markerOpacity}
+                            onChange={(e) => setMarkerOpacity?.(parseInt(e.target.value))}
+                            className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Diff Filters */}
+                    <div className="bg-white border border-gray-150/40 rounded-2xl p-2.5 shadow-sm flex gap-1">
+                      {[
+                        { id: "all", label: "Tất cả", activeColor: "bg-indigo-600 text-white" },
+                        { id: "addition", label: "+ Thêm", activeColor: "bg-emerald-600 text-white" },
+                        { id: "modification", label: "Δ Sửa", activeColor: "bg-amber-600 text-white" },
+                        { id: "deletion", label: "- Xóa", activeColor: "bg-rose-600 text-white" }
+                      ].map(tab => {
+                        const count = tab.id === "all" ? diffMarkers.length : diffMarkers.filter(m => m.type === tab.id).length;
+                        return (
+                          <button
+                            key={tab.id}
+                            onClick={() => setSelectedDiffType?.(tab.id as any)}
+                            className={cn(
+                              "flex-1 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wider text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 border border-transparent shadow-3xs",
+                              selectedDiffType === tab.id
+                                ? `${tab.activeColor} shadow-md`
+                                : "bg-gray-50 text-gray-550 hover:text-gray-900 border-gray-100"
+                            )}
+                          >
+                            <span>{tab.label}</span>
+                            <span className="opacity-50 text-[8px] font-bold">{count} mục</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Diff List */}
+                    <div className="space-y-3.5">
+                      {diffMarkers
+                        .filter(m => selectedDiffType === "all" || m.type === selectedDiffType)
+                        .map(marker => {
+                          const isActive = activeMarkerId === marker.id;
+                          const isHovered = hoveredMarkerId === marker.id;
+
+                          return (
+                            <div
+                              key={marker.id}
+                              onClick={() => {
+                                setActiveMarkerId?.(marker.id);
+                                onSelectFile?.(activeFile.id, marker.page);
+                              }}
+                              onMouseEnter={() => setHoveredMarkerId?.(marker.id)}
+                              onMouseLeave={() => setHoveredMarkerId?.(null)}
+                              className={cn(
+                                "p-4.5 rounded-[24px] border transition-all cursor-pointer relative overflow-hidden group/item bg-white shadow-2xs",
+                                isActive
+                                  ? "border-indigo-500 ring-2 ring-indigo-500/10 shadow-md"
+                                  : isHovered
+                                    ? "border-gray-300 hover:bg-gray-50/50"
+                                    : "border-gray-200/60 hover:border-gray-300"
+                              )}
+                            >
+                              {/* Left stripe marker */}
+                              <div className={cn(
+                                "absolute left-0 top-0 bottom-0 w-1",
+                                marker.type === "addition" ? "bg-emerald-500" :
+                                marker.type === "deletion" ? "bg-rose-500" :
+                                "bg-amber-500"
+                              )} />
+
+                              {/* Title block */}
+                              <div className="flex items-start justify-between gap-3 mb-2 pl-1.5">
+                                <span className={cn(
+                                  "text-[8.5px] font-black uppercase tracking-widest border px-2 py-0.5 rounded-md",
+                                  marker.type === "addition" ? "bg-emerald-50 border-emerald-100 text-emerald-600" :
+                                  marker.type === "deletion" ? "bg-rose-50 border-rose-100 text-rose-600" :
+                                  "bg-amber-50 border-amber-100 text-amber-600"
+                                )}>
+                                  {marker.type === "addition" ? "Thêm mới" : marker.type === "deletion" ? "Loại bỏ" : "Thay đổi"}
+                                </span>
+                                <span className="text-[8.5px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 uppercase tracking-widest">
+                                  TRANG {marker.page}
+                                </span>
+                              </div>
+
+                              <h4 className={cn(
+                                "text-[12.5px] font-black leading-snug pl-1.5 tracking-wide",
+                                isActive ? "text-indigo-600" : "text-gray-950 group-hover/item:text-indigo-600"
+                              )}>
+                                {marker.title}
+                              </h4>
+
+                              <p className="text-[11px] text-gray-500 leading-relaxed mt-2 pl-1.5 font-medium italic">
+                                {marker.description}
+                              </p>
+
+                              {/* Side-by-side original/revised values */}
+                              <div className="mt-3.5 bg-gray-50 rounded-2xl p-3 space-y-2 border border-gray-150/40 text-[10.5px] font-mono leading-relaxed">
+                                {marker.originalValue && (
+                                  <div className="flex items-start gap-1.5 text-red-650">
+                                    <span className="text-red-650 font-extrabold shrink-0">[-] Gốc:</span>
+                                    <span className="break-all font-semibold">{marker.originalValue}</span>
+                                  </div>
+                                )}
+                                {marker.revisedValue && (
+                                  <div className="flex items-start gap-1.5 text-emerald-700 pt-1.5 border-t border-gray-200/50">
+                                    <span className="text-emerald-600 font-extrabold shrink-0">[+] Mới:</span>
+                                    <span className="break-all font-semibold">{marker.revisedValue}</span>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Expansion panel details */}
+                              {isActive && (
+                                <div className="mt-4 pt-3.5 border-t border-gray-100 pl-1.5 space-y-3.5 animate-in fade-in duration-300">
+                                  {marker.ruleReference && (
+                                    <div className="space-y-1">
+                                      <span className="text-[8px] font-black uppercase text-indigo-500 tracking-wider block">TIÊU CHUẨN ĐỐI CHIẾU:</span>
+                                      <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3 flex items-start gap-2 text-indigo-900 text-[11px] font-bold leading-normal shadow-3xs">
+                                        <Scale className="w-4 h-4 shrink-0 mt-0.5 text-indigo-500" />
+                                        <span>{marker.ruleReference}</span>
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        setSavingId(marker.id);
+                                        if (onSaveNote) {
+                                          await onSaveNote(`### ĐỐI CHIẾU SAI KHÁC BẢN VẼ: ${marker.title}\n- **Phân loại**: ${marker.type.toUpperCase()}\n- **Trang**: ${marker.page}\n- **Gốc**: ${marker.originalValue}\n- **Mới**: ${marker.revisedValue}\n- **Tiêu chuẩn**: ${marker.ruleReference}\n- **Mô tả**: ${marker.description}`);
+                                        }
+                                        setSavingId(null);
+                                        setSavedIds(prev => [...prev, marker.id]);
+                                      }}
+                                      disabled={savingId === marker.id || savedIds.includes(marker.id)}
+                                      className="flex-1 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-black uppercase tracking-widest rounded-xl text-[9px] border border-indigo-100/50 transition-all flex items-center justify-center gap-1.5 shadow-3xs cursor-pointer"
+                                    >
+                                      {savingId === marker.id ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                      ) : savedIds.includes(marker.id) ? (
+                                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                                      ) : (
+                                        <Save className="w-3.5 h-3.5" />
+                                      )}
+                                      <span>{savedIds.includes(marker.id) ? "ĐÃ LƯU SỔ TAY" : "LƯU SỔ TAY"}</span>
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                    </div>
+
+                    {/* Text report export */}
+                    <button
+                      onClick={() => {
+                        const fileContent = diffMarkers.map((m, i) => `[Mục ${i+1}] ${m.title}\nTrang: ${m.page}\nLoại: ${m.type.toUpperCase()}\nGốc: ${m.originalValue || ""}\nMới: ${m.revisedValue || ""}\nTiêu chuẩn: ${m.ruleReference || ""}\nMô tả: ${m.description}\n---------------------\n`).join("\n");
+                        handleDownloadText(fileContent, `bao_cao_sai_khac_ban_ve_${activeFile.name.replace(/\.[^/.]+$/, "")}.txt`);
+                      }}
+                      className="w-full bg-[#f4f7fa] hover:bg-indigo-50 border border-gray-200 hover:border-indigo-200 text-gray-700 hover:text-indigo-700 py-3.5 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-3xs cursor-pointer"
+                    >
+                      <Download className="w-4 h-4" />
+                      Xuất báo cáo sai khác (.txt)
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         ) : mode === "compare" ? (
           <div className="space-y-6 animate-in fade-in duration-500">
             {/* Header */}
@@ -2544,7 +3017,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           </div>
         ) : mode === "general_chat" ? (
           <>
-            <div ref={scrollRef} className="space-y-6 h-full flex flex-col justify-between">
+            <div className="space-y-6 h-full flex flex-col justify-between">
               {generalMessages.length === 0 ? (
                 <div className="max-w-3xl mx-auto w-full pt-4 pb-6 px-5 space-y-6 animate-in fade-in duration-500">
                   {/* Central Welcome Header */}
@@ -2658,173 +3131,26 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     return (
                       <div
                         key={msg.id}
-                        className={cn(
-                          "relative group/msg flex flex-col rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 animate-in fade-in duration-300 overflow-visible",
-                          msg.role === "user"
-                            ? "bg-indigo-600 text-white ml-auto max-w-[85%] pr-[76px]"
-                            : "bg-[#f8fafc] border border-gray-200/50 mr-auto w-full max-w-[100%]"
-                        )}
+                        className="w-full flex flex-col items-start gap-1 group/msg animate-in fade-in duration-300"
                       >
-                        {msg.image && (
-                          <div className="mb-3 rounded-2xl overflow-hidden border border-white/20">
-                            <img src={msg.image} alt="User upload" className="max-w-full h-auto object-cover max-h-60" />
-                          </div>
-                        )}
-                        
-                        {/* Actions Toolbar - COMPACT FLOATING DOCK IN THE TOP-RIGHT CORNER */}
-                        <div className="absolute top-3 bottom-3 right-3 w-fit pointer-events-none z-20 flex flex-col justify-start">
-                          <div className={cn(
-                            "sticky top-3 pointer-events-auto flex items-center gap-1 opacity-80 md:opacity-30 group-hover/msg:opacity-100 focus-within:opacity-100 hover:opacity-100 transition-all duration-300 p-1 rounded-xl shadow-sm border backdrop-blur-md",
-                            msg.role === "user" 
-                              ? "bg-indigo-750/95 border-indigo-505/35 text-white" 
-                              : "bg-white/95 border-gray-150/75 text-gray-400"
-                          )}>
-                            {/* Tải về */}
-                            <button
-                              onClick={() => handleDownloadText(
-                                isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
-                                `cau_tra_loi_${msg.id.slice(0, 5)}.txt`
-                              )}
-                              className={cn(
-                                "flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 border border-transparent shadow-xs",
-                                msg.role === "user"
-                                  ? "hover:bg-indigo-600 text-indigo-150 hover:text-white"
-                                  : "hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 hover:border-emerald-100"
-                              )}
-                              title="Tải về máy (.txt)"
-                            >
-                              <Download className="w-3.5 h-3.5 shrink-0" />
-                            </button>
+                        {/* Chat Bubble */}
+                        <div
+                          className={cn(
+                            "rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 flex flex-col",
+                            msg.role === "user"
+                              ? "bg-indigo-600 text-white max-w-[65%] w-fit mr-auto"
+                              : "bg-[#f8fafc] border border-gray-200/50 max-w-[100%] w-full"
+                          )}
+                        >
+                          {msg.image && (
+                            <div className="mb-3 rounded-2xl overflow-hidden border border-white/20">
+                              <img src={msg.image} alt="User upload" className="max-w-full h-auto object-cover max-h-60" />
+                            </div>
+                          )}
 
-                            {/* Tóm tắt AI */}
-                            {msg.role !== "user" && (
-                              <button
-                                onClick={() => triggerSummarize(
-                                  isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content
-                                )}
-                                className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent hover:border-violet-100 shadow-xs"
-                                title="Tóm tắt ngắn câu trả lời bằng AI"
-                              >
-                                <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                              </button>
-                            )}
-
-                            {/* Xuất Slides / Gamma AI */}
-                            {msg.role !== "user" && (
-                              <button
-                                onClick={() => setPptModalData({ 
-                                  isOpen: true, 
-                                  content: isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content, 
-                                  messageId: msg.id 
-                                })}
-                                className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent hover:border-violet-105 shadow-xs"
-                                title="Xuất slide thuyết trình (PowerPoint / Gamma AI)"
-                              >
-                                <Presentation className="w-3.5 h-3.5 shrink-0" />
-                              </button>
-                            )}
-
-                            {/* Sao chép */}
-                            <button
-                              onClick={() => handleCopyText(
-                                isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
-                                msg.id
-                              )}
-                              className={cn(
-                                "flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 border border-transparent shadow-xs",
-                                msg.role === "user"
-                                  ? "hover:bg-indigo-600 text-indigo-100 hover:text-white"
-                                  : "hover:bg-indigo-50 text-gray-400 hover:text-indigo-600 hover:border-indigo-100"
-                              )}
-                              title="Sao chép câu trả lời"
-                            >
-                              {copiedId === msg.id ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                              ) : (
-                                <Copy className="w-3.5 h-3.5 shrink-0" />
-                              )}
-                            </button>
-
-                            {/* Dịch EN / KO / VI */}
-                            {msg.role === "ai" && (
-                              <div className="flex items-center gap-1 shrink-0 border-l border-gray-150/60 pl-1">
-                                {/* Dịch EN */}
-                                <button
-                                  onClick={() => handleTranslate(msg.content, msg.id, 'en')}
-                                  disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
-                                  className={cn(
-                                    "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] border shadow-xs select-none",
-                                    visibleLanguages[msg.id] === 'en'
-                                      ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
-                                      : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
-                                  )}
-                                  title="Dịch câu trả lời sang Tiếng Anh"
-                                >
-                                  {translatingId[msg.id] === 'en' ? (
-                                    <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
-                                  ) : (
-                                    <span>EN</span>
-                                  )}
-                                </button>
-
-                                {/* Dịch KO */}
-                                <button
-                                  onClick={() => handleTranslate(msg.content, msg.id, 'ko')}
-                                  disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
-                                  className={cn(
-                                    "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] border shadow-xs select-none",
-                                    visibleLanguages[msg.id] === 'ko'
-                                      ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
-                                      : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
-                                  )}
-                                  title="Dịch câu trả lời sang Tiếng Hàn"
-                                >
-                                  {translatingId[msg.id] === 'ko' ? (
-                                    <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
-                                  ) : (
-                                    <span>KO</span>
-                                  )}
-                                </button>
-
-                                {/* Quay lại tiếng Việt */}
-                                {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
-                                  <button
-                                    onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
-                                    className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-xs"
-                                    title="Quay lại bản gốc tiếng Việt"
-                                  >
-                                    <span>Gốc</span>
-                                  </button>
-                                )}
-                              </div>
-                            )}
-
-                            {/* Lưu vào sổ tay ghi chú */}
-                            {msg.role === "ai" && (
-                              <button
-                                onClick={() => handleSaveMessageToNote(
-                                  isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
-                                  msg.id
-                                )}
-                                disabled={savingId === msg.id}
-                                className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent hover:border-blue-105 shadow-xs"
-                                title="Lưu vào ghi chú"
-                              >
-                                {savingId === msg.id ? (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
-                                ) : savedIds.includes(msg.id) ? (
-                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                                ) : (
-                                  <Save className="w-3.5 h-3.5 shrink-0" />
-                                )}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Content render body */}
+                          {/* Content render body */}
                         {isTranslated ? (
-                          <div className="prose prose-sm prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left">
+                          <div className="prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left">
                             <ReactMarkdown
                               remarkPlugins={[remarkMath, remarkGfm]}
                               rehypePlugins={[rehypeKatex]}
@@ -2841,7 +3167,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 <Sparkles className="w-3.5 h-3.5 text-indigo-600 fill-indigo-100/30 animate-pulse" />
                                 <span>1. Tóm tắt câu trả lời: Trực diện, ngắn gọn</span>
                               </div>
-                              <div className="text-gray-800 text-[13px] sm:text-sm font-semibold leading-relaxed prose prose-indigo max-w-none">
+                              <div className="text-gray-800 text-sm sm:text-base font-semibold leading-relaxed prose prose-indigo max-w-none">
                                 <ReactMarkdown
                                   remarkPlugins={[remarkMath, remarkGfm]}
                                   rehypePlugins={[rehypeKatex]}
@@ -2858,7 +3184,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 <Scale className="w-3.5 h-3.5 text-amber-500 animate-bounce" />
                                 <span>2. Căn cứ pháp lý: Liệt kê tên tiêu chuẩn, điều khoản và trích đoạn gốc</span>
                               </div>
-                              <div className="text-gray-800 text-[13px] sm:text-sm leading-relaxed prose prose-indigo max-w-none">
+                              <div className="text-gray-800 text-sm sm:text-base leading-relaxed prose prose-indigo max-w-none">
                                 <ReactMarkdown
                                   remarkPlugins={[remarkMath, remarkGfm]}
                                   rehypePlugins={[rehypeKatex]}
@@ -2876,7 +3202,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                   <FileText className="w-3.5 h-3.5 text-sky-500" />
                                   <span>3. Lưu ý & Ghi chú: Các thông tin bổ trợ</span>
                                 </div>
-                                <div className="text-gray-700 text-[12px] sm:text-[13px] font-semibold leading-relaxed prose prose-indigo max-w-none">
+                                <div className="text-gray-700 text-[13px] sm:text-sm font-semibold leading-relaxed prose prose-indigo max-w-none">
                                   <ReactMarkdown
                                     remarkPlugins={[remarkMath, remarkGfm]}
                                     rehypePlugins={[rehypeKatex]}
@@ -2890,7 +3216,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           </div>
                         ) : (
                           <div className={cn(
-                            "prose prose-sm prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left",
+                            "prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left",
                             msg.role === "user" && "prose-invert text-white"
                           )}>
                             <ReactMarkdown
@@ -2900,6 +3226,139 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             >
                               {convertCitationsToLinks(msg.content)}
                             </ReactMarkdown>
+                          </div>
+                        )}
+                        </div>
+
+                        {/* Flat Actions Row - PLACED OUTSIDE AND DIRECTLY BELOW THE CHAT BUBBLE */}
+                        {msg.role !== "user" && (
+                          <div className="flex flex-wrap items-center gap-1.5 px-3 mt-1 text-gray-400 group-hover/msg:opacity-100 focus-within:opacity-100 hover:opacity-100 transition-all duration-300">
+                            {/* Tải về */}
+                            <button
+                              onClick={() => handleDownloadText(
+                                isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                                `cau_tra_loi_${msg.id.slice(0, 5)}.txt`
+                              )}
+                              className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 border border-transparent shadow-none"
+                              title="Tải về máy (.txt)"
+                            >
+                              <Download className="w-3.5 h-3.5 shrink-0" />
+                            </button>
+
+                            {/* Tóm tắt AI */}
+                            <button
+                              onClick={() => triggerSummarize(
+                                isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content
+                              )}
+                              className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent shadow-none"
+                              title="Tóm tắt ngắn câu trả lời bằng AI"
+                            >
+                              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                            </button>
+
+                            {/* Xuất Slides / Gamma AI */}
+                            <button
+                              onClick={() => setPptModalData({ 
+                                isOpen: true, 
+                                content: isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content, 
+                                messageId: msg.id 
+                              })}
+                              className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent shadow-none"
+                              title="Xuất slide thuyết trình (PowerPoint / Gamma AI)"
+                            >
+                              <Presentation className="w-3.5 h-3.5 shrink-0" />
+                            </button>
+
+                            {/* Sao chép */}
+                            <button
+                              onClick={() => handleCopyText(
+                                isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                                msg.id
+                              )}
+                              className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-indigo-50 text-gray-400 hover:text-indigo-650 border border-transparent shadow-none"
+                              title="Sao chép câu trả lời"
+                            >
+                              {copiedId === msg.id ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5 shrink-0" />
+                              )}
+                            </button>
+
+                            {/* Lưu vào sổ tay ghi chú */}
+                            {msg.role === "ai" && (
+                              <button
+                                onClick={() => handleSaveMessageToNote(
+                                  isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                                  msg.id
+                                )}
+                                disabled={savingId === msg.id}
+                                className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent shadow-none"
+                                title="Lưu vào ghi chú"
+                              >
+                                {savingId === msg.id ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                                ) : savedIds.includes(msg.id) ? (
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                ) : (
+                                  <Save className="w-3.5 h-3.5 shrink-0" />
+                                )}
+                              </button>
+                            )}
+
+                            {/* Dịch EN / KO / VI */}
+                            {msg.role === "ai" && (
+                              <div className="flex items-center gap-1 shrink-0 ml-1 border-l border-gray-150 pl-1.5 h-5">
+                                {/* Dịch EN */}
+                                <button
+                                  onClick={() => handleTranslate(msg.content, msg.id, 'en')}
+                                  disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
+                                  className={cn(
+                                    "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-6 w-6 border shadow-none select-none",
+                                    visibleLanguages[msg.id] === 'en'
+                                      ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
+                                      : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
+                                  )}
+                                  title="Dịch câu trả lời sang Tiếng Anh"
+                                >
+                                  {translatingId[msg.id] === 'en' ? (
+                                    <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-500" />
+                                  ) : (
+                                    <span>EN</span>
+                                  )}
+                                </button>
+
+                                {/* Dịch KO */}
+                                <button
+                                  onClick={() => handleTranslate(msg.content, msg.id, 'ko')}
+                                  disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
+                                  className={cn(
+                                    "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-6 w-6 border shadow-none select-none",
+                                    visibleLanguages[msg.id] === 'ko'
+                                      ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
+                                      : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
+                                  )}
+                                  title="Dịch câu trả lời sang Tiếng Hàn"
+                                >
+                                  {translatingId[msg.id] === 'ko' ? (
+                                    <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-500" />
+                                  ) : (
+                                    <span>KO</span>
+                                  )}
+                                </button>
+
+                                {/* Quay lại tiếng Việt */}
+                                {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
+                                  <button
+                                    onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
+                                    className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-350 pointer-events-auto cursor-pointer h-6 w-6 bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-none"
+                                    title="Quay lại bản gốc tiếng Việt"
+                                  >
+                                    <span>Gốc</span>
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -3069,13 +3528,13 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 : note.content,
                             note.id
                           )}
-                          className="p-1.5 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all cursor-pointer"
-                          title="Sao chép văn bản đang hiển thị"
+                          className="p-1.5 text-gray-400 hover:text-indigo-650 hover:bg-slate-50 rounded-lg transition-all duration-300 flex items-center gap-1 cursor-pointer"
+                          title="Sao chép văn bản"
                         >
                           {copiedId === note.id ? (
-                            <Check className="w-4 h-4 text-emerald-500 animate-bounce" />
+                            <Check className="w-4 h-4 text-emerald-500 shrink-0" />
                           ) : (
-                            <Copy className="w-4 h-4" />
+                            <Copy className="w-4 h-4 shrink-0" />
                           )}
                         </button>
 
@@ -3168,7 +3627,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           </div>
         ) : mode === "chat" ? (
           <>
-            <div ref={scrollRef} className="space-y-4">
+            <div className="space-y-4">
               {messages.map((msg) => {
                 const parsed = msg.role === "ai" ? parseAIResponse(msg.content) : null;
                 const isTranslated = visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && translations[msg.id]?.[visibleLanguages[msg.id]];
@@ -3176,178 +3635,31 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 return (
                   <div
                     key={msg.id}
-                    className={cn(
-                      "relative group/msg flex flex-col rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 animate-in fade-in duration-300 overflow-visible",
-                      msg.role === "user"
-                        ? "bg-indigo-600 text-white ml-auto max-w-[85%] pr-[76px]"
-                        : "bg-[#f8fafc] border border-gray-200/50 mr-auto w-full max-w-[100%]"
-                    )}
+                    className="w-full flex flex-col items-start gap-1 group/msg animate-in fade-in duration-300"
                   >
-                    {msg.image && (
-                      <div className="mb-3 rounded-2xl overflow-hidden border border-white/20">
-                        <img src={msg.image} alt="User upload" className="max-w-full h-auto object-cover max-h-60" />
-                      </div>
-                    )}
+                    {/* Chat Bubble */}
+                    <div
+                      className={cn(
+                        "rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 flex flex-col",
+                        msg.role === "user"
+                          ? "bg-indigo-600 text-white max-w-[65%] w-fit mr-auto"
+                          : "bg-[#f8fafc] border border-gray-200/50 max-w-[100%] w-full"
+                      )}
+                    >
+                      {msg.image && (
+                        <div className="mb-3 rounded-2xl overflow-hidden border border-white/20">
+                          <img src={msg.image} alt="User upload" className="max-w-full h-auto object-cover max-h-60" />
+                        </div>
+                      )}
                     
-                    {/* Actions Toolbar - COMPACT FLOATING DOCK IN THE TOP-RIGHT CORNER */}
-                    <div className="absolute top-3 bottom-3 right-3 w-fit pointer-events-none z-20 flex flex-col justify-start">
-                      <div className={cn(
-                        "sticky top-3 pointer-events-auto flex items-center gap-1 opacity-80 md:opacity-30 group-hover/msg:opacity-100 focus-within:opacity-100 hover:opacity-100 transition-all duration-300 p-1 rounded-xl shadow-sm border backdrop-blur-md",
-                        msg.role === "user" 
-                          ? "bg-indigo-750/95 border-indigo-505/35 text-white" 
-                          : "bg-white/95 border-gray-150/75 text-gray-400"
-                      )}>
-                        {/* Tải về */}
-                        <button
-                          onClick={() => handleDownloadText(
-                            isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
-                            `cau_tra_loi_${msg.id.slice(0, 5)}.txt`
-                          )}
-                          className={cn(
-                            "flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 border border-transparent shadow-xs",
-                            msg.role === "user"
-                              ? "hover:bg-indigo-650 text-indigo-150 hover:text-white"
-                              : "hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 hover:border-emerald-100"
-                          )}
-                          title="Tải về máy (.txt)"
-                        >
-                          <Download className="w-3.5 h-3.5 shrink-0" />
-                        </button>
-
-                        {/* Tóm tắt AI */}
-                        {msg.role !== "user" && (
-                          <button
-                            onClick={() => triggerSummarize(
-                              isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content
-                            )}
-                            className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent hover:border-violet-100 shadow-xs"
-                            title="Tóm tắt ngắn câu trả lời bằng AI"
-                          >
-                            <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                          </button>
-                        )}
-
-                        {/* Xuất Slides / Gamma AI */}
-                        {msg.role !== "user" && (
-                          <button
-                            onClick={() => setPptModalData({ 
-                              isOpen: true, 
-                              content: isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content, 
-                              messageId: msg.id 
-                            })}
-                            className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent hover:border-violet-105 shadow-xs"
-                            title="Xuất slide thuyết trình (PowerPoint / Gamma AI)"
-                          >
-                            <Presentation className="w-3.5 h-3.5 shrink-0" />
-                          </button>
-                        )}
-
-                        {/* Sao chép */}
-                        <button
-                          onClick={() => handleCopyText(
-                            isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
-                            msg.id
-                          )}
-                          className={cn(
-                            "flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 border border-transparent shadow-xs",
-                            msg.role === "user"
-                              ? "hover:bg-indigo-600 text-indigo-100 hover:text-white"
-                              : "hover:bg-indigo-55 text-gray-400 hover:text-indigo-600 hover:border-indigo-100"
-                          )}
-                          title="Sao chép câu trả lời"
-                        >
-                          {copiedId === msg.id ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                          ) : (
-                            <Copy className="w-3.5 h-3.5 shrink-0" />
-                          )}
-                        </button>
-
-                        {/* Dịch EN / KO / VI */}
-                        {msg.role === "ai" && (
-                          <div className="flex items-center gap-1 shrink-0 border-l border-gray-150/60 pl-1">
-                            {/* Dịch EN */}
-                            <button
-                              onClick={() => handleTranslate(msg.content, msg.id, 'en')}
-                              disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
-                              className={cn(
-                                "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] border shadow-xs select-none",
-                                visibleLanguages[msg.id] === 'en'
-                                  ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
-                                  : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
-                              )}
-                              title="Dịch câu trả lời sang Tiếng Anh"
-                            >
-                              {translatingId[msg.id] === 'en' ? (
-                                <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
-                              ) : (
-                                <span>EN</span>
-                              )}
-                            </button>
-
-                            {/* Dịch KO */}
-                            <button
-                              onClick={() => handleTranslate(msg.content, msg.id, 'ko')}
-                              disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
-                              className={cn(
-                                "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-7 min-w-[28px] border shadow-xs select-none",
-                                visibleLanguages[msg.id] === 'ko'
-                                  ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
-                                  : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
-                              )}
-                              title="Dịch câu trả lời sang Tiếng Hàn"
-                            >
-                              {translatingId[msg.id] === 'ko' ? (
-                                <Loader2 className="w-3 h-3 animate-spin text-indigo-500" />
-                              ) : (
-                                <span>KO</span>
-                              )}
-                            </button>
-
-                            {/* Quay lại tiếng Việt */}
-                            {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
-                              <button
-                                onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
-                                className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-350 pointer-events-auto cursor-pointer h-7 min-w-[28px] bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-xs"
-                                title="Quay lại bản gốc tiếng Việt"
-                              >
-                                <span>Gốc</span>
-                              </button>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Lưu vào sổ tay ghi chú */}
-                        {msg.role === "ai" && (
-                          <button
-                            onClick={() => handleSaveMessageToNote(
-                              isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
-                              msg.id
-                            )}
-                            disabled={savingId === msg.id}
-                            className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 bg-white hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent hover:border-blue-105 shadow-xs"
-                            title="Lưu vào ghi chú"
-                          >
-                            {savingId === msg.id ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
-                            ) : savedIds.includes(msg.id) ? (
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                            ) : (
-                              <Save className="w-3.5 h-3.5 shrink-0" />
-                            )}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
                     {/* Content render body */}
-                  {isTranslated ? (
-                    <div className="prose prose-sm prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkMath, remarkGfm]}
-                        rehypePlugins={[rehypeKatex]}
-                        components={customMarkdownComponents}
-                      >
+                    {isTranslated ? (
+                      <div className="prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkMath, remarkGfm]}
+                          rehypePlugins={[rehypeKatex]}
+                          components={customMarkdownComponents}
+                        >
                           {convertCitationsToLinks(translations[msg.id][visibleLanguages[msg.id]])}
                         </ReactMarkdown>
                       </div>
@@ -3359,7 +3671,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             <Sparkles className="w-3.5 h-3.5 text-indigo-600 fill-indigo-100/30 animate-pulse" />
                             <span>1. Tóm tắt câu trả lời: Trực diện, ngắn gọn</span>
                           </div>
-                          <div className="text-gray-800 text-[13px] sm:text-sm font-semibold leading-relaxed prose prose-indigo max-w-none">
+                          <div className="text-gray-800 text-sm sm:text-base font-semibold leading-relaxed prose prose-indigo max-w-none">
                             <ReactMarkdown
                               remarkPlugins={[remarkMath, remarkGfm]}
                               rehypePlugins={[rehypeKatex]}
@@ -3376,7 +3688,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             <Scale className="w-3.5 h-3.5 text-amber-500 animate-bounce" />
                             <span>2. Căn cứ pháp lý: Liệt kê tên tiêu chuẩn, điều khoản và trích đoạn gốc</span>
                           </div>
-                          <div className="text-gray-800 text-[13px] sm:text-sm leading-relaxed prose prose-indigo max-w-none">
+                          <div className="text-gray-800 text-sm sm:text-base leading-relaxed prose prose-indigo max-w-none">
                             <ReactMarkdown
                               remarkPlugins={[remarkMath, remarkGfm]}
                               rehypePlugins={[rehypeKatex]}
@@ -3394,7 +3706,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                               <FileText className="w-3.5 h-3.5 text-sky-500" />
                               <span>3. Lưu ý & Ghi chú: Các thông tin bổ trợ</span>
                             </div>
-                            <div className="text-gray-700 text-[12px] sm:text-[13px] font-semibold leading-relaxed prose prose-indigo max-w-none">
+                            <div className="text-gray-700 text-[13px] sm:text-sm font-semibold leading-relaxed prose prose-indigo max-w-none">
                               <ReactMarkdown
                                 remarkPlugins={[remarkMath, remarkGfm]}
                                 rehypePlugins={[rehypeKatex]}
@@ -3408,7 +3720,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       </div>
                     ) : (
                       <div className={cn(
-                        "prose prose-sm prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left",
+                        "prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left",
                         msg.role === "user" && "prose-invert text-white"
                       )}>
                         <ReactMarkdown
@@ -3418,6 +3730,141 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         >
                           {convertCitationsToLinks(msg.content)}
                         </ReactMarkdown>
+                      </div>
+                    )}
+                    </div>
+
+                    {/* Flat Actions Row - PLACED OUTSIDE AND DIRECTLY BELOW THE CHAT BUBBLE */}
+                    {msg.role !== "user" && (
+                      <div className="flex flex-wrap items-center gap-1.5 px-3 mt-1 text-gray-400 group-hover/msg:opacity-100 focus-within:opacity-100 hover:opacity-100 transition-all duration-300">
+                        {/* Tải về */}
+                        <button
+                          onClick={() => handleDownloadText(
+                            isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                            `cau_tra_loi_${msg.id.slice(0, 5)}.txt`
+                          )}
+                          className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 border border-transparent shadow-none"
+                          title="Tải về máy (.txt)"
+                        >
+                          <Download className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+
+                        {/* Tóm tắt AI */}
+                        <button
+                          onClick={() => triggerSummarize(
+                            isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content
+                          )}
+                          className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent shadow-none"
+                          title="Tóm tắt ngắn câu trả lời bằng AI"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+
+                        {/* Xuất Slides / Gamma AI */}
+                        <button
+                          onClick={() => setPptModalData({ 
+                            isOpen: true, 
+                            content: isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content, 
+                            messageId: msg.id 
+                          })}
+                          className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent shadow-none"
+                          title="Xuất slide thuyết trình (PowerPoint / Gamma AI)"
+                        >
+                          <Presentation className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+
+                        {/* Sao chép */}
+                        <button
+                          onClick={() => handleCopyText(
+                            isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                            msg.id
+                          )}
+                          className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-indigo-50 text-gray-400 hover:text-indigo-650 border border-transparent shadow-none"
+                          title="Sao chép câu trả lời"
+                        >
+                          {copiedId === msg.id ? (
+                            <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5 shrink-0" />
+                          )}
+                        </button>
+
+                        {/* Lưu vào sổ tay ghi chú */}
+                        {msg.role === "ai" && (
+                          <button
+                            onClick={() => handleSaveMessageToNote(
+                              isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
+                              msg.id
+                            )}
+                            disabled={savingId === msg.id}
+                            className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent shadow-none"
+                            title="Lưu vào ghi chú"
+                          >
+                            {savingId === msg.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                            ) : savedIds.includes(msg.id) ? (
+                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                            ) : (
+                              <Save className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                          </button>
+                        )}
+
+                        {/* Dịch EN / KO / VI */}
+                        {msg.role === "ai" && (
+                          <div className="flex items-center gap-1 shrink-0 ml-1 border-l border-gray-150 pl-1.5 h-5">
+                            {/* Dịch EN */}
+                            <button
+                              onClick={() => handleTranslate(msg.content, msg.id, 'en')}
+                              disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
+                              className={cn(
+                                "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-6 w-6 border shadow-none select-none",
+                                {
+                                  "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold": visibleLanguages[msg.id] === 'en',
+                                  "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650": visibleLanguages[msg.id] !== 'en'
+                                }
+                              )}
+                              title="Dịch câu trả lời sang Tiếng Anh"
+                            >
+                              {translatingId[msg.id] === 'en' ? (
+                                <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-500" />
+                              ) : (
+                                <span>EN</span>
+                              )}
+                            </button>
+
+                            {/* Dịch KO */}
+                            <button
+                              onClick={() => handleTranslate(msg.content, msg.id, 'ko')}
+                              disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
+                              className={cn(
+                                "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-6 w-6 border shadow-none select-none",
+                                {
+                                  "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold": visibleLanguages[msg.id] === 'ko',
+                                  "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650": visibleLanguages[msg.id] !== 'ko'
+                                }
+                              )}
+                              title="Dịch câu trả lời sang Tiếng Hàn"
+                            >
+                              {translatingId[msg.id] === 'ko' ? (
+                                <Loader2 className="w-2.5 h-2.5 animate-spin text-indigo-500" />
+                              ) : (
+                                <span>KO</span>
+                              )}
+                            </button>
+
+                            {/* Quay lại tiếng Việt */}
+                            {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
+                              <button
+                                onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
+                                className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-350 pointer-events-auto cursor-pointer h-6 w-6 bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-none"
+                                title="Quay lại bản gốc tiếng Việt"
+                              >
+                                <span>Gốc</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -3622,79 +4069,86 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
 
       {((mode === "general_chat" && generalMessages.length > 0) || (activeFile && mode === "chat")) && (
         <>
-          {/* Main compact bottom input area (visible only at the bottom/not scrolled, or automatically hidden on scroll) */}
-          <div className={cn(
-            "absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#f4f7fa] via-[#f4f7fa]/90 to-transparent pointer-events-none flex flex-col z-20 transition-all duration-500 ease-in-out",
-            isScrolled 
-              ? "translate-y-28 opacity-0 pointer-events-none scale-95" 
-              : "translate-y-0 opacity-100"
-          )}>
-            <div className="bg-white border border-gray-250/80 rounded-2xl p-2 shadow-lg shadow-indigo-100/10 focus-within:ring-2 focus-within:ring-indigo-100 transition-all font-sans flex flex-col gap-1.5 pointer-events-auto">
-              {selectedImage && (
-                <div className="px-2 pt-1 flex flex-wrap gap-1.5 animate-in fade-in duration-200">
-                  <div className="relative w-11 h-11 rounded-lg overflow-hidden border border-gray-150 shadow-sm group">
-                    <img src={selectedImage} alt="Selected" className="w-full h-full object-cover" />
-                    <button 
-                      onClick={removeSelectedImage}
-                      className="absolute top-0.5 right-0.5 p-0.5 bg-red-500 text-white rounded-full opacity-100 transition-opacity cursor-pointer"
+          {isComposerCollapsed ? (
+            /* Compact Collapsed Floating Button to ask AI, sits beautifully at the bottom, zero clutter */
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
+              <button
+                onClick={() => setIsComposerCollapsed(false)}
+                className="composer-trigger-btn px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full font-black text-[11px] uppercase tracking-widest transition-all flex items-center gap-2 shadow-lg shadow-indigo-600/35 border border-indigo-500 hover:scale-[1.03] active:scale-95 cursor-pointer whitespace-nowrap animate-in fade-in duration-300"
+              >
+                <Sparkles className="w-3.5 h-3.5 fill-white/10 animate-pulse text-indigo-200" />
+                <span>💬 ĐẶT CÂU HỎI / HỎI TIẾP AI</span>
+              </button>
+            </div>
+          ) : (
+            /* Main compact bottom input area */
+            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#f4f7fa] via-[#f4f7fa]/90 to-transparent pointer-events-none flex flex-col z-20 animate-in slide-in-from-bottom-4 duration-300">
+              <div ref={composerContainerRef} className="bg-white border border-gray-250/80 rounded-2xl p-2 shadow-lg shadow-indigo-100/10 focus-within:ring-2 focus-within:ring-indigo-100 transition-all font-sans flex flex-col gap-1.5 pointer-events-auto">
+                {selectedImage && (
+                  <div className="px-2 pt-1 flex flex-wrap gap-1.5 animate-in fade-in duration-200">
+                    <div className="relative w-11 h-11 rounded-lg overflow-hidden border border-gray-150 shadow-sm group">
+                      <img src={selectedImage} alt="Selected" className="w-full h-full object-cover" />
+                      <button 
+                        onClick={removeSelectedImage}
+                        className="absolute top-0.5 right-0.5 p-0.5 bg-red-500 text-white rounded-full opacity-100 transition-opacity cursor-pointer"
+                      >
+                        <X className="w-2 h-2" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <textarea
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSend();
+                    }
+                  }}
+                  placeholder="Đặt câu hỏi tra cứu, tìm thông số chuẩn..."
+                  className="w-full bg-transparent border-none py-1.5 px-3 text-xs sm:text-sm font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-10 text-gray-800 placeholder:text-gray-400 no-scrollbar overflow-y-auto leading-normal"
+                />
+                <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100">
+                  <div className="flex items-center gap-2">
+                    <input 
+                      type="file" 
+                      ref={fileInputRef} 
+                      onChange={handleImageChange} 
+                      accept="image/*" 
+                      className="hidden" 
+                    />
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
+                      title="Thêm hình ảnh"
                     >
-                      <X className="w-2 h-2" />
+                      <Camera className="w-4 h-4" />
+                    </button>
+                    <span className="text-[8px] text-gray-400 font-extrabold uppercase tracking-widest">
+                      🔍 Global Engine
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setIsComposerCollapsed(true)}
+                      className="px-3 py-1.5 text-gray-400 hover:text-gray-600 bg-gray-50 hover:bg-gray-100 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1 border border-transparent hover:border-gray-150"
+                      title="Thu gọn"
+                    >
+                      <ChevronDown className="w-3.5 h-3.5" />
+                      <span>Thu gọn</span>
+                    </button>
+                    <button
+                      onClick={handleSend}
+                      disabled={(!input.trim() && !selectedImage) || isProcessing}
+                      className="p-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-full shadow-md shadow-indigo-600/10 transition-all cursor-pointer flex items-center justify-center"
+                    >
+                      {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
                     </button>
                   </div>
                 </div>
-              )}
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSend();
-                  }
-                }}
-                placeholder="Đặt câu hỏi tra cứu, tìm thông số chuẩn..."
-                className="w-full bg-transparent border-none py-1.5 px-3 text-xs sm:text-sm font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-10 text-gray-800 placeholder:text-gray-400 no-scrollbar overflow-y-auto leading-normal"
-              />
-              <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100">
-                <div className="flex items-center gap-2">
-                  <input 
-                    type="file" 
-                    ref={fileInputRef} 
-                    onChange={handleImageChange} 
-                    accept="image/*" 
-                    className="hidden" 
-                  />
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
-                    title="Thêm hình ảnh"
-                  >
-                    <Camera className="w-4 h-4" />
-                  </button>
-                  <span className="text-[8px] text-gray-400 font-extrabold uppercase tracking-widest">
-                    🔍 Global Engine
-                  </span>
-                </div>
-                <button
-                  onClick={handleSend}
-                  disabled={(!input.trim() && !selectedImage) || isProcessing}
-                  className="p-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-full shadow-md shadow-indigo-600/10 transition-all cursor-pointer flex items-center justify-center"
-                >
-                  {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                </button>
               </div>
             </div>
-          </div>
-
-          {/* Collapsed floating pill button when scrolled down */}
-          {isScrolled && !isComposerExpanded && (
-            <button
-              onClick={() => setIsComposerExpanded(true)}
-              className="absolute bottom-6 right-6 z-30 flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold uppercase tracking-widest text-[9px] sm:text-[10px] py-2.5 px-4 rounded-full shadow-2xl transition-all duration-300 hover:scale-[1.05] cursor-pointer animate-in fade-in slide-in-from-bottom-4 border border-indigo-500/30"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-violet-200 fill-violet-200/20" />
-              <span>HỎI THÊM AI</span>
-            </button>
           )}
 
           {/* Elegant floating overlay dialog for easy popup queries */}

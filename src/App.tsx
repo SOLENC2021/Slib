@@ -8,7 +8,7 @@ import { Sidebar } from "./components/Sidebar";
 import { PDFViewer } from "./components/PDFViewer";
 import { ChatPanel } from "./components/ChatPanel";
 import { UploadModal } from "./components/UploadModal";
-import { PDFFile, Message, ExtractionField, OperationType, PageData, Note } from "./types";
+import { PDFFile, Message, ExtractionField, OperationType, PageData, Note, DiffMarker } from "./types";
 import { chatWithDocument, chatWithDocumentStream, extractDataFromText } from "./lib/gemini";
 import { LayoutGrid, Sparkles, LogOut, Loader2, X, FileText, ShieldAlert } from "lucide-react";
 import { useAuth } from "./components/FirebaseProvider";
@@ -105,6 +105,18 @@ export default function App() {
   const [chatWidthPercent, setChatWidthPercent] = useState<number>(45); // default 45% for Chat Panel, 55% for PDF Viewer
   const [isDragging, setIsDragging] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Drawing Visual Comparison states (Lifting up to share between ChatPanel & PDFViewer)
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareWithFileId, setCompareWithFileId] = useState("");
+  const [isComparingAI, setIsComparingAI] = useState(false);
+  const [compareStage, setCompareStage] = useState("");
+  const [diffMarkers, setDiffMarkers] = useState<DiffMarker[]>([]);
+  const [selectedDiffType, setSelectedDiffType] = useState<"all" | "addition" | "modification" | "deletion">("all");
+  const [activeMarkerId, setActiveMarkerId] = useState<string | null>(null);
+  const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null);
+  const [viewLayer, setViewLayer] = useState<"overlay" | "original" | "revised">("overlay");
+  const [markerOpacity, setMarkerOpacity] = useState<number>(100);
 
   // Tracking pages currently being processed to prevent duplicate concurrent network fetch operations
   const processingPagesRef = useRef<Set<string>>(new Set());
@@ -599,7 +611,7 @@ export default function App() {
     }
   };
 
-  const handleSendMessage = useCallback(async (content: string, image?: string, isGeneral?: boolean, referencedFileIds?: string[]) => {
+  const handleSendMessage = useCallback(async (content: string, image?: string, isGeneral?: boolean, referencedFileIds?: string[], isThinking?: boolean, isImageGeneration?: boolean) => {
     const allowed = await incrementApiUsage();
     if (!allowed) {
       setQuotaLimitValue(profile?.apiLimit || 30);
@@ -669,6 +681,8 @@ export default function App() {
           undefined,
           undefined,
           undefined,
+          isThinking,
+          isImageGeneration,
           (chunk) => {
             accumulatedText += chunk;
             setGeneralMessages((prev) =>
@@ -815,6 +829,8 @@ export default function App() {
         activeFile.name,
         activeFile.id,
         activeFile.textUrl,
+        isThinking,
+        isImageGeneration,
         (chunk) => {
           accumulatedText += chunk;
           setMessages((prev) =>
@@ -1430,6 +1446,26 @@ export default function App() {
                     onTogglePdfViewer={() => setIsPdfViewerOpen(!isPdfViewerOpen)}
                     onCheckQuota={handleCheckQuota}
                     viewMode={viewMode}
+                    compareMode={compareMode}
+                    setCompareMode={setCompareMode}
+                    compareWithFileId={compareWithFileId}
+                    setCompareWithFileId={setCompareWithFileId}
+                    isComparingAI={isComparingAI}
+                    setIsComparingAI={setIsComparingAI}
+                    compareStage={compareStage}
+                    setCompareStage={setCompareStage}
+                    diffMarkers={diffMarkers}
+                    setDiffMarkers={setDiffMarkers}
+                    selectedDiffType={selectedDiffType}
+                    setSelectedDiffType={setSelectedDiffType}
+                    activeMarkerId={activeMarkerId}
+                    setActiveMarkerId={setActiveMarkerId}
+                    hoveredMarkerId={hoveredMarkerId}
+                    setHoveredMarkerId={setHoveredMarkerId}
+                    viewLayer={viewLayer}
+                    setViewLayer={setViewLayer}
+                    markerOpacity={markerOpacity}
+                    setMarkerOpacity={setMarkerOpacity}
                   />
                 </motion.div>
               )}
@@ -1488,12 +1524,33 @@ export default function App() {
                 >
                   <PDFViewer 
                     file={activeFile} 
+                    allFiles={files}
                     onPageChange={handlePageChange} 
                     targetPage={targetPage}
                     onClearTargetPage={handleClearTargetPage}
                     isMaximized={!isAiPanelOpen}
                     onToggleMaximize={handleToggleMaximize}
                     onClose={handleClosePdfViewer}
+                    compareMode={compareMode}
+                    setCompareMode={setCompareMode}
+                    compareWithFileId={compareWithFileId}
+                    setCompareWithFileId={setCompareWithFileId}
+                    isComparingAI={isComparingAI}
+                    setIsComparingAI={setIsComparingAI}
+                    compareStage={compareStage}
+                    setCompareStage={setCompareStage}
+                    diffMarkers={diffMarkers}
+                    setDiffMarkers={setDiffMarkers}
+                    selectedDiffType={selectedDiffType}
+                    setSelectedDiffType={setSelectedDiffType}
+                    activeMarkerId={activeMarkerId}
+                    setActiveMarkerId={setActiveMarkerId}
+                    hoveredMarkerId={hoveredMarkerId}
+                    setHoveredMarkerId={setHoveredMarkerId}
+                    viewLayer={viewLayer}
+                    setViewLayer={setViewLayer}
+                    markerOpacity={markerOpacity}
+                    setMarkerOpacity={setMarkerOpacity}
                   />
                 </motion.div>
               )}

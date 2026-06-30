@@ -81,3 +81,20 @@ export interface Note {
   createdAt: number;
 }
 
+export interface DiffMarker {
+  id: string;
+  page: number;
+  type: "addition" | "modification" | "deletion";
+  title: string;
+  description: string;
+  boundingBox: {
+    x: number;      // percentage of width (0-100)
+    y: number;      // percentage of height (0-100)
+    width: number;  // percentage of width (0-100)
+    height: number; // percentage of height (0-100)
+  };
+  originalValue?: string;
+  revisedValue?: string;
+  ruleReference?: string;
+}
+
