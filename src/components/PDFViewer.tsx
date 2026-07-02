@@ -376,6 +376,28 @@ interface PDFViewerProps {
   isMaximized?: boolean;
   onToggleMaximize?: () => void;
   onClose?: () => void;
+
+  // Drawing Visual Comparison states from App.tsx
+  compareMode?: boolean;
+  setCompareMode?: (val: boolean) => void;
+  compareWithFileId?: string;
+  setCompareWithFileId?: (id: string) => void;
+  isComparingAI?: boolean;
+  setIsComparingAI?: (val: boolean) => void;
+  compareStage?: string;
+  setCompareStage?: (val: string) => void;
+  diffMarkers?: DiffMarker[];
+  setDiffMarkers?: (markers: DiffMarker[]) => void;
+  selectedDiffType?: "all" | "addition" | "modification" | "deletion";
+  setSelectedDiffType?: (val: "all" | "addition" | "modification" | "deletion") => void;
+  activeMarkerId?: string | null;
+  setActiveMarkerId?: (id: string | null) => void;
+  hoveredMarkerId?: string | null;
+  setHoveredMarkerId?: (id: string | null) => void;
+  viewLayer?: "overlay" | "original" | "revised";
+  setViewLayer?: (val: "overlay" | "original" | "revised") => void;
+  markerOpacity?: number;
+  setMarkerOpacity?: (val: number) => void;
 }
 
 export function PDFViewer({ 
@@ -386,7 +408,28 @@ export function PDFViewer({
   onClearTargetPage,
   isMaximized = false,
   onToggleMaximize,
-  onClose
+  onClose,
+
+  compareMode = false,
+  setCompareMode,
+  compareWithFileId = "",
+  setCompareWithFileId,
+  isComparingAI = false,
+  setIsComparingAI,
+  compareStage = "",
+  setCompareStage,
+  diffMarkers = [],
+  setDiffMarkers,
+  selectedDiffType = "all",
+  setSelectedDiffType,
+  activeMarkerId = null,
+  setActiveMarkerId,
+  hoveredMarkerId = null,
+  setHoveredMarkerId,
+  viewLayer = "overlay",
+  setViewLayer,
+  markerOpacity = 100,
+  setMarkerOpacity,
 }: PDFViewerProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
@@ -398,18 +441,6 @@ export function PDFViewer({
   const [renderedPages, setRenderedPages] = useState<number[]>([]);
   const pdfDocRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  // Drawing Visual Comparison states
-  const [compareMode, setCompareMode] = useState(false);
-  const [compareWithFileId, setCompareWithFileId] = useState("");
-  const [isComparingAI, setIsComparingAI] = useState(false);
-  const [compareStage, setCompareStage] = useState("");
-  const [diffMarkers, setDiffMarkers] = useState<DiffMarker[]>([]);
-  const [selectedDiffType, setSelectedDiffType] = useState<"all" | "addition" | "modification" | "deletion">("all");
-  const [activeMarkerId, setActiveMarkerId] = useState<string | null>(null);
-  const [hoveredMarkerId, setHoveredMarkerId] = useState<string | null>(null);
-  const [viewLayer, setViewLayer] = useState<"overlay" | "original" | "revised">("overlay");
-  const [markerOpacity, setMarkerOpacity] = useState<number>(100);
 
   // Sync typed input with current observer page
   useEffect(() => {
@@ -686,46 +717,11 @@ export function PDFViewer({
     }
   };
 
-  // Run visual difference comparison
-  const runVisualComparison = () => {
-    if (!compareWithFileId) return;
-    setIsComparingAI(true);
-    setDiffMarkers([]);
-    
-    const stages = [
-      { text: "Đang phân tích cấu trúc vector & văn bản của 2 bản vẽ...", delay: 1200 },
-      { text: "Đang so khớp tọa độ thiết kế của dầm, cột, cửa, tường...", delay: 1000 },
-      { text: "AI phát hiện các sai khác kiến trúc & kết cấu...", delay: 1200 },
-      { text: "Đang sinh nhãn dán định vị lỗi (AI Drawing Markers)...", delay: 800 }
-    ];
 
-    let currentStageIndex = 0;
-    setCompareStage(stages[0].text);
-
-    const runNextStage = () => {
-      if (currentStageIndex < stages.length - 1) {
-        currentStageIndex++;
-        setCompareStage(stages[currentStageIndex].text);
-        setTimeout(runNextStage, stages[currentStageIndex].delay);
-      } else {
-        setIsComparingAI(false);
-        const originalFile = allFiles.find(f => f.id === compareWithFileId);
-        const refName = originalFile ? originalFile.name : "";
-        const activeName = file ? file.name : "";
-        
-        // Generate contextual differences
-        const generated = generateDrawingDifferences(activeName, refName);
-        setDiffMarkers(generated);
-        setViewLayer("overlay");
-      }
-    };
-
-    setTimeout(runNextStage, stages[0].delay);
-  };
 
   // Handle marker selection with scroll to page
   const selectMarker = (markerId: string) => {
-    setActiveMarkerId(markerId);
+    setActiveMarkerId?.(markerId);
     const marker = diffMarkers.find(m => m.id === markerId);
     if (marker) {
       const el = document.querySelector(`[data-page="${marker.page}"]`);
@@ -738,16 +734,6 @@ export function PDFViewer({
         }, 1500);
       }
     }
-  };
-
-  // Filter markers based on chosen category tab
-  const filteredMarkers = diffMarkers.filter(marker => {
-    if (selectedDiffType === "all") return true;
-    return marker.type === selectedDiffType;
-  });
-
-  const getMarkerCountByType = (type: "addition" | "modification" | "deletion") => {
-    return diffMarkers.filter(m => m.type === type).length;
   };
 
   if (!file) {
@@ -793,31 +779,6 @@ export function PDFViewer({
 
         {/* Action Controls */}
         <div className="flex items-center gap-4 shrink-0">
-          {/* Quick Toggle Comparison Mode Button */}
-          <button
-            onClick={() => {
-              setCompareMode(!compareMode);
-              if (!compareMode && otherDrawings.length > 0 && !compareWithFileId) {
-                setCompareWithFileId(otherDrawings[0].id);
-              }
-              if (compareMode) {
-                setDiffMarkers([]);
-                setViewLayer("overlay");
-              }
-            }}
-            className={cn(
-              "p-2.5 px-4 rounded-xl border transition-all flex items-center gap-2 text-[10px] font-black tracking-widest uppercase cursor-pointer",
-              compareMode 
-                ? "bg-[#0d9488] text-white border-[#0d9488] shadow-md shadow-[#0d9488]/20 hover:bg-[#0b7a70]" 
-                : "bg-indigo-500/10 text-indigo-300 border-indigo-500/20 hover:bg-indigo-500/20"
-            )}
-            title="Kích hoạt tính năng đối chiếu tìm sai khác giữa 2 bản vẽ bằng AI"
-          >
-            <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
-            <span>ĐỐI CHIẾU 2 BẢN VẼ</span>
-          </button>
-
-          <div className="h-5 w-[1px] bg-white/10 hidden md:block" />
 
           {/* Search Button */}
           <div className="flex items-center gap-4 px-3 py-1.5 bg-black/20 rounded-xl border border-white/5">
@@ -904,127 +865,7 @@ export function PDFViewer({
         </div>
       </div>
 
-      {/* Comparison Setup Sub-Toolbar */}
-      {compareMode && (
-        <div className="bg-[#1f2330] border-b border-white/5 px-6 py-3 flex flex-col md:flex-row items-center gap-4 shrink-0 z-15 animate-in slide-in-from-top duration-300">
-          <div className="flex items-center gap-3 w-full md:w-auto">
-            <span className="text-[10px] font-black text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1 rounded-lg uppercase tracking-wider shrink-0">
-              Bản vẽ sửa đổi (Mới)
-            </span>
-            <div className="text-[11px] font-bold text-gray-300 truncate max-w-[200px]">
-              {file.name}
-            </div>
-          </div>
 
-          <div className="hidden md:block text-gray-500 font-sans text-xs">➔</div>
-
-          <div className="flex flex-col sm:flex-row items-center gap-3 w-full md:flex-1 justify-end">
-            <div className="flex items-center gap-2.5 w-full sm:w-auto">
-              <span className="text-[10px] font-black text-gray-400 uppercase tracking-wider shrink-0">
-                Chọn Bản vẽ Gốc (Original):
-              </span>
-              {otherDrawings.length === 0 ? (
-                <span className="text-[10px] font-bold text-rose-400 bg-rose-500/5 px-2.5 py-1 rounded border border-rose-500/20 uppercase">
-                  ⚠️ Cần tải thêm bản vẽ khác để đối chiếu
-                </span>
-              ) : (
-                <select
-                  value={compareWithFileId}
-                  onChange={(e) => setCompareWithFileId(e.target.value)}
-                  disabled={isComparingAI}
-                  className="bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-[11px] font-black uppercase text-white focus:border-indigo-500 outline-none w-full sm:w-56 cursor-pointer disabled:opacity-50"
-                >
-                  <option value="">-- CHỌN BẢN VẼ ĐỂ KIỂM TRA ĐỐI CHIẾU --</option>
-                  {otherDrawings.map(f => (
-                    <option key={f.id} value={f.id}>
-                      {f.name.toUpperCase()}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
-
-            <button
-              onClick={runVisualComparison}
-              disabled={!compareWithFileId || isComparingAI}
-              className={cn(
-                "w-full sm:w-auto px-5 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-xl font-black text-[10px] tracking-widest uppercase shadow-lg shadow-emerald-700/10 hover:from-emerald-500 hover:to-teal-500 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
-                isComparingAI ? "animate-pulse" : ""
-              )}
-            >
-              {isComparingAI ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
-              ) : (
-                <Sparkles className="w-3.5 h-3.5 text-amber-300 animate-pulse" />
-              )}
-              <span>{isComparingAI ? "AI ĐANG ĐỐI CHIẾU..." : "KIỂM TRA & ĐỒNG BỘ ĐÁNH DẤU AI"}</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Layer selector & visual settings when markers exist */}
-      {compareMode && diffMarkers.length > 0 && (
-        <div className="bg-[#171a24] border-b border-white/5 px-6 py-2.5 flex flex-wrap items-center justify-between gap-4 shrink-0 z-10">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest mr-2 flex items-center gap-1.5">
-              <Layers className="w-3.5 h-3.5 text-indigo-400" />
-              CHẾ ĐỘ XEM:
-            </span>
-            <div className="flex bg-black/30 p-1 rounded-xl border border-white/5">
-              {[
-                { id: "overlay", label: "Lớp chồng sai khác (Overlay Diff)", desc: "Xem chồng lớp các lỗi" },
-                { id: "original", label: "Bản vẽ Gốc (Original)", desc: "Xem bản vẽ chưa sửa đổi" },
-                { id: "revised", label: "Bản vẽ Mới (Revised)", desc: "Xem bản vẽ sạch sau sửa đổi" }
-              ].map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setViewLayer(tab.id as any)}
-                  className={cn(
-                    "px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
-                    viewLayer === tab.id
-                      ? "bg-indigo-600 text-white shadow-md font-extrabold"
-                      : "text-gray-400 hover:text-white hover:bg-white/5"
-                  )}
-                  title={tab.desc}
-                >
-                  {tab.id === "overlay" ? "🔴 CHỒNG LỚP AI" : tab.id === "original" ? "📁 BẢN VẼ GỐC" : "📄 BẢN VẼ MỚI"}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* Opacity slider */}
-            {viewLayer === "overlay" && (
-              <div className="flex items-center gap-2">
-                <SlidersHorizontal className="w-3.5 h-3.5 text-gray-500" />
-                <span className="text-[9px] font-black text-gray-400 uppercase tracking-wider">Độ rõ nhãn:</span>
-                <input 
-                  type="range" 
-                  min="20" 
-                  max="100" 
-                  value={markerOpacity} 
-                  onChange={(e) => setMarkerOpacity(Number(e.target.value))}
-                  className="w-16 h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                />
-                <span className="text-[9px] font-black text-indigo-400 w-6">{markerOpacity}%</span>
-              </div>
-            )}
-
-            {/* Clear Diff markings */}
-            <button 
-              onClick={() => {
-                setDiffMarkers([]);
-                setActiveMarkerId(null);
-              }}
-              className="text-[9px] font-black text-rose-400 hover:text-rose-300 bg-rose-500/10 border border-rose-500/20 px-2.5 py-1 rounded-lg uppercase tracking-wider cursor-pointer"
-            >
-              HỦY ĐỐI CHIẾU
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Main split work area */}
       <div className="flex-1 flex overflow-hidden relative">
@@ -1099,158 +940,7 @@ export function PDFViewer({
           )}
         </div>
 
-        {/* Right View: Collapsible Drawing Differences Sidebar Panel */}
-        {compareMode && diffMarkers.length > 0 && (
-          <div className="w-[340px] border-l border-white/5 bg-[#161822] flex flex-col h-full z-10 animate-in slide-in-from-right duration-300">
-            {/* Diff Header */}
-            <div className="p-4 bg-[#1b1c26] border-b border-white/5 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 bg-rose-500/20 rounded-lg border border-rose-500/30 flex items-center justify-center">
-                  <AlertCircle className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
-                </div>
-                <h3 className="text-[11px] font-black text-white uppercase tracking-widest">
-                  AI ĐỐI CHIẾU SỰ KHÁC BIỆT ({diffMarkers.length})
-                </h3>
-              </div>
-            </div>
 
-            {/* Category / Filter Tabs */}
-            <div className="p-3 bg-[#13151c] border-b border-white/5 flex gap-1 shrink-0">
-              {[
-                { id: "all", label: "Tất cả", count: diffMarkers.length, activeColor: "bg-indigo-600 text-white" },
-                { id: "addition", label: "+ Thêm", count: getMarkerCountByType("addition"), activeColor: "bg-emerald-600 text-white" },
-                { id: "modification", label: "Δ Sửa", count: getMarkerCountByType("modification"), activeColor: "bg-amber-600 text-white" },
-                { id: "deletion", label: "- Xóa", count: getMarkerCountByType("deletion"), activeColor: "bg-rose-600 text-white" }
-              ].map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setSelectedDiffType(tab.id as any)}
-                  className={cn(
-                    "flex-1 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider text-center transition-all cursor-pointer flex flex-col items-center justify-center",
-                    selectedDiffType === tab.id
-                      ? tab.activeColor
-                      : "text-gray-400 hover:text-white hover:bg-white/5"
-                  )}
-                >
-                  <span>{tab.label}</span>
-                  <span className="opacity-50 text-[8px] mt-0.5">{tab.count} mục</span>
-                </button>
-              ))}
-            </div>
-
-            {/* Scrollable list of differences */}
-            <div className="flex-1 overflow-y-auto no-scrollbar p-3 space-y-3 bg-[#111318]">
-              {filteredMarkers.length === 0 ? (
-                <div className="text-center py-12">
-                  <ListFilter className="w-8 h-8 text-gray-600 mx-auto mb-3" />
-                  <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest">Không có sai khác hạng mục này</p>
-                </div>
-              ) : (
-                filteredMarkers.map(marker => {
-                  const isActive = activeMarkerId === marker.id;
-                  const isHovered = hoveredMarkerId === marker.id;
-                  
-                  return (
-                    <div
-                      key={marker.id}
-                      onClick={() => selectMarker(marker.id)}
-                      onMouseEnter={() => setHoveredMarkerId(marker.id)}
-                      onMouseLeave={() => setHoveredMarkerId(null)}
-                      className={cn(
-                        "p-3.5 rounded-2xl border transition-all cursor-pointer relative overflow-hidden group/item",
-                        isActive
-                          ? "bg-slate-900/60 border-indigo-500/80 shadow-[0_4px_15px_rgba(99,102,241,0.15)] ring-1 ring-indigo-500/20"
-                          : isHovered
-                            ? "bg-[#1f222e] border-white/10"
-                            : "bg-[#171a24]/80 border-white/5 hover:border-white/10"
-                      )}
-                    >
-                      {/* Left category-border marker stripe */}
-                      <div className={cn(
-                        "absolute left-0 top-0 bottom-0 w-1",
-                        marker.type === "addition" ? "bg-emerald-500" :
-                        marker.type === "deletion" ? "bg-rose-500" :
-                        "bg-amber-500"
-                      )} />
-
-                      {/* Header title & page badge */}
-                      <div className="flex items-start justify-between gap-3 mb-1.5 pl-1.5">
-                        <span className={cn(
-                          "text-[9px] font-black uppercase tracking-widest border px-2 py-0.5 rounded-md",
-                          marker.type === "addition" ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" :
-                          marker.type === "deletion" ? "bg-rose-500/10 border-rose-500/20 text-rose-400" :
-                          "bg-amber-500/10 border-amber-500/20 text-amber-400"
-                        )}>
-                          {marker.type === "addition" ? "Thêm mới" : marker.type === "deletion" ? "Loại bỏ" : "Thay đổi"}
-                        </span>
-                        
-                        <span className="text-[9px] font-extrabold text-indigo-400 bg-indigo-500/5 px-2 py-0.5 rounded-md border border-indigo-500/10 uppercase tracking-widest">
-                          TRANG {marker.page}
-                        </span>
-                      </div>
-
-                      <h4 className={cn(
-                        "text-[11.5px] font-extrabold leading-normal pl-1.5 tracking-wide",
-                        isActive ? "text-indigo-400" : "text-white group-hover/item:text-indigo-300"
-                      )}>
-                        {marker.title}
-                      </h4>
-
-                      {/* Description snippet */}
-                      <p className="text-[10px] text-gray-400 leading-relaxed mt-1.5 pl-1.5 italic font-medium">
-                        {marker.description}
-                      </p>
-
-                      {/* Side by side original / revised diff specs */}
-                      <div className="mt-2.5 bg-black/40 rounded-xl p-2 pl-3 space-y-1.5 border border-white/5 text-[10px] font-mono leading-normal">
-                        {marker.originalValue && (
-                          <div className="flex items-start gap-1.5 text-rose-400">
-                            <span className="text-rose-500 font-bold shrink-0">[-] Gốc:</span>
-                            <span className="break-all">{marker.originalValue}</span>
-                          </div>
-                        )}
-                        {marker.revisedValue && (
-                          <div className="flex items-start gap-1.5 text-emerald-400 pt-0.5 border-t border-white/5">
-                            <span className="text-emerald-500 font-bold shrink-0">[+] Mới:</span>
-                            <span className="break-all">{marker.revisedValue}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Expansion block for active view */}
-                      {isActive && (
-                        <div className="mt-3 pt-3 border-t border-white/5 pl-1.5 space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
-                          {marker.ruleReference && (
-                            <div className="space-y-1">
-                              <span className="text-[8px] font-black uppercase text-indigo-400 tracking-wider block">Tiêu chuẩn / Quy chuẩn tương ứng:</span>
-                              <div className="bg-indigo-500/5 border border-indigo-500/15 rounded-lg p-2 flex items-start gap-2 text-indigo-300 text-[9.5px] leading-snug">
-                                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-                                <span>{marker.ruleReference}</span>
-                              </div>
-                            </div>
-                          )}
-                          <div className="space-y-1">
-                            <span className="text-[8px] font-black uppercase text-amber-400 tracking-wider block">Khuyến cáo hành động của Giám sát:</span>
-                            <p className="text-[10px] text-gray-350 leading-relaxed bg-[#1b1c26] rounded-lg p-2 border border-white/5">
-                              Kỹ sư thẩm định cần đo đạc lại bán kính thông thủy tương quan và cập nhật trực tiếp vào tệp AutoCAD chính thức.
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Bottom Footer Info */}
-            <div className="p-3 bg-[#13151c] border-t border-white/5 text-center shrink-0">
-              <span className="text-[8px] font-black text-gray-500 uppercase tracking-widest block leading-none">
-                AI DRAWING DIFF SYSTEM • STANDARDCLOUD
-              </span>
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Floating Page Indicator */}

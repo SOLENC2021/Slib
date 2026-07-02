@@ -86,7 +86,9 @@ export default function App() {
   const activeFile = files.find(f => f.id === activeFileId) || null;
   const [messages, setMessages] = useState<Message[]>([]);
   const [generalMessages, setGeneralMessages] = useState<Message[]>([]);
-  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null);
+  const [currentUploadIndex, setCurrentUploadIndex] = useState(0);
+  const pendingFile = pendingFiles && pendingFiles.length > 0 ? pendingFiles[0] : null;
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStage, setUploadStage] = useState<"uploading" | "extracting" | "done" | "idle">("idle");
@@ -529,82 +531,94 @@ export default function App() {
   }, [activeFile, activeFileId]);
 
   const handleConfirmUpload = async (category: string) => {
-    if (!pendingFile || !user) return;
+    if (!pendingFiles || pendingFiles.length === 0 || !user) return;
     
     setIsUploading(true);
-    setUploadProgress(0);
-    setUploadStage("uploading");
+    let lastUploadedFileId: string | null = null;
     
     try {
-      // 1. Upload to Firebase Storage with progress tracking
-      const fileId = Math.random().toString(36).substr(2, 9);
-      const storageRef = ref(storage, `pdfs/${user.uid}/${fileId}-${pendingFile.name}`);
-      
-      console.log("Đang tải tệp lên Firebase Storage...");
-      
-      const uploadTask = uploadBytesResumable(storageRef, pendingFile);
-      
-      const downloadURL = await new Promise<string>((resolve, reject) => {
-        uploadTask.on(
-          "state_changed",
-          (snapshot) => {
-            const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-            setUploadProgress(Math.round(progress));
-          },
-          (error) => {
-            console.error("Storage upload error:", error);
-            reject(error);
-          },
-          async () => {
-            const url = await getDownloadURL(uploadTask.snapshot.ref);
-            resolve(url);
-          }
+      for (let i = 0; i < pendingFiles.length; i++) {
+        const fileToUpload = pendingFiles[i];
+        setCurrentUploadIndex(i);
+        setUploadProgress(0);
+        setUploadStage("uploading");
+        
+        console.log(`[Multi-Upload] Đang tải tệp ${i + 1}/${pendingFiles.length}: ${fileToUpload.name}`);
+        
+        // 1. Upload to Firebase Storage with progress tracking
+        const fileId = Math.random().toString(36).substr(2, 9);
+        const storageRef = ref(storage, `pdfs/${user.uid}/${fileId}-${fileToUpload.name}`);
+        
+        const uploadTask = uploadBytesResumable(storageRef, fileToUpload);
+        
+        const downloadURL = await new Promise<string>((resolve, reject) => {
+          uploadTask.on(
+            "state_changed",
+            (snapshot) => {
+              const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+              setUploadProgress(Math.round(progress));
+            },
+            (error) => {
+              console.error("Storage upload error:", error);
+              reject(error);
+            },
+            async () => {
+              const url = await getDownloadURL(uploadTask.snapshot.ref);
+              resolve(url);
+            }
+          );
+        });
+
+        // 2. Initial save to Firestore (without text yet)
+        const newFile: PDFFile = {
+          id: fileId,
+          name: fileToUpload.name,
+          text: "",
+          numpages: 0,
+          uploadDate: Date.now(),
+          url: downloadURL,
+          size: (fileToUpload.size / (1024 * 1024)).toFixed(2) + " MB",
+          category: getCategoryLabel(category),
+          isAIReady: false,
+          ownerId: user.uid,
+          isPublic: true
+        };
+
+        console.log(`[Multi-Upload] Đang lưu thông tin tệp ${fileToUpload.name} vào Firestore...`);
+        await withFirestoreRetry(
+          () => setDoc(doc(db, "files", fileId), newFile),
+          OperationType.CREATE,
+          `files/${fileId}`
         );
-      });
-
-      // 2. Initial save to Firestore (without text yet)
-      const newFile: PDFFile = {
-        id: fileId,
-        name: pendingFile.name,
-        text: "",
-        numpages: 0,
-        uploadDate: Date.now(),
-        url: downloadURL,
-        size: (pendingFile.size / (1024 * 1024)).toFixed(2) + " MB",
-        category: getCategoryLabel(category),
-        isAIReady: false,
-        ownerId: user.uid,
-        isPublic: true
-      };
-
-      console.log("Đang lưu thông tin ban đầu vào Firestore...");
-      await withFirestoreRetry(
-        () => setDoc(doc(db, "files", fileId), newFile),
-        OperationType.CREATE,
-        `files/${fileId}`
-      );
-      
-      setFilesTrigger(prev => prev + 1); // Refresh the files query list!
+        
+        setFilesTrigger(prev => prev + 1); // Refresh the files query list!
+        
+        // Trigger background processing immediately in parallel
+        processFile(fileId, downloadURL);
+        processSpecificPage(fileId, downloadURL, 1);
+        
+        lastUploadedFileId = fileId;
+      }
 
       setUploadStage("done");
       setUploadProgress(100);
       
       // Close modal and set active file after a short delay
       setTimeout(() => {
-        setPendingFile(null);
+        setPendingFiles(null);
+        setCurrentUploadIndex(0);
         setIsUploading(false);
         setUploadStage("idle");
-        setActiveFileId(newFile.id);
-        setMessages([]);
         
-        // Trigger background processing
-        processFile(fileId, downloadURL);
-        processSpecificPage(fileId, downloadURL, 1);
+        if (lastUploadedFileId) {
+          setActiveFileId(lastUploadedFileId);
+          setMessages([]);
+        }
       }, 1000);
 
-      console.log("Tải lên thành công. Hệ thống đang tiến hành phân tích nội dung.");
+      console.log("Tất cả tệp đã được tải lên thành công. Hệ thống đang tiến hành phân tích nội dung.");
     } catch (error) {
-      console.error("Lỗi quy trình tải lên:", error);
+      console.error("Lỗi quy trình tải lên nhiều tệp:", error);
       handleFirestoreError(error, OperationType.WRITE, "files");
       setIsUploading(false);
       setUploadStage("idle");
@@ -1024,17 +1038,28 @@ export default function App() {
     }
   }, []);
 
-  const handleSaveNote = useCallback(async (content: string) => {
+  const handleSaveNote = useCallback(async (content: string, folderName?: string) => {
     if (!user) return;
     const noteId = "note_" + Date.now();
     try {
+      let finalFolder = folderName || "";
+      if (!finalFolder) {
+        if (activeFile && activeFile.category) {
+          finalFolder = activeFile.category;
+        } else if (activeFile) {
+          finalFolder = "Tài liệu khác";
+        } else {
+          finalFolder = "Hỏi đáp chung";
+        }
+      }
       const noteData: Note = {
         id: noteId,
         content,
         fileId: activeFile ? activeFile.id : "general",
         fileName: activeFile ? activeFile.name : "Hỏi đáp chung",
         ownerId: user.uid,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        folder: finalFolder
       };
       await withFirestoreRetry(
         () => setDoc(doc(db, "notes", noteId), noteData),
@@ -1042,7 +1067,7 @@ export default function App() {
         `notes/${noteId}`
       );
       setNotesTrigger(prev => prev + 1); // Invalidate notes list cache
-      console.log(`Đã lưu ghi chú thành công: ${noteId}`);
+      console.log(`Đã lưu ghi chú thành công: ${noteId} vào thư mục ${finalFolder}`);
     } catch (err: any) {
       console.error("Lỗi khi lưu ghi chú vào Firestore:", err);
       handleFirestoreError(err, OperationType.CREATE, `notes/${noteId}`);
@@ -1212,9 +1237,9 @@ export default function App() {
             <LayoutGrid className="w-6 h-6 text-white" />
           </div>
           <div>
-            <h1 className="text-lg font-black text-gray-900 leading-none">StandardCloud</h1>
-            <p className="text-[10px] font-bold text-gray-400 mt-1 uppercase tracking-tighter">
-              ENGINEERING ENGINE <span className="text-gray-300 ml-1">• V3.1.0</span>
+            <h1 className="text-lg font-black text-gray-900 leading-none uppercase tracking-wide">Design AI cloud</h1>
+            <p className="text-[10px] font-black text-indigo-650 mt-1 uppercase tracking-widest">
+              SOL E&C - DESIGN TEAM <span className="text-gray-300 font-bold ml-1">• V3.1.0</span>
             </p>
           </div>
         </div>
@@ -1323,10 +1348,15 @@ export default function App() {
       )}
 
       <div className="flex flex-1 overflow-hidden">
-        {pendingFile && (
+        {pendingFiles && pendingFiles.length > 0 && (
           <UploadModal
-            file={pendingFile}
-            onClose={() => setPendingFile(null)}
+            files={pendingFiles}
+            currentUploadIndex={currentUploadIndex}
+            totalUploadCount={pendingFiles.length}
+            onClose={() => {
+              setPendingFiles(null);
+              setCurrentUploadIndex(0);
+            }}
             onConfirm={handleConfirmUpload}
             isProcessing={isUploading}
             progress={uploadProgress}
@@ -1566,7 +1596,10 @@ export default function App() {
             setMessages([]);
             setIsPdfViewerOpen(true); // Open inline screen on sidebar click
           }}
-          onUpload={(file) => setPendingFile(file)}
+          onUpload={(files) => {
+            setPendingFiles(files);
+            setCurrentUploadIndex(0);
+          }}
           onDeleteFile={(file) => setFileToDelete(file)}
           onEditFile={(file) => setFileToEdit(file)}
           isUploading={isUploading}

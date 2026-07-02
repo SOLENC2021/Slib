@@ -27,7 +27,7 @@ interface SidebarProps {
   files: PDFFile[];
   activeFileId: string | null;
   onSelectFile: (file: PDFFile) => void;
-  onUpload: (file: File) => void;
+  onUpload: (files: File[]) => void;
   onDeleteFile: (file: PDFFile) => void;
   onEditFile: (file: PDFFile) => void;
   isUploading: boolean;
@@ -132,14 +132,20 @@ export function Sidebar({
     e.stopPropagation();
     setDragActive(false);
     if (!isEffectiveAdmin) return;
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      onUpload(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const selectedFiles = Array.from(e.dataTransfer.files).filter(file => file.name.toLowerCase().endsWith('.pdf'));
+      if (selectedFiles.length > 0) {
+        onUpload(selectedFiles);
+      }
     }
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      onUpload(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      const selectedFiles = Array.from(e.target.files).filter(file => file.name.toLowerCase().endsWith('.pdf'));
+      if (selectedFiles.length > 0) {
+        onUpload(selectedFiles);
+      }
     }
   };
 
@@ -177,6 +183,7 @@ export function Sidebar({
               type="file"
               className="hidden"
               accept=".pdf"
+              multiple
               onChange={handleFileInput}
               disabled={isUploading}
             />
@@ -196,32 +203,32 @@ export function Sidebar({
             const meta = CATEGORY_META[folder.id];
             
             return (
-              <div key={folder.id} className="space-y-2">
+              <div key={folder.id} className="space-y-1.5">
                 <button
                   onClick={() => toggleFolder(folder.id, !!folder.subfolders)}
                   className={cn(
-                    "w-full flex items-center gap-3 py-3 px-3.5 rounded-xl text-sm font-extrabold transition-all group border shadow-xs duration-200",
+                    "w-full flex items-center gap-2.5 py-2 px-3 rounded-xl text-sm font-extrabold transition-all group border shadow-xs duration-200",
                     isSelected 
                       ? "bg-white border-indigo-600 text-indigo-950 shadow-[0_6px_16px_rgba(79,70,229,0.06)] ring-1 ring-indigo-600/10 scale-[1.01]" 
                       : "bg-[#f8fafc] border-gray-200/50 text-gray-700 hover:text-indigo-600 hover:border-indigo-200/50 hover:bg-white"
                   )}
                 >
                   {folder.subfolders ? (
-                    isExpanded ? <ChevronDown className={cn("w-4 h-4 text-gray-400")} /> : <ChevronRight className={cn("w-4 h-4 text-gray-400")} />
+                    isExpanded ? <ChevronDown className={cn("w-3.5 h-3.5 text-gray-400")} /> : <ChevronRight className={cn("w-3.5 h-3.5 text-gray-400")} />
                   ) : (
-                    <ChevronRight className={cn("w-4 h-4 opacity-0")} />
+                    <ChevronRight className={cn("w-3.5 h-3.5 opacity-0")} />
                   )}
                   <div className={cn(
-                    "p-1.5 rounded-lg shrink-0 transition-all shadow-xs/30",
+                    "p-1 rounded-lg shrink-0 transition-all shadow-xs/30",
                     meta ? `${meta.bg} ${meta.text}` : "bg-gray-100 text-gray-500"
                   )}>
-                    {meta ? <meta.icon className="w-4 h-4" /> : (isExpanded ? <FolderOpen className="w-4 h-4" /> : <Folder className="w-4 h-4" />)}
+                    {meta ? <meta.icon className="w-3.5 h-3.5" /> : (isExpanded ? <FolderOpen className="w-3.5 h-3.5" /> : <Folder className="w-3.5 h-3.5" />)}
                   </div>
-                  <span className="flex-1 text-left uppercase tracking-wider text-[11px] font-bold">{folder.name}</span>
+                  <span className="flex-1 text-left uppercase tracking-wider text-[10.5px] font-bold">{folder.name}</span>
                 </button>
 
                 {folder.subfolders && isExpanded && (
-                  <div className="ml-3 pl-3 border-l border-gray-200/80 space-y-3 py-2">
+                  <div className="ml-2.5 pl-2.5 border-l border-gray-200/80 space-y-2 py-1.5">
                     {folder.subfolders.map((sub: any) => {
                       const isSubSelected = selectedCategory === sub.id;
                       const isSubExpanded = expandedFolders.includes(sub.id);
@@ -229,30 +236,30 @@ export function Sidebar({
                       const Icon = sub.icon || (subMeta ? subMeta.icon : Folder);
                       
                       return (
-                        <div key={sub.id} className="space-y-2">
+                        <div key={sub.id} className="space-y-1.5">
                           <button
                             onClick={() => toggleFolder(sub.id, !!sub.subfolders)}
                             className={cn(
-                              "w-full flex items-center gap-3.5 p-3 rounded-xl text-left border shadow-xs transition-all duration-200",
+                              "w-full flex items-center gap-2.5 p-2 px-2.5 rounded-xl text-left border shadow-xs transition-all duration-200",
                               isSubSelected 
                                 ? "bg-white border-indigo-600 text-indigo-950 font-black shadow-[0_6px_16px_rgba(79,70,229,0.06)] ring-1 ring-indigo-600/10 scale-[1.01]" 
                                 : "bg-[#f8fafc] border-gray-200/50 text-gray-650 hover:text-indigo-600 hover:border-indigo-200/50 hover:bg-white"
                             )}
                           >
                             <div className={cn(
-                              "p-1.5 rounded-lg transition-all shadow-xs/30",
+                              "p-1 rounded-lg transition-all shadow-xs/30",
                               subMeta ? `${subMeta.bg} ${subMeta.text}` : "bg-gray-100 text-gray-500"
                             )}>
-                              <Icon className="w-4 h-4" />
+                              <Icon className="w-3.5 h-3.5" />
                             </div>
-                            <span className="flex-1 text-[11px] font-black tracking-wider uppercase">{sub.name}</span>
+                            <span className="flex-1 text-[10px] font-black tracking-wider uppercase">{sub.name}</span>
                             {sub.subfolders && (
-                              isSubExpanded ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />
+                              isSubExpanded ? <ChevronDown className="w-3.5 h-3.5 text-gray-400" /> : <ChevronRight className="w-3.5 h-3.5 text-gray-400" />
                             )}
                           </button>
 
                           {sub.subfolders && isSubExpanded && (
-                            <div className="ml-3 pl-3 border-l border-gray-200/80 space-y-2 py-1">
+                            <div className="ml-2.5 pl-2.5 border-l border-gray-200/80 space-y-1.5 py-1">
                               {sub.subfolders.map((nested: any) => {
                                 const isNestedSelected = selectedCategory === nested.id;
                                 const nestedMeta = CATEGORY_META[nested.id];
@@ -262,19 +269,19 @@ export function Sidebar({
                                     key={nested.id}
                                     onClick={() => setSelectedCategory(nested.id)}
                                     className={cn(
-                                      "w-full flex items-center gap-3 p-2.5 rounded-xl text-left transition-all border shadow-xs",
+                                      "w-full flex items-center gap-2 p-1.5 px-2 rounded-lg text-left transition-all border shadow-xs",
                                       isNestedSelected 
                                         ? "bg-white border-indigo-600 text-indigo-700 font-extrabold shadow-xs ring-1 ring-indigo-600/10" 
                                         : "bg-[#f8fafc] hover:bg-white border-gray-200/50 text-gray-550 hover:text-indigo-600 font-bold"
                                     )}
                                   >
                                     <div className={cn(
-                                      "p-1 rounded-md shrink-0 transition-all",
+                                      "p-0.5 rounded-md shrink-0 transition-all",
                                       nestedMeta ? `${nestedMeta.bg} ${nestedMeta.text}` : "bg-gray-100 text-gray-400"
                                     )}>
-                                      <NestedIcon className="w-3.5 h-3.5" />
+                                      <NestedIcon className="w-3 h-3" />
                                     </div>
-                                    <span className="text-[11px] tracking-wider uppercase">{nested.name}</span>
+                                    <span className="text-[9.5px] tracking-wider uppercase">{nested.name}</span>
                                   </button>
                                 );
                               })}
@@ -308,25 +315,25 @@ export function Sidebar({
                   }
                 }}
                 className={cn(
-                  "w-full relative p-3 rounded-xl border transition-all duration-300 text-left group overflow-hidden cursor-pointer outline-none shadow-xs",
+                  "w-full relative p-2.5 rounded-xl border transition-all duration-300 text-left group overflow-hidden cursor-pointer outline-none shadow-xs",
                   activeFileId === file.id
                     ? "bg-white border-indigo-500 shadow-[0_8px_16px_rgba(79,70,229,0.03)] ring-1 ring-indigo-500/20 scale-[1.005]"
                     : "bg-white border-gray-200/60 hover:border-indigo-350 hover:shadow-[0_6px_12px_-2px_rgba(0,0,0,0.02)]"
                 )}
               >
-                <div className="flex items-start gap-2.5">
+                <div className="flex items-start gap-2">
                   <div className={cn(
-                    "w-9 h-9 rounded-lg flex items-center justify-center shrink-0 transition-colors mt-0.5",
+                    "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors mt-0.5",
                     activeFileId === file.id ? "bg-indigo-600 text-white" : "bg-indigo-50 text-indigo-600"
                   )}>
-                    <FileText className="w-4.5 h-4.5" />
+                    <FileText className="w-4 h-4" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-bold text-gray-900 leading-snug break-words line-clamp-3 pr-4 group-hover:text-indigo-600 transition-colors">
+                    <p className="text-[11.5px] font-extrabold text-gray-850 leading-normal break-words line-clamp-3 pr-4 group-hover:text-indigo-650 transition-colors">
                       {file.name}
                     </p>
-                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                      <span className="text-[10px] text-gray-400 font-bold tracking-wider">
+                    <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                      <span className="text-[9px] text-gray-400 font-bold tracking-wider">
                         {file.size || "0 MB"}
                       </span>
                       {file.isAIReady !== false && (
@@ -373,6 +380,13 @@ export function Sidebar({
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Signature Footer */}
+      <div className="p-4 border-t border-gray-150/40 bg-slate-50/30 text-center shrink-0">
+        <p className="text-[10px] font-black text-slate-800 tracking-wider uppercase">
+          Designed by SOL E&C Design Team
+        </p>
       </div>
     </div>
   );

@@ -55,7 +55,7 @@ export function QuotaExceededModal({ isOpen, onClose, limit }: QuotaExceededModa
             <span className="text-xs font-black uppercase tracking-wider">YÊU CẦU NÂNG HẠN MỨC</span>
           </div>
           <p className="text-slate-600 text-xs font-bold leading-relaxed">
-            Để tiếp tục thẩm định tài liệu khẩn cấp hoặc nâng giới hạn, hãy gửi tin nhắn cho Quản trị viên của bạn:
+            Để tiếp tục xử lý tài liệu khẩn cấp hoặc nâng giới hạn, hãy gửi tin nhắn cho Quản trị viên của bạn:
           </p>
           <code className="mt-3 block bg-white px-4 py-1.5 rounded-xl text-xs font-mono font-black text-indigo-600 border border-indigo-150 shadow-sm select-all">
             solenc2021@gmail.com

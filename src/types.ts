@@ -79,6 +79,7 @@ export interface Note {
   fileName: string;
   ownerId: string;
   createdAt: number;
+  folder?: string;
 }
 
 export interface DiffMarker {

@@ -5,7 +5,7 @@ import {
   AlertCircle, Loader2, Copy, Maximize2, Download,
   Plus, Trash2, Settings, Sparkles, X, LayoutGrid,
   Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, Minimize2, BookOpen, FileText, Camera, Languages,
-  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen
+  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen, List
 } from "lucide-react";
 import pptxgen from "pptxgenjs";
 import ReactMarkdown from "react-markdown";
@@ -29,7 +29,7 @@ interface ChatPanelProps {
   onClose?: () => void;
   onRegisterGeminiFile?: (geminiFileUri: string, geminiFileName: string) => Promise<void>;
   notes?: Note[];
-  onSaveNote?: (content: string) => Promise<void>;
+  onSaveNote?: (content: string, folder?: string) => Promise<void>;
   onDeleteNote?: (id: string) => Promise<void>;
   allFiles?: PDFFile[];
   onUpdateFile?: (fileId: string, data: Partial<PDFFile>) => Promise<void>;
@@ -469,8 +469,18 @@ export function ChatPanel({
 
   // Manual Note Creation & Deletion Confirmation States
   const [newNoteText, setNewNoteText] = useState<string>("");
+  const [selectedNoteFolder, setSelectedNoteFolder] = useState<string>("");
+  const [customNoteFolder, setCustomNoteFolder] = useState<string>("");
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [notebookViewMode, setNotebookViewMode] = useState<"folder" | "flat">("folder");
   const [isAddingNote, setIsAddingNote] = useState<boolean>(false);
   const [noteIdToDelete, setNoteIdToDelete] = useState<string | null>(null);
+
+  // Message Save to Note folder creation states
+  const [activeSaveNoteData, setActiveSaveNoteData] = useState<{ content: string; messageId: string; defaultFolder: string } | null>(null);
+  const [saveNoteFolderInputType, setSaveNoteFolderInputType] = useState<"auto" | "select" | "custom">("auto");
+  const [saveNoteFolderSelected, setSaveNoteFolderSelected] = useState<string>("");
+  const [saveNoteFolderCustom, setSaveNoteFolderCustom] = useState<string>("");
 
   // Dynamic Note Storage Upgrade States
   const [storageLimitGb, setStorageLimitGb] = useState<number>(10);
@@ -491,8 +501,28 @@ export function ChatPanel({
     if (!newNoteText.trim() || !onSaveNote) return;
     setIsAddingNote(true);
     try {
-      await onSaveNote(newNoteText.trim());
+      // Determine folder name
+      let folderName = selectedNoteFolder;
+      if (selectedNoteFolder === "custom") {
+        folderName = customNoteFolder.trim();
+      }
+      
+      // If folderName is empty, try to auto-detect
+      if (!folderName) {
+        if (activeFile && activeFile.category) {
+          folderName = activeFile.category;
+        } else if (activeFile) {
+          folderName = "Tài liệu khác";
+        } else {
+          folderName = "Hỏi đáp chung";
+        }
+      }
+
+      await onSaveNote(newNoteText.trim(), folderName);
       setNewNoteText("");
+      setCustomNoteFolder("");
+      // Reset selected folder to default
+      setSelectedNoteFolder("");
     } catch (err) {
       console.error("Lỗi khi thêm ghi chú thủ công:", err);
     } finally {
@@ -829,6 +859,7 @@ export function ChatPanel({
     "mep": true,
     "qckt": false,
     "vatlieu": false,
+    "vbhh": false,
   });
   const [complianceRuleType, setComplianceRuleType] = useState<string>("density_height");
   const [customCompliancePrompt, setCustomCompliancePrompt] = useState<string>("");
@@ -1419,7 +1450,7 @@ export function ChatPanel({
       if (complianceRuleType === "design_manager") {
         auditPrompt = `
 [YÊU CẦU ĐẶC BIỆT - TỔNG HỢP & HOẠCH ĐỊNH THIẾT KẾ DỰ ÁN]
-Bạn là Trợ lý Cố vấn Thiết kế Cao cấp (Design Manager Assistant) trên hệ thống StandardCloud. 
+Bạn là Trợ lý Cố vấn Thiết kế Cao cấp (Design Manager Assistant) trên hệ thống Design AI Cloud. 
 Nhiệm vụ của bạn là rà soát file hồ sơ Thiết kế cơ sở "${drawingFile.name}" để TỔNG HỢP THÔNG TIN DỰ ÁN sơ bộ, phục vụ trực tiếp cho công tác quản lý, điều phối thiết kế Kiến trúc và Kết cấu.
 
 HƯỚNG DẪN TRÍCH XUẤT (TẬP TRUNG THUYẾT MINH & CHỈ DẪN CHUNG):
@@ -1576,20 +1607,60 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
     }
   };
 
-  const handleSaveMessageToNote = async (content: string, id: string) => {
-    if (onSaveNote) {
-      setSavingId(id);
-      try {
-        await onSaveNote(content);
-        setSavedIds(prev => [...prev, id]);
-        setTimeout(() => {
-          setSavedIds(prev => prev.filter(x => x !== id));
-        }, 3000);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setSavingId(null);
+  const handleSaveMessageToNote = (content: string, id: string) => {
+    // 1. Detect folder automatically from content
+    let detected = "";
+    if (activeFile && activeFile.category) {
+      detected = activeFile.category;
+    } else {
+      const normalized = content.toLowerCase();
+      if (normalized.includes("qcvn") || normalized.includes("quy chuẩn")) {
+        detected = "Quy chuẩn kỹ thuật";
+      } else if (normalized.includes("thông tư") || normalized.includes("nghị định") || normalized.includes("văn bản")) {
+        detected = "Văn bản hiện hành";
+      } else if (normalized.includes("kiến trúc") || normalized.includes("bản vẽ") || normalized.includes("mặt đứng") || normalized.includes("chiều cao")) {
+        detected = "Kiến trúc";
+      } else if (normalized.includes("kết cấu") || normalized.includes("bê tông") || normalized.includes("cốt thép") || normalized.includes("dầm") || normalized.includes("cột") || normalized.includes("móng")) {
+        detected = "Kết cấu";
+      } else if (normalized.includes("mep") || normalized.includes("điện") || normalized.includes("nước") || normalized.includes("pccc") || normalized.includes("hvac") || normalized.includes("thông gió")) {
+        detected = "MEP";
+      } else if (normalized.includes("vật liệu") || normalized.includes("gạch") || normalized.includes("xi măng") || normalized.includes("vữa")) {
+        detected = "Vật liệu";
+      } else {
+        detected = "Hỏi đáp chung";
       }
+    }
+
+    // 2. Open the elegant Save confirmation with choice of folder
+    setActiveSaveNoteData({ content, messageId: id, defaultFolder: detected });
+    setSaveNoteFolderInputType("auto");
+    setSaveNoteFolderSelected(detected);
+    setSaveNoteFolderCustom("");
+  };
+
+  const handleExecuteSaveMessageToNote = async () => {
+    if (!activeSaveNoteData || !onSaveNote) return;
+    const { content, messageId, defaultFolder } = activeSaveNoteData;
+    
+    let finalFolder = defaultFolder;
+    if (saveNoteFolderInputType === "select") {
+      finalFolder = saveNoteFolderSelected || "Hỏi đáp chung";
+    } else if (saveNoteFolderInputType === "custom") {
+      finalFolder = saveNoteFolderCustom.trim() || "Thư mục tự tạo";
+    }
+
+    setSavingId(messageId);
+    setActiveSaveNoteData(null); // Close modal
+    try {
+      await onSaveNote(content, finalFolder);
+      setSavedIds(prev => [...prev, messageId]);
+      setTimeout(() => {
+        setSavedIds(prev => prev.filter(x => x !== messageId));
+      }, 3000);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSavingId(null);
     }
   };
 
@@ -2684,8 +2755,9 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     { id: "kientruc", label: "Kiến trúc", icon: "🏛️", categories: ["Kiến trúc"] },
                     { id: "ketcau", label: "Kết cấu", icon: "🧱", categories: ["Kết cấu", "TCVN", "TCNN"] },
                     { id: "mep", label: "MEP", icon: "⚡", categories: ["MEP"] },
-                    { id: "vatlieu", label: "Vật liệu", icon: "🏗️", categories: ["Vật liệu", "Văn bản hiện hành"] },
+                    { id: "vatlieu", label: "Vật liệu", icon: "🏗️", categories: ["Vật liệu"] },
                     { id: "qckt", label: "Quy chuẩn kỹ thuật", icon: "📒", categories: ["Quy chuẩn kỹ thuật"] },
+                    { id: "vbhh", label: "Văn bản hiện hành", icon: "📜", categories: ["Văn bản hiện hành"] },
                   ];
 
                   const getFilesInFolder = (folderCats: string[]) => {
@@ -3027,14 +3099,14 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     </div>
                     <div className="space-y-0.5">
                       <h3 className="text-lg sm:text-xl font-black text-slate-900 uppercase tracking-wider">
-                        Trợ lý Thẩm định TCVN/QCVN
+                        Trợ lý AI thiết kế
                       </h3>
                       <p className="text-[9px] sm:text-[10.5px] text-indigo-600 font-extrabold uppercase tracking-widest">
-                        StandardCloud AI Engine — Tìm kiếm Toàn diện
+                        Design AI Cloud Engine — Tìm kiếm & Đồng hành Sáng tạo
                       </p>
                     </div>
                     <p className="text-xs text-gray-500 leading-relaxed max-w-lg mx-auto font-medium">
-                      Chào mừng bạn! Trợ lý AI chuyên trách sẽ đồng hành và hỗ trợ bạn tra cứu nhanh chóng, chính xác mọi quy chuẩn, tiêu chuẩn kỹ thuật (TCVN/QCVN).
+                      Chào mừng bạn! Trợ lý AI chuyên trách sẽ đồng hành và hỗ trợ bạn thiết kế, tra cứu nhanh chóng, chính xác mọi quy chuẩn, tiêu chuẩn kỹ thuật.
                     </p>
                   </div>
 
@@ -3084,7 +3156,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         {isProcessing ? (
                           <>
                             <Loader2 className="w-3 h-3 animate-spin" />
-                            ĐANG THẨM ĐỊNH...
+                            ĐANG XỬ LÝ...
                           </>
                         ) : (
                           <>
@@ -3351,7 +3423,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
                                   <button
                                     onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
-                                    className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-350 pointer-events-auto cursor-pointer h-6 w-6 bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-none"
+                                    className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-355 pointer-events-auto cursor-pointer h-6 w-6 bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-none"
                                     title="Quay lại bản gốc tiếng Việt"
                                   >
                                     <span>Gốc</span>
@@ -3376,60 +3448,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           </>
         ) : mode === "notes" ? (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
-                  <Save className="w-4 h-4 text-indigo-600" />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest">
-                      SỔ TAY GHI CHÚ
-                    </h3>
-                    <span className="bg-emerald-55 text-emerald-800 text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-emerald-110 flex items-center gap-1">
-                      <CheckCircle2 className="w-2.5 h-2.5" />
-                      Đã đồng bộ Cloud
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">KNOWLEDGE NOTEBOOK</p>
-                </div>
-              </div>
-            </div>
-
-            {/* Thêm ghi chú mới thủ công */}
-            <div className="bg-white rounded-[32px] border border-gray-150/60 p-6 shadow-xs space-y-4">
-              <span className="text-[10px] text-gray-400 font-black uppercase tracking-widest block">Thêm ghi chú lưu ý mới</span>
-              <textarea
-                value={newNoteText}
-                onChange={(e) => setNewNoteText(e.target.value)}
-                placeholder="Nhập nội dung ghi chú kỹ thuật, công thức, hoặc lưu ý tiêu chuẩn..."
-                className="w-full min-h-[100px] p-4 bg-slate-50 border border-transparent focus:border-indigo-120 focus:bg-white rounded-2xl text-[12px] font-semibold text-slate-800 placeholder-gray-400 outline-none transition-all resize-none focus:ring-1 focus:ring-indigo-100"
-              />
-              <div className="flex justify-end">
-                <button
-                  onClick={handleAddNewManualNote}
-                  disabled={isAddingNote || !newNoteText.trim()}
-                  className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-xl font-black text-[10px] uppercase tracking-widest transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
-                >
-                  {isAddingNote ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>ĐANG LƯU...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>LƯU GHI CHÚ MỚI</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {notes && notes.length > 0 ? (
-                notes.map((note) => (
-                  <div key={note.id} className="bg-white rounded-[32px] border border-gray-100 p-6 shadow-sm hover:shadow-md transition-all group relative overflow-visible">
+            {(() => {
+              const renderNoteCard = (note: Note) => {
+                return (
+                  <div key={note.id} className="bg-white rounded-[32px] border border-gray-100 p-6 shadow-sm hover:shadow-md transition-all group relative overflow-visible text-left">
                     <div className="flex justify-between items-center mb-4 sticky top-0 bg-white/95 backdrop-blur-md z-10 py-3 -mx-6 px-6 -mt-6 border-b border-gray-50 rounded-t-[32px] transition-all">
                       <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2">
                         <div className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
@@ -3593,26 +3615,213 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       </ReactMarkdown>
                     </div>
 
-                    <div className="mt-4 pt-3 border-t border-gray-50 text-[9px] text-gray-400 font-bold uppercase tracking-widest truncate">
-                      📁 Nguồn: {note.fileName}
+                    <div className="mt-4 pt-3 border-t border-gray-50 flex flex-wrap items-center justify-between gap-2 text-[9px] text-gray-400 font-bold uppercase tracking-widest">
+                      <span className="truncate max-w-full">📁 Thư mục: {note.folder || "Hỏi đáp chung"}</span>
+                      <span className="truncate max-w-full">📄 Nguồn: {note.fileName}</span>
                     </div>
                   </div>
-                ))
-              ) : (
-                <div className="bg-white rounded-[32px] border border-gray-100 p-12 shadow-sm min-h-[300px] flex flex-col items-center justify-center text-center space-y-4">
-                  <div className="bg-indigo-55/40 text-indigo-100 p-5 rounded-full">
-                    <Save className="w-12 h-12 text-gray-200 mx-auto" />
+                );
+              };
+
+              return (
+                <>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
+                        <Save className="w-4 h-4 text-indigo-600" />
+                      </div>
+                      <div className="text-left">
+                        <div className="flex items-center gap-2">
+                          <h3 className="text-sm font-black text-gray-900 uppercase tracking-widest">
+                            SỔ TAY GHI CHÚ
+                          </h3>
+                          <span className="bg-emerald-55 text-emerald-800 text-[9px] font-black uppercase tracking-widest px-2.5 py-0.5 rounded-full border border-emerald-110 flex items-center gap-1">
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            Đã đồng bộ Cloud
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">KNOWLEDGE NOTEBOOK</p>
+                      </div>
+                    </div>
+
+                    {/* View mode toggle */}
+                    <div className="flex items-center gap-1 bg-slate-50 p-1 rounded-xl border border-gray-150/50 shadow-3xs self-start sm:self-center">
+                      <button
+                        onClick={() => setNotebookViewMode("folder")}
+                        className={cn(
+                          "px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1.5",
+                          notebookViewMode === "folder"
+                            ? "bg-white text-indigo-700 shadow-3xs border border-gray-150/30"
+                            : "text-gray-400 hover:text-gray-700"
+                        )}
+                      >
+                        <Folder className="w-3 h-3" />
+                        <span>Theo Thư mục</span>
+                      </button>
+                      <button
+                        onClick={() => setNotebookViewMode("flat")}
+                        className={cn(
+                          "px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1.5",
+                          notebookViewMode === "flat"
+                            ? "bg-white text-indigo-700 shadow-3xs border border-gray-150/30"
+                            : "text-gray-400 hover:text-gray-700"
+                        )}
+                      >
+                        <List className="w-3.5 h-3.5" />
+                        <span>Tất cả</span>
+                      </button>
+                    </div>
                   </div>
-                  <div>
-                    <h5 className="text-gray-400 text-xs font-black uppercase tracking-widest">Sổ tay ghi chú còn trống</h5>
-                    <p className="text-gray-450 text-[9px] uppercase tracking-widest mt-2 max-w-xs leading-relaxed">
-                      Lưu trữ các câu trả lời kỹ thuật từ mục "Hỏi đáp" bằng nút <strong>"Lưu ghi chú"</strong>.
-                    </p>
+
+                  {/* Manual notes input */}
+                  <div className="bg-white rounded-[32px] border border-gray-150/60 p-6 shadow-xs space-y-4 text-left">
+                    <span className="text-[10px] text-gray-400 font-black uppercase tracking-widest block">Thêm ghi chú lưu ý mới</span>
+                    <textarea
+                      value={newNoteText}
+                      onChange={(e) => setNewNoteText(e.target.value)}
+                      placeholder="Nhập nội dung ghi chú kỹ thuật, công thức, hoặc lưu ý tiêu chuẩn..."
+                      className="w-full min-h-[100px] p-4 bg-slate-50 border border-transparent focus:border-indigo-120 focus:bg-white rounded-2xl text-[12px] font-semibold text-slate-800 placeholder-gray-400 outline-none transition-all resize-none focus:ring-1 focus:ring-indigo-100"
+                    />
+
+                    {/* Folder Selector Block */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] text-gray-400 font-black uppercase tracking-widest block">📁 Chọn thư mục lưu trữ</label>
+                        <select
+                          value={selectedNoteFolder}
+                          onChange={(e) => setSelectedNoteFolder(e.target.value)}
+                          className="w-full px-4 py-2.5 bg-slate-50 border border-gray-150/50 rounded-xl text-[11px] font-bold text-gray-700 outline-none focus:border-indigo-150"
+                        >
+                          <option value="">-- Tự động định dạng thư mục --</option>
+                          <option value="Kiến trúc">🏛️ Kiến trúc</option>
+                          <option value="Kết cấu">🧱 Kết cấu</option>
+                          <option value="MEP">⚡ MEP</option>
+                          <option value="Vật liệu">🏗️ Vật liệu</option>
+                          <option value="Quy chuẩn kỹ thuật">📒 Quy chuẩn kỹ thuật</option>
+                          <option value="Văn bản hiện hành">📜 Văn bản hiện hành</option>
+                          <option value="Hỏi đáp chung">💬 Hỏi đáp chung</option>
+                          {/* Any other folders already created */}
+                          {Array.from(new Set(notes?.map(n => n.folder).filter(Boolean) as string[]))
+                            .filter(f => !["Kiến trúc", "Kết cấu", "MEP", "Vật liệu", "Quy chuẩn kỹ thuật", "Văn bản hiện hành", "Hỏi đáp chung"].includes(f))
+                            .map(f => (
+                              <option key={f} value={f}>📁 {f}</option>
+                            ))
+                          }
+                          <option value="custom">➕ Tạo thư mục mới...</option>
+                        </select>
+                      </div>
+
+                      {selectedNoteFolder === "custom" && (
+                        <div className="space-y-1.5 animate-in fade-in slide-in-from-top-1 duration-200">
+                          <label className="text-[9px] text-gray-400 font-black uppercase tracking-widest block">Tên thư mục mới</label>
+                          <input
+                            type="text"
+                            value={customNoteFolder}
+                            onChange={(e) => setCustomNoteFolder(e.target.value)}
+                            placeholder="Nhập tên thư mục mới..."
+                            className="w-full px-4 py-2 bg-slate-50 border border-indigo-150 rounded-xl text-[11px] font-bold text-gray-700 outline-none focus:ring-1 focus:ring-indigo-100"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex justify-end pt-2">
+                      <button
+                        onClick={handleAddNewManualNote}
+                        disabled={isAddingNote || !newNoteText.trim() || (selectedNoteFolder === "custom" && !customNoteFolder.trim())}
+                        className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 disabled:cursor-not-allowed text-white rounded-xl font-black text-[10px] uppercase tracking-widest transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
+                      >
+                        {isAddingNote ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>ĐANG LƯU...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>LƯU GHI CHÚ MỚI</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
+
+                  {/* Notes List Rendering */}
+                  <div className="space-y-4">
+                    {notes && notes.length > 0 ? (
+                      notebookViewMode === "flat" ? (
+                        // Flat View
+                        notes.map((note) => renderNoteCard(note))
+                      ) : (
+                        // Grouped by Folder View
+                        Object.entries(
+                          notes.reduce((acc, note) => {
+                            let folderName = note.folder || "";
+                            if (!folderName) {
+                              if (note.fileName && note.fileName !== "Hỏi đáp chung") {
+                                folderName = note.fileName;
+                              } else {
+                                folderName = "Hỏi đáp chung";
+                              }
+                            }
+                            if (!acc[folderName]) acc[folderName] = [];
+                            acc[folderName].push(note);
+                            return acc;
+                          }, {} as Record<string, Note[]>)
+                        ).map(([folderName, folderNotes]) => {
+                          const isCollapsed = collapsedFolders[folderName];
+                          return (
+                            <div key={folderName} className="bg-slate-50/50 rounded-[32px] border border-gray-150/40 p-4 space-y-3 transition-all">
+                              {/* Folder Header */}
+                              <div
+                                onClick={() => setCollapsedFolders(prev => ({ ...prev, [folderName]: !prev[folderName] }))}
+                                className="flex items-center justify-between cursor-pointer hover:bg-slate-100/60 p-3 rounded-2xl transition-all"
+                              >
+                                <div className="flex items-center gap-2.5 text-left">
+                                  {isCollapsed ? (
+                                    <Folder className="w-5 h-5 text-indigo-500 fill-indigo-50" />
+                                  ) : (
+                                    <FolderOpen className="w-5 h-5 text-indigo-600 fill-indigo-100/40" />
+                                  )}
+                                  <div>
+                                    <h4 className="text-xs font-black text-slate-800 uppercase tracking-wider">{folderName}</h4>
+                                    <p className="text-[9px] text-gray-400 font-bold uppercase tracking-widest">{folderNotes.length} GHI CHÚ</p>
+                                  </div>
+                                </div>
+                                <div className="text-gray-400">
+                                  {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                </div>
+                              </div>
+
+                              {/* Folder Content */}
+                              {!isCollapsed && (
+                                <div className="space-y-4 pt-1 animate-in fade-in duration-300">
+                                  {folderNotes.map((note) => renderNoteCard(note))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )
+                    ) : (
+                      <div className="bg-white rounded-[32px] border border-gray-100 p-12 shadow-sm min-h-[300px] flex flex-col items-center justify-center text-center space-y-4">
+                        <div className="bg-indigo-55/40 text-indigo-100 p-5 rounded-full">
+                          <Save className="w-12 h-12 text-gray-200 mx-auto" />
+                        </div>
+                        <div>
+                          <h5 className="text-gray-400 text-xs font-black uppercase tracking-widest">Sổ tay ghi chú còn trống</h5>
+                          <p className="text-gray-450 text-[9px] uppercase tracking-widest mt-2 max-w-xs leading-relaxed">
+                            Lưu trữ các câu trả lời kỹ thuật từ mục "Hỏi đáp" bằng nút <strong>"Lưu ghi chú"</strong>.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
           </div>
+
         ) : !activeFile ? (
           <div className="flex-1 h-full flex flex-col items-center justify-center p-12 text-center space-y-6">
             <div className="w-16 h-16 rounded-[24px] bg-amber-50 hover:bg-amber-100 border border-amber-100 flex items-center justify-center text-amber-500 shadow-sm mx-auto transition-all">
@@ -4326,6 +4535,153 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     <span>SAO CHÉP TÓM TẮT AI</span>
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Save Note with Custom Folder Modal */}
+      {activeSaveNoteData && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white rounded-[32px] border border-gray-100 max-w-lg w-full p-8 shadow-2xl space-y-6 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white shadow-md">
+                  <Save className="w-5 h-5 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+                    Lưu Vào Sổ Tay Ghi Chú
+                  </h3>
+                  <p className="text-[10px] text-gray-400 font-extrabold uppercase tracking-widest mt-0.5">Tổ chức lưu trữ thông tin khoa học</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setActiveSaveNoteData(null)}
+                className="p-2 text-gray-400 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-all cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Text Preview (truncated) */}
+              <div className="space-y-1.5">
+                <span className="text-[10px] text-gray-400 font-black uppercase tracking-widest block">Xem trước ghi chú:</span>
+                <div className="p-4 bg-slate-50 border border-gray-150/40 rounded-xl max-h-[100px] overflow-y-auto text-xs font-semibold text-slate-700 leading-relaxed no-scrollbar whitespace-pre-wrap">
+                  {activeSaveNoteData.content}
+                </div>
+              </div>
+
+              {/* Folder Selector options */}
+              <div className="space-y-3 pt-2">
+                <span className="text-[10px] text-gray-400 font-black uppercase tracking-widest block">📂 Thư mục lưu trữ:</span>
+                
+                {/* Method selector */}
+                <div className="grid grid-cols-3 gap-2 p-1.5 bg-slate-50 rounded-2xl border border-gray-150/40">
+                  <button
+                    type="button"
+                    onClick={() => setSaveNoteFolderInputType("auto")}
+                    className={cn(
+                      "py-2 px-1 rounded-xl text-[9px] font-black uppercase tracking-wider text-center cursor-pointer transition-all",
+                      saveNoteFolderInputType === "auto" 
+                        ? "bg-white text-indigo-750 shadow-sm border border-indigo-100" 
+                        : "text-slate-500 hover:text-slate-800"
+                    )}
+                  >
+                    🤖 Tự động
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSaveNoteFolderInputType("select")}
+                    className={cn(
+                      "py-2 px-1 rounded-xl text-[9px] font-black uppercase tracking-wider text-center cursor-pointer transition-all",
+                      saveNoteFolderInputType === "select" 
+                        ? "bg-white text-indigo-750 shadow-sm border border-indigo-100" 
+                        : "text-slate-500 hover:text-slate-800"
+                    )}
+                  >
+                    📁 Chọn sẵn
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSaveNoteFolderInputType("custom")}
+                    className={cn(
+                      "py-2 px-1 rounded-xl text-[9px] font-black uppercase tracking-wider text-center cursor-pointer transition-all",
+                      saveNoteFolderInputType === "custom" 
+                        ? "bg-white text-indigo-750 shadow-sm border border-indigo-100" 
+                        : "text-slate-500 hover:text-slate-800"
+                    )}
+                  >
+                    ➕ Tạo mới
+                  </button>
+                </div>
+
+                {/* Suboptions based on selected input type */}
+                {saveNoteFolderInputType === "auto" && (
+                  <div className="p-4 bg-emerald-50/55 border border-emerald-100/50 rounded-2xl text-xs font-semibold text-emerald-800 leading-relaxed flex items-center gap-2.5 animate-in fade-in duration-200">
+                    <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0" />
+                    <span>
+                      Hệ thống tự động phân loại vào thư mục: <strong className="font-extrabold text-emerald-950 uppercase">"{activeSaveNoteData.defaultFolder}"</strong> dựa trên phân tích chuyên môn.
+                    </span>
+                  </div>
+                )}
+
+                {saveNoteFolderInputType === "select" && (
+                  <div className="space-y-1 animate-in fade-in duration-200">
+                    <select
+                      value={saveNoteFolderSelected}
+                      onChange={(e) => setSaveNoteFolderSelected(e.target.value)}
+                      className="w-full px-4 py-3 bg-slate-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-750 outline-none focus:border-indigo-150 focus:bg-white"
+                    >
+                      <option value="Kiến trúc">🏛️ Kiến trúc</option>
+                      <option value="Kết cấu">🧱 Kết cấu</option>
+                      <option value="MEP">⚡ MEP</option>
+                      <option value="Vật liệu">🏗️ Vật liệu</option>
+                      <option value="Quy chuẩn kỹ thuật">📒 Quy chuẩn kỹ thuật</option>
+                      <option value="Văn bản hiện hành">📜 Văn bản hiện hành</option>
+                      <option value="Hỏi đáp chung">💬 Hỏi đáp chung</option>
+                      {/* Any custom folder names currently used in notes */}
+                      {Array.from(new Set(notes?.map(n => n.folder).filter(Boolean) as string[]))
+                        .filter(f => !["Kiến trúc", "Kết cấu", "MEP", "Vật liệu", "Quy chuẩn kỹ thuật", "Văn bản hiện hành", "Hỏi đáp chung"].includes(f))
+                        .map(f => (
+                          <option key={f} value={f}>📁 {f}</option>
+                        ))
+                      }
+                    </select>
+                  </div>
+                )}
+
+                {saveNoteFolderInputType === "custom" && (
+                  <div className="space-y-1 animate-in fade-in duration-200">
+                    <input
+                      type="text"
+                      value={saveNoteFolderCustom}
+                      onChange={(e) => setSaveNoteFolderCustom(e.target.value)}
+                      placeholder="Nhập tên thư mục mới muốn tạo..."
+                      className="w-full px-4 py-3 bg-slate-50 border border-indigo-200 focus:bg-white rounded-xl text-xs font-bold text-gray-750 outline-none focus:ring-1 focus:ring-indigo-100"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-2">
+              <button
+                onClick={() => setActiveSaveNoteData(null)}
+                className="flex-1 py-4 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-2xl font-black text-xs uppercase tracking-wider transition-all cursor-pointer text-center"
+              >
+                Hủy bỏ
+              </button>
+              <button
+                onClick={handleExecuteSaveMessageToNote}
+                disabled={saveNoteFolderInputType === "custom" && !saveNoteFolderCustom.trim()}
+                className="flex-1 py-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black text-xs uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/15 disabled:bg-gray-200 disabled:cursor-not-allowed"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Lưu Ghi Chú</span>
               </button>
             </div>
           </div>
