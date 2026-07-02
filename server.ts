@@ -613,7 +613,10 @@ async function startServer() {
   });
 
   app.post("/api/chat-stream", async (req, res) => {
-    const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration } = req.body;
+    const { 
+      text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration,
+      attachedPdfText, attachedPdfName, attachedPdfUri
+    } = req.body;
     
     if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
@@ -800,6 +803,21 @@ async function startServer() {
             userParts.push({ text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${textContext}` });
           }
 
+          if (attachedPdfUri) {
+            console.log(`[Stream General RAG] Attaching user-uploaded PDF via File API: ${attachedPdfUri}`);
+            userParts.push({
+              fileData: {
+                fileUri: attachedPdfUri,
+                mimeType: "application/pdf"
+              }
+            });
+          } else if (attachedPdfText) {
+            console.log(`[Stream General RAG] Attaching user-uploaded PDF via plain text: ${attachedPdfName}`);
+            userParts.push({
+              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${attachedPdfText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
+            });
+          }
+
           if (image) {
             const base64Data = image.split(",")[1] || image;
             userParts.push({
@@ -813,7 +831,12 @@ async function startServer() {
           if (textContext.trim().length > 0) {
             userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên [DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN] đã được nhồi trực tiếp ở trên và kiến thức chuyên ngành. Hãy trích dẫn chuẩn xác các điều khoản kỹ thuật, số liệu, bảng biểu có trong context:\n\nYêu cầu câu hỏi kỹ thuật: ${prompt}` });
           } else {
-            userParts.push({ text: prompt });
+            // If we have attached PDF text but no library RAG context, provide a context hint
+            if (attachedPdfText && !attachedPdfUri) {
+              userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên tài liệu PDF đính kèm đã được cung cấp ở trên:\n\nYêu cầu câu hỏi: ${prompt}` });
+            } else {
+              userParts.push({ text: prompt });
+            }
           }
 
           return [
@@ -957,6 +980,21 @@ async function startServer() {
             parts.push({ text: `[DỮ LIỆU TÀI LIỆU GỐC (RAG CHUNKS)]\n${relevantParts}\n[KẾT THÚC DỮ LIỆU TÀI LIỆU]` });
           }
 
+          if (attachedPdfUri) {
+            console.log(`[Stream Specific] Attaching user-uploaded PDF via File API: ${attachedPdfUri}`);
+            parts.push({
+              fileData: {
+                fileUri: attachedPdfUri,
+                mimeType: "application/pdf"
+              }
+            });
+          } else if (attachedPdfText) {
+            console.log(`[Stream Specific] Attaching user-uploaded PDF via plain text: ${attachedPdfName}`);
+            parts.push({
+              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${attachedPdfText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
+            });
+          }
+
           if (image) {
             const base64Data = image.split(",")[1] || image;
             parts.push({
@@ -1050,7 +1088,10 @@ async function startServer() {
 
   // API 1: Chat endpoint (Proxy for Gemini with RAG and history limits)
   app.post("/api/chat", async (req, res) => {
-    const { text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration } = req.body;
+    const { 
+      text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration,
+      attachedPdfText, attachedPdfName, attachedPdfUri
+    } = req.body;
     
     if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
@@ -1137,6 +1178,21 @@ async function startServer() {
             });
           }
 
+          if (attachedPdfUri) {
+            console.log(`General Chat: attaching uploaded PDF via File API: ${attachedPdfUri}`);
+            userParts.push({
+              fileData: {
+                fileUri: attachedPdfUri,
+                mimeType: "application/pdf"
+              }
+            });
+          } else if (attachedPdfText) {
+            console.log(`General Chat: attaching uploaded PDF via plain text: ${attachedPdfName}`);
+            userParts.push({
+              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${attachedPdfText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
+            });
+          }
+
           if (image) {
             const base64Data = image.split(",")[1] || image;
             userParts.push({
@@ -1150,7 +1206,11 @@ async function startServer() {
           if (compiledContext.trim().length > 0 || filesToAttach.length > 0) {
             userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên [DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN] đã được nhồi trực tiếp ở trên và kiến thức chuyên ngành. Hãy trích dẫn chuẩn xác các điều khoản kỹ thuật, số liệu, bảng biểu có trong context:\n\nYêu cầu câu hỏi kỹ thuật: ${prompt}` });
           } else {
-            userParts.push({ text: prompt });
+            if (attachedPdfText && !attachedPdfUri) {
+              userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên tài liệu PDF đính kèm đã được cung cấp ở trên:\n\nYêu cầu câu hỏi: ${prompt}` });
+            } else {
+              userParts.push({ text: prompt });
+            }
           }
 
           const contents = [
@@ -1395,6 +1455,21 @@ async function startServer() {
             const relevantParts = retrieveRelevantChunks(resolvedText, prompt, 4);
             parts.push({ text: `[DỮ LIỆU TÀI LIỆU GỐC (RAG CHUNKS)]\n${relevantParts}\n[KẾT THÚC DỮ LIỆU TÀI LIỆU]` });
           }
+        }
+        
+        if (attachedPdfUri) {
+          console.log(`[Specific Chat] Attaching user-uploaded PDF via File API: ${attachedPdfUri}`);
+          parts.push({
+            fileData: {
+              fileUri: attachedPdfUri,
+              mimeType: "application/pdf"
+            }
+          });
+        } else if (attachedPdfText) {
+          console.log(`[Specific Chat] Attaching user-uploaded PDF via plain text: ${attachedPdfName}`);
+          parts.push({
+            text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${attachedPdfText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
+          });
         }
         
         if (image) {

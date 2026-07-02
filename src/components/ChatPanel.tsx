@@ -21,7 +21,15 @@ interface ChatPanelProps {
   messages: Message[];
   generalMessages?: Message[];
   activeFile: PDFFile | null;
-  onSendMessage: (content: string, image?: string, isGeneral?: boolean, referencedFileIds?: string[], isThinking?: boolean, isImageGeneration?: boolean) => void;
+  onSendMessage: (
+    content: string, 
+    image?: string, 
+    isGeneral?: boolean, 
+    referencedFileIds?: string[], 
+    isThinking?: boolean, 
+    isImageGeneration?: boolean,
+    attachedPdf?: { name: string; text: string; geminiFileUri?: string }
+  ) => void;
   onExtract: (fields: ExtractionField[]) => Promise<any>;
   isProcessing: boolean;
   onSync: (data: any) => Promise<void>;
@@ -380,6 +388,9 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [attachedPdf, setAttachedPdf] = useState<{ name: string; text: string; geminiFileUri?: string } | null>(null);
+  const [isUploadingPdf, setIsUploadingPdf] = useState<boolean>(false);
+  const [uploadPdfError, setUploadPdfError] = useState<string | null>(null);
   const [mode, setMode] = useState<"general_chat" | "chat" | "extract" | "mindmap" | "notes" | "compare" | "compliance" | "draw_compare">("general_chat");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -398,6 +409,7 @@ export function ChatPanel({
 
   // Scrolling detection for input area fading effect
   const [isScrolled, setIsScrolled] = useState(false);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const [isComposerCollapsed, setIsComposerCollapsed] = useState(true);
   const [aiMode, setAiMode] = useState<"standard" | "thinking" | "image">("standard");
@@ -421,6 +433,15 @@ export function ChatPanel({
       document.removeEventListener("mousedown", handleClickOutside);
     };
   }, [isComposerCollapsed]);
+
+  const handleScrollToBottom = () => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: "smooth"
+      });
+    }
+  };
 
   // Gemini Quick-Summarizer Assistant States
   const [summarizingText, setSummarizingText] = useState<string | null>(null);
@@ -1763,7 +1784,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
   }, [messages, generalMessages, isProcessing]);
 
   const handleSend = () => {
-    if (!input.trim() && !selectedImage) return;
+    if (!input.trim() && !selectedImage && !attachedPdf) return;
     if (isProcessing) return;
     
     const isThinking = aiMode === "thinking";
@@ -1775,27 +1796,72 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
       mode === "general_chat", 
       mode === "general_chat" ? selectedGeneralDocIds : undefined,
       isThinking,
-      isImageGeneration
+      isImageGeneration,
+      attachedPdf || undefined
     );
     setInput("");
     setSelectedImage(null);
+    setAttachedPdf(null);
   };
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
+    if (!file) return;
+
+    if (file.type.startsWith("image/")) {
       const reader = new FileReader();
       reader.onloadend = () => {
         setSelectedImage(reader.result as string);
+        setAttachedPdf(null); // Clear PDF attachment if image is selected
+        setUploadPdfError(null);
       };
       reader.readAsDataURL(file);
+    } else if (file.type === "application/pdf") {
+      setIsUploadingPdf(true);
+      setUploadPdfError(null);
+      setSelectedImage(null); // Clear image if PDF is selected
+      
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
+
+        const response = await fetch(getApiUrl("/api/extract-pdf"), {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const errMsg = await response.text();
+          throw new Error(errMsg || `Lỗi tải lên PDF (${response.status})`);
+        }
+
+        const data = await response.json();
+        setAttachedPdf({
+          name: file.name,
+          text: data.text || "",
+          geminiFileUri: data.geminiFileUri || undefined
+        });
+      } catch (err: any) {
+        console.error("Lỗi trích xuất PDF trực tiếp từ chat:", err);
+        setUploadPdfError(err.message || "Không thể nạp và đọc file PDF này.");
+      } finally {
+        setIsUploadingPdf(false);
+      }
+    } else {
+      alert("Hệ thống chỉ hỗ trợ đính kèm File Ảnh (png, jpg, etc.) hoặc File PDF để đọc và phân tích kỹ thuật.");
     }
+
     // Reset input value to allow selecting same file again
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const removeSelectedImage = () => {
     setSelectedImage(null);
+  };
+
+  const removeAttachedPdf = () => {
+    setAttachedPdf(null);
+    setUploadPdfError(null);
   };
 
   const handleExtract = async () => {
@@ -1856,6 +1922,14 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
 
   return (
     <div className="w-full h-full flex flex-col bg-[#f4f7fa] relative">
+      {/* Global persistent file input for images & PDFs */}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleImageChange} 
+        accept="image/*,application/pdf" 
+        className="hidden" 
+      />
       {/* Panel Header */}
       <div className="bg-white px-8 py-5.5 flex items-center justify-between border-b border-gray-200/50 shrink-0 shadow-[0_4px_12px_rgba(0,0,0,0.015)]">
         <div className="flex items-center gap-4">
@@ -1962,7 +2036,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
       <div 
         ref={scrollRef}
         onScroll={(e) => {
-          setIsScrolled(e.currentTarget.scrollTop > 25);
+          const target = e.currentTarget;
+          setIsScrolled(target.scrollTop > 25);
+          const isFarFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight > 150;
+          setShowScrollBottom(target.scrollTop > 150 && isFarFromBottom);
         }}
         className="flex-1 overflow-y-auto px-6 pt-6 pb-40 space-y-6 no-scrollbar"
       >
@@ -3124,12 +3201,42 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       placeholder="Nhập câu hỏi kỹ thuật (Ví dụ: Quy định chiều dày lớp bê tông bảo vệ cốt thép dầm sàn hay khoảng cách an toàn PCCC, mật độ xây dựng)..."
                       className="w-full bg-transparent border-none py-1.5 px-1 text-sm sm:text-base font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-28 placeholder:text-gray-400 text-gray-800"
                     />
+                    {attachedPdf && (
+                      <div className="px-1 py-1 flex flex-wrap gap-1.5 animate-in fade-in duration-200">
+                        <div className="relative flex items-center gap-2 px-2.5 py-1 bg-indigo-50 border border-indigo-100 rounded-lg text-indigo-950 shadow-sm">
+                          <FileText className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                          <span className="text-[11px] font-bold truncate max-w-[150px] sm:max-w-[250px]" title={attachedPdf.name}>
+                            {attachedPdf.name}
+                          </span>
+                          <button 
+                            onClick={removeAttachedPdf}
+                            className="p-0.5 hover:bg-indigo-100 text-indigo-500 hover:text-indigo-700 rounded-full cursor-pointer transition-all"
+                            title="Gỡ tài liệu"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {isUploadingPdf && (
+                      <div className="px-1 py-1 flex items-center gap-2 text-indigo-600 text-[11px] font-bold animate-pulse">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <span>Đang đọc và phân tích file PDF kỹ thuật trực tiếp...</span>
+                      </div>
+                    )}
+                    {uploadPdfError && (
+                      <div className="px-1 py-1 flex items-center gap-1.5 text-red-600 text-[10.5px] font-extrabold">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        <span>{uploadPdfError}</span>
+                        <button onClick={() => setUploadPdfError(null)} className="ml-1 text-red-400 hover:text-red-600 font-extrabold cursor-pointer">✕</button>
+                      </div>
+                    )}
                     <div className="flex items-center justify-between pt-2 border-t border-gray-50/50">
                       <div className="flex items-center gap-3">
                         <button
                           onClick={() => fileInputRef.current?.click()}
                           className="p-2 bg-slate-50 text-slate-500 hover:text-indigo-600 rounded-full hover:bg-slate-100/80 transition-all flex items-center justify-center cursor-pointer"
-                          title="Tải ảnh đính kèm"
+                          title="Tải đính kèm hình ảnh hoặc file PDF"
                         >
                           <Camera className="w-4 h-4" />
                         </button>
@@ -3150,7 +3257,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       </div>
                       <button
                         onClick={handleSend}
-                        disabled={(!input.trim() && !selectedImage) || isProcessing}
+                        disabled={(!input.trim() && !selectedImage && !attachedPdf) || isProcessing}
                         className="px-4.5 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-xl font-black text-[10px] uppercase tracking-wider transition-all flex items-center gap-2 shadow-lg shadow-indigo-600/15 cursor-pointer"
                       >
                         {isProcessing ? (
@@ -3203,15 +3310,15 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     return (
                       <div
                         key={msg.id}
-                        className="w-full flex flex-col items-start gap-1 group/msg animate-in fade-in duration-300"
+                        className="w-full flex flex-row items-start gap-2.5 group/msg animate-in fade-in duration-300 text-left"
                       >
                         {/* Chat Bubble */}
                         <div
                           className={cn(
-                            "rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 flex flex-col",
+                            "rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 flex flex-col min-w-0",
                             msg.role === "user"
                               ? "bg-indigo-600 text-white max-w-[65%] w-fit mr-auto"
-                              : "bg-[#f8fafc] border border-gray-200/50 max-w-[100%] w-full"
+                              : "bg-[#f8fafc] border border-gray-200/50 flex-1 w-full"
                           )}
                         >
                           {msg.image && (
@@ -3221,100 +3328,100 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           )}
 
                           {/* Content render body */}
-                        {isTranslated ? (
-                          <div className="prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left">
-                            <ReactMarkdown
-                              remarkPlugins={[remarkMath, remarkGfm]}
-                              rehypePlugins={[rehypeKatex]}
-                              components={customMarkdownComponents}
-                            >
-                              {convertCitationsToLinks(translations[msg.id][visibleLanguages[msg.id]])}
-                            </ReactMarkdown>
-                          </div>
-                        ) : msg.role === "ai" && parsed && parsed.hasStructure ? (
-                          <div className="space-y-5 w-full text-left">
-                            {/* Section 1: Tóm tắt */}
-                            <div className="bg-white border-l-4 border-l-indigo-600 border border-gray-150/50 rounded-r-2xl rounded-l-md p-5 shadow-sm space-y-2">
-                              <div className="flex items-center gap-2 text-indigo-950 font-black uppercase tracking-widest text-[10px]">
-                                <Sparkles className="w-3.5 h-3.5 text-indigo-600 fill-indigo-100/30 animate-pulse" />
-                                <span>1. Tóm tắt câu trả lời: Trực diện, ngắn gọn</span>
-                              </div>
-                              <div className="text-gray-800 text-sm sm:text-base font-semibold leading-relaxed prose prose-indigo max-w-none">
-                                <ReactMarkdown
-                                  remarkPlugins={[remarkMath, remarkGfm]}
-                                  rehypePlugins={[rehypeKatex]}
-                                  components={customMarkdownComponents}
-                                >
-                                  {convertCitationsToLinks(parsed.summary)}
-                                </ReactMarkdown>
-                              </div>
+                          {isTranslated ? (
+                            <div className="prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left">
+                              <ReactMarkdown
+                                remarkPlugins={[remarkMath, remarkGfm]}
+                                rehypePlugins={[rehypeKatex]}
+                                components={customMarkdownComponents}
+                              >
+                                {convertCitationsToLinks(translations[msg.id][visibleLanguages[msg.id]])}
+                              </ReactMarkdown>
                             </div>
-
-                            {/* Section 2: Căn cứ pháp lý */}
-                            <div className="bg-white border-l-4 border-l-amber-500 border border-gray-150/50 rounded-r-2xl rounded-l-md p-5 shadow-sm space-y-3">
-                              <div className="flex items-center gap-2 text-indigo-950 font-black uppercase tracking-widest text-[10px]">
-                                <Scale className="w-3.5 h-3.5 text-amber-500 animate-bounce" />
-                                <span>2. Căn cứ pháp lý: Liệt kê tên tiêu chuẩn, điều khoản và trích đoạn gốc</span>
-                              </div>
-                              <div className="text-gray-800 text-sm sm:text-base leading-relaxed prose prose-indigo max-w-none">
-                                <ReactMarkdown
-                                  remarkPlugins={[remarkMath, remarkGfm]}
-                                  rehypePlugins={[rehypeKatex]}
-                                  components={customMarkdownComponents}
-                                >
-                                  {convertCitationsToLinks(parsed.basis)}
-                                </ReactMarkdown>
-                              </div>
-                            </div>
-
-                            {/* Section 3: Ghi chú */}
-                            {parsed.notes && (
-                              <div className="bg-[#f0f9ff]/30 border-l-4 border-l-sky-500 border border-[#e0f2fe]/60 rounded-r-2xl rounded-l-md p-5 shadow-sm space-y-2">
-                                <div className="flex items-center gap-2 text-sky-950 font-black uppercase tracking-widest text-[10px]">
-                                  <FileText className="w-3.5 h-3.5 text-sky-500" />
-                                  <span>3. Lưu ý & Ghi chú: Các thông tin bổ trợ</span>
+                          ) : msg.role === "ai" && parsed && parsed.hasStructure ? (
+                            <div className="space-y-5 w-full text-left">
+                              {/* Section 1: Tóm tắt */}
+                              <div className="bg-white border-l-4 border-l-indigo-600 border border-gray-150/50 rounded-r-2xl rounded-l-md p-5 shadow-sm space-y-2">
+                                <div className="flex items-center gap-2 text-indigo-950 font-black uppercase tracking-widest text-[10px]">
+                                  <Sparkles className="w-3.5 h-3.5 text-indigo-600 fill-indigo-100/30 animate-pulse" />
+                                  <span>1. Tóm tắt câu trả lời: Trực diện, ngắn gọn</span>
                                 </div>
-                                <div className="text-gray-700 text-[13px] sm:text-sm font-semibold leading-relaxed prose prose-indigo max-w-none">
+                                <div className="text-gray-800 text-sm sm:text-base font-semibold leading-relaxed prose prose-indigo max-w-none">
                                   <ReactMarkdown
                                     remarkPlugins={[remarkMath, remarkGfm]}
                                     rehypePlugins={[rehypeKatex]}
                                     components={customMarkdownComponents}
                                   >
-                                    {convertCitationsToLinks(parsed.notes)}
+                                    {convertCitationsToLinks(parsed.summary)}
                                   </ReactMarkdown>
                                 </div>
                               </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className={cn(
-                            "prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left",
-                            msg.role === "user" && "prose-invert text-white"
-                          )}>
-                            <ReactMarkdown
-                              remarkPlugins={[remarkMath, remarkGfm]}
-                              rehypePlugins={[rehypeKatex]}
-                              components={customMarkdownComponents}
-                            >
-                              {convertCitationsToLinks(msg.content)}
-                            </ReactMarkdown>
-                          </div>
-                        )}
+
+                              {/* Section 2: Căn cứ pháp lý */}
+                              <div className="bg-white border-l-4 border-l-amber-500 border border-gray-150/50 rounded-r-2xl rounded-l-md p-5 shadow-sm space-y-3">
+                                <div className="flex items-center gap-2 text-indigo-950 font-black uppercase tracking-widest text-[10px]">
+                                  <Scale className="w-3.5 h-3.5 text-amber-500 animate-bounce" />
+                                  <span>2. Căn cứ pháp lý: Liệt kê tên tiêu chuẩn, điều khoản và trích đoạn gốc</span>
+                                </div>
+                                <div className="text-gray-800 text-sm sm:text-base leading-relaxed prose prose-indigo max-w-none">
+                                  <ReactMarkdown
+                                    remarkPlugins={[remarkMath, remarkGfm]}
+                                    rehypePlugins={[rehypeKatex]}
+                                    components={customMarkdownComponents}
+                                  >
+                                    {convertCitationsToLinks(parsed.basis)}
+                                  </ReactMarkdown>
+                                </div>
+                              </div>
+
+                              {/* Section 3: Ghi chú */}
+                              {parsed.notes && (
+                                <div className="bg-[#f0f9ff]/30 border-l-4 border-l-sky-500 border border-[#e0f2fe]/60 rounded-r-2xl rounded-l-md p-5 shadow-sm space-y-2">
+                                  <div className="flex items-center gap-2 text-sky-950 font-black uppercase tracking-widest text-[10px]">
+                                    <FileText className="w-3.5 h-3.5 text-sky-500" />
+                                    <span>3. Lưu ý & Ghi chú: Các thông tin bổ trợ</span>
+                                  </div>
+                                  <div className="text-gray-700 text-[13px] sm:text-sm font-semibold leading-relaxed prose prose-indigo max-w-none">
+                                    <ReactMarkdown
+                                      remarkPlugins={[remarkMath, remarkGfm]}
+                                      rehypePlugins={[rehypeKatex]}
+                                      components={customMarkdownComponents}
+                                    >
+                                      {convertCitationsToLinks(parsed.notes)}
+                                    </ReactMarkdown>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className={cn(
+                              "prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left",
+                              msg.role === "user" && "prose-invert text-white"
+                            )}>
+                              <ReactMarkdown
+                                remarkPlugins={[remarkMath, remarkGfm]}
+                                rehypePlugins={[rehypeKatex]}
+                                components={customMarkdownComponents}
+                              >
+                                {convertCitationsToLinks(msg.content)}
+                              </ReactMarkdown>
+                            </div>
+                          )}
                         </div>
 
-                        {/* Flat Actions Row - PLACED OUTSIDE AND DIRECTLY BELOW THE CHAT BUBBLE */}
+                        {/* Vertical Tools Action Sidebar - ALWAYS HIGHLY VISIBLE ON WEB AND MOBILE, IN ORDER AS PREVIOUSLY DESIGNED */}
                         {msg.role !== "user" && (
-                          <div className="flex flex-wrap items-center gap-1.5 px-3 mt-1 text-gray-400 group-hover/msg:opacity-100 focus-within:opacity-100 hover:opacity-100 transition-all duration-300">
+                          <div className="flex flex-col items-center justify-start gap-1 p-1 bg-white border border-gray-200 rounded-2xl shadow-sm text-gray-400 self-start shrink-0">
                             {/* Tải về */}
                             <button
                               onClick={() => handleDownloadText(
                                 isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
                                 `cau_tra_loi_${msg.id.slice(0, 5)}.txt`
                               )}
-                              className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 border border-transparent shadow-none"
+                              className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 border border-transparent shadow-none"
                               title="Tải về máy (.txt)"
                             >
-                              <Download className="w-3.5 h-3.5 shrink-0" />
+                              <Download className="w-4 h-4 shrink-0" />
                             </button>
 
                             {/* Tóm tắt AI */}
@@ -3322,10 +3429,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                               onClick={() => triggerSummarize(
                                 isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content
                               )}
-                              className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent shadow-none"
+                              className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent shadow-none"
                               title="Tóm tắt ngắn câu trả lời bằng AI"
                             >
-                              <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                              <Sparkles className="w-4 h-4 shrink-0" />
                             </button>
 
                             {/* Xuất Slides / Gamma AI */}
@@ -3335,10 +3442,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 content: isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content, 
                                 messageId: msg.id 
                               })}
-                              className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent shadow-none"
+                              className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent shadow-none"
                               title="Xuất slide thuyết trình (PowerPoint / Gamma AI)"
                             >
-                              <Presentation className="w-3.5 h-3.5 shrink-0" />
+                              <Presentation className="w-4 h-4 shrink-0" />
                             </button>
 
                             {/* Sao chép */}
@@ -3347,13 +3454,13 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
                                 msg.id
                               )}
-                              className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-indigo-50 text-gray-400 hover:text-indigo-650 border border-transparent shadow-none"
+                              className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-indigo-50 text-gray-400 hover:text-indigo-650 border border-transparent shadow-none"
                               title="Sao chép câu trả lời"
                             >
                               {copiedId === msg.id ? (
-                                <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                <Check className="w-4 h-4 text-emerald-500 shrink-0" />
                               ) : (
-                                <Copy className="w-3.5 h-3.5 shrink-0" />
+                                <Copy className="w-4 h-4 shrink-0" />
                               )}
                             </button>
 
@@ -3365,28 +3472,28 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                   msg.id
                                 )}
                                 disabled={savingId === msg.id}
-                                className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent shadow-none"
+                                className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent shadow-none"
                                 title="Lưu vào ghi chú"
                               >
                                 {savingId === msg.id ? (
-                                  <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                                  <Loader2 className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
                                 ) : savedIds.includes(msg.id) ? (
-                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                                 ) : (
-                                  <Save className="w-3.5 h-3.5 shrink-0" />
+                                  <Save className="w-4 h-4 shrink-0" />
                                 )}
                               </button>
                             )}
 
                             {/* Dịch EN / KO / VI */}
                             {msg.role === "ai" && (
-                              <div className="flex items-center gap-1 shrink-0 ml-1 border-l border-gray-150 pl-1.5 h-5">
+                              <div className="flex flex-col items-center gap-1 shrink-0 border-t border-gray-150 pt-1.5 w-full mt-1">
                                 {/* Dịch EN */}
                                 <button
                                   onClick={() => handleTranslate(msg.content, msg.id, 'en')}
                                   disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
                                   className={cn(
-                                    "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-6 w-6 border shadow-none select-none",
+                                    "flex items-center justify-center rounded-lg text-[9px] font-black tracking-wider transition-all duration-300 cursor-pointer h-6 w-6 border shadow-none select-none",
                                     visibleLanguages[msg.id] === 'en'
                                       ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
                                       : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
@@ -3405,7 +3512,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                   onClick={() => handleTranslate(msg.content, msg.id, 'ko')}
                                   disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
                                   className={cn(
-                                    "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-6 w-6 border shadow-none select-none",
+                                    "flex items-center justify-center rounded-lg text-[9px] font-black tracking-wider transition-all duration-300 cursor-pointer h-6 w-6 border shadow-none select-none",
                                     visibleLanguages[msg.id] === 'ko'
                                       ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
                                       : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
@@ -3423,7 +3530,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
                                   <button
                                     onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
-                                    className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-355 pointer-events-auto cursor-pointer h-6 w-6 bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-none"
+                                    className="flex items-center justify-center rounded-lg text-[9px] font-black tracking-wider transition-all duration-355 cursor-pointer h-6 w-6 bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-none mt-0.5"
                                     title="Quay lại bản gốc tiếng Việt"
                                   >
                                     <span>Gốc</span>
@@ -3844,15 +3951,15 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 return (
                   <div
                     key={msg.id}
-                    className="w-full flex flex-col items-start gap-1 group/msg animate-in fade-in duration-300"
+                    className="w-full flex flex-row items-start gap-2.5 group/msg animate-in fade-in duration-300 text-left"
                   >
                     {/* Chat Bubble */}
                     <div
                       className={cn(
-                        "rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 flex flex-col",
+                        "rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 flex flex-col min-w-0",
                         msg.role === "user"
                           ? "bg-indigo-600 text-white max-w-[65%] w-fit mr-auto"
-                          : "bg-[#f8fafc] border border-gray-200/50 max-w-[100%] w-full"
+                          : "bg-[#f8fafc] border border-gray-200/50 flex-1 w-full"
                       )}
                     >
                       {msg.image && (
@@ -3943,19 +4050,19 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     )}
                     </div>
 
-                    {/* Flat Actions Row - PLACED OUTSIDE AND DIRECTLY BELOW THE CHAT BUBBLE */}
+                    {/* Vertical Tools Action Sidebar - ALWAYS HIGHLY VISIBLE ON WEB AND MOBILE, IN ORDER AS PREVIOUSLY DESIGNED */}
                     {msg.role !== "user" && (
-                      <div className="flex flex-wrap items-center gap-1.5 px-3 mt-1 text-gray-400 group-hover/msg:opacity-100 focus-within:opacity-100 hover:opacity-100 transition-all duration-300">
+                      <div className="flex flex-col items-center justify-start gap-1 p-1 bg-white border border-gray-200 rounded-2xl shadow-sm text-gray-400 self-start shrink-0">
                         {/* Tải về */}
                         <button
                           onClick={() => handleDownloadText(
                             isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
                             `cau_tra_loi_${msg.id.slice(0, 5)}.txt`
                           )}
-                          className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 border border-transparent shadow-none"
+                          className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-emerald-50 text-gray-400 hover:text-emerald-600 border border-transparent shadow-none"
                           title="Tải về máy (.txt)"
                         >
-                          <Download className="w-3.5 h-3.5 shrink-0" />
+                          <Download className="w-4 h-4 shrink-0" />
                         </button>
 
                         {/* Tóm tắt AI */}
@@ -3963,10 +4070,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           onClick={() => triggerSummarize(
                             isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content
                           )}
-                          className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent shadow-none"
+                          className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-violet-50 text-gray-400 hover:text-violet-600 border border-transparent shadow-none"
                           title="Tóm tắt ngắn câu trả lời bằng AI"
                         >
-                          <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                          <Sparkles className="w-4 h-4 shrink-0" />
                         </button>
 
                         {/* Xuất Slides / Gamma AI */}
@@ -3976,10 +4083,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             content: isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content, 
                             messageId: msg.id 
                           })}
-                          className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent shadow-none"
+                          className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-violet-50 text-gray-400 hover:text-violet-650 border border-transparent shadow-none"
                           title="Xuất slide thuyết trình (PowerPoint / Gamma AI)"
                         >
-                          <Presentation className="w-3.5 h-3.5 shrink-0" />
+                          <Presentation className="w-4 h-4 shrink-0" />
                         </button>
 
                         {/* Sao chép */}
@@ -3988,13 +4095,13 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             isTranslated ? translations[msg.id][visibleLanguages[msg.id]] : msg.content,
                             msg.id
                           )}
-                          className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-indigo-50 text-gray-400 hover:text-indigo-650 border border-transparent shadow-none"
+                          className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-indigo-50 text-gray-400 hover:text-indigo-650 border border-transparent shadow-none"
                           title="Sao chép câu trả lời"
                         >
                           {copiedId === msg.id ? (
-                            <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                            <Check className="w-4 h-4 text-emerald-500 shrink-0" />
                           ) : (
-                            <Copy className="w-3.5 h-3.5 shrink-0" />
+                            <Copy className="w-4 h-4 shrink-0" />
                           )}
                         </button>
 
@@ -4006,32 +4113,31 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                               msg.id
                             )}
                             disabled={savingId === msg.id}
-                            className="flex items-center justify-center rounded-lg transition-all duration-300 pointer-events-auto cursor-pointer h-7 w-7 hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent shadow-none"
+                            className="flex items-center justify-center rounded-xl transition-all duration-300 cursor-pointer h-8 w-8 hover:bg-blue-50 text-gray-400 hover:text-blue-650 border border-transparent shadow-none"
                             title="Lưu vào ghi chú"
                           >
                             {savingId === msg.id ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                              <Loader2 className="w-4 h-4 animate-spin text-blue-600 shrink-0" />
                             ) : savedIds.includes(msg.id) ? (
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                              <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                             ) : (
-                              <Save className="w-3.5 h-3.5 shrink-0" />
+                              <Save className="w-4 h-4 shrink-0" />
                             )}
                           </button>
                         )}
 
                         {/* Dịch EN / KO / VI */}
                         {msg.role === "ai" && (
-                          <div className="flex items-center gap-1 shrink-0 ml-1 border-l border-gray-150 pl-1.5 h-5">
+                          <div className="flex flex-col items-center gap-1 shrink-0 border-t border-gray-150 pt-1.5 w-full mt-1">
                             {/* Dịch EN */}
                             <button
                               onClick={() => handleTranslate(msg.content, msg.id, 'en')}
                               disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
                               className={cn(
-                                "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-6 w-6 border shadow-none select-none",
-                                {
-                                  "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold": visibleLanguages[msg.id] === 'en',
-                                  "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650": visibleLanguages[msg.id] !== 'en'
-                                }
+                                "flex items-center justify-center rounded-lg text-[9px] font-black tracking-wider transition-all duration-300 cursor-pointer h-6 w-6 border shadow-none select-none",
+                                visibleLanguages[msg.id] === 'en'
+                                  ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
+                                  : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
                               )}
                               title="Dịch câu trả lời sang Tiếng Anh"
                             >
@@ -4047,11 +4153,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                               onClick={() => handleTranslate(msg.content, msg.id, 'ko')}
                               disabled={translatingId[msg.id] !== undefined && translatingId[msg.id] !== null}
                               className={cn(
-                                "flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-300 pointer-events-auto cursor-pointer h-6 w-6 border shadow-none select-none",
-                                {
-                                  "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold": visibleLanguages[msg.id] === 'ko',
-                                  "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650": visibleLanguages[msg.id] !== 'ko'
-                                }
+                                "flex items-center justify-center rounded-lg text-[9px] font-black tracking-wider transition-all duration-300 cursor-pointer h-6 w-6 border shadow-none select-none",
+                                visibleLanguages[msg.id] === 'ko'
+                                  ? "bg-indigo-55 border-indigo-200 text-indigo-700 font-bold"
+                                  : "bg-white hover:bg-slate-50 border-transparent text-gray-400 hover:text-indigo-650"
                               )}
                               title="Dịch câu trả lời sang Tiếng Hàn"
                             >
@@ -4066,7 +4171,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             {visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && (
                               <button
                                 onClick={() => setVisibleLanguages(prev => ({ ...prev, [msg.id]: 'vi' }))}
-                                className="flex items-center justify-center rounded-lg p-1 text-[9px] font-black tracking-wider transition-all duration-350 pointer-events-auto cursor-pointer h-6 w-6 bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-none"
+                                className="flex items-center justify-center rounded-lg text-[9px] font-black tracking-wider transition-all duration-355 cursor-pointer h-6 w-6 bg-rose-50 hover:bg-rose-100 border border-rose-150 text-rose-700 shadow-none mt-0.5"
                                 title="Quay lại bản gốc tiếng Việt"
                               >
                                 <span>Gốc</span>
@@ -4306,6 +4411,36 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     </div>
                   </div>
                 )}
+                {attachedPdf && (
+                  <div className="px-2 pt-1 flex flex-wrap gap-1.5 animate-in fade-in duration-200">
+                    <div className="relative flex items-center gap-1.5 px-2.5 py-1 bg-indigo-55/75 border border-indigo-100 rounded-lg text-indigo-950 shadow-sm">
+                      <FileText className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                      <span className="text-[11px] font-bold truncate max-w-[150px] sm:max-w-[220px]" title={attachedPdf.name}>
+                        {attachedPdf.name}
+                      </span>
+                      <button 
+                        onClick={removeAttachedPdf}
+                        className="p-0.5 hover:bg-indigo-100/80 text-indigo-500 hover:text-indigo-700 rounded-full cursor-pointer transition-all"
+                        title="Gỡ tài liệu"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {isUploadingPdf && (
+                  <div className="px-3 pt-1.5 flex items-center gap-2 text-indigo-600 text-[11px] font-semibold animate-pulse">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Đang nạp và đọc file PDF kỹ thuật trực tiếp...</span>
+                  </div>
+                )}
+                {uploadPdfError && (
+                  <div className="px-3 pt-1.5 flex items-center gap-1.5 text-red-600 text-[10.5px] font-extrabold">
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    <span>{uploadPdfError}</span>
+                    <button onClick={() => setUploadPdfError(null)} className="ml-1 text-red-400 hover:text-red-600 font-extrabold cursor-pointer">✕</button>
+                  </div>
+                )}
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -4320,17 +4455,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 />
                 <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100">
                   <div className="flex items-center gap-2">
-                    <input 
-                      type="file" 
-                      ref={fileInputRef} 
-                      onChange={handleImageChange} 
-                      accept="image/*" 
-                      className="hidden" 
-                    />
                     <button
                       onClick={() => fileInputRef.current?.click()}
                       className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
-                      title="Thêm hình ảnh"
+                      title="Thêm hình ảnh hoặc file PDF để đọc phân tích"
                     >
                       <Camera className="w-4 h-4" />
                     </button>
@@ -4349,7 +4477,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     </button>
                     <button
                       onClick={handleSend}
-                      disabled={(!input.trim() && !selectedImage) || isProcessing}
+                      disabled={(!input.trim() && !selectedImage && !attachedPdf) || isProcessing}
                       className="p-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-200 text-white rounded-full shadow-md shadow-indigo-600/10 transition-all cursor-pointer flex items-center justify-center"
                     >
                       {isProcessing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
@@ -4840,6 +4968,18 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           </div>
         </div>,
         document.body
+      )}
+
+      {/* Floating Scroll to Bottom Chat Bubble */}
+      {showScrollBottom && (
+        <button
+          onClick={handleScrollToBottom}
+          className="absolute bottom-32 right-8 z-[40] flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.35)] hover:scale-105 active:scale-95 transition-all duration-300 animate-bounce cursor-pointer border border-indigo-500/20"
+          title="Cuộn xuống tin nhắn mới nhất"
+        >
+          <ChevronDown className="w-4 h-4 text-white animate-pulse" />
+          <span className="text-[10px] font-black uppercase tracking-wider">Tin mới ở dưới</span>
+        </button>
       )}
     </div>
   );

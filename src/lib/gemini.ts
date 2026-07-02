@@ -19,7 +19,8 @@ export async function chatWithDocument(
   fileId?: string,
   textUrl?: string,
   isThinking?: boolean,
-  isImageGeneration?: boolean
+  isImageGeneration?: boolean,
+  attachedPdf?: { name: string; text: string; geminiFileUri?: string }
 ) {
   try {
     const response = await fetch(getApiUrl("/api/chat"), {
@@ -27,7 +28,24 @@ export async function chatWithDocument(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration }),
+      body: JSON.stringify({ 
+        text, 
+        prompt, 
+        history, 
+        image, 
+        geminiFileUri, 
+        isGeneral, 
+        referencedFiles, 
+        fileUrl, 
+        fileName, 
+        fileId, 
+        textUrl, 
+        isThinking, 
+        isImageGeneration,
+        attachedPdfText: attachedPdf?.text,
+        attachedPdfName: attachedPdf?.name,
+        attachedPdfUri: attachedPdf?.geminiFileUri
+      }),
     });
 
     const contentType = response.headers.get("content-type");
@@ -67,6 +85,7 @@ export async function chatWithDocumentStream(
   textUrl?: string,
   isThinking?: boolean,
   isImageGeneration?: boolean,
+  attachedPdf?: { name: string; text: string; geminiFileUri?: string },
   onChunk?: (chunk: string) => void
 ) {
   try {
@@ -88,7 +107,10 @@ export async function chatWithDocumentStream(
         fileId,
         textUrl,
         isThinking,
-        isImageGeneration
+        isImageGeneration,
+        attachedPdfText: attachedPdf?.text,
+        attachedPdfName: attachedPdf?.name,
+        attachedPdfUri: attachedPdf?.geminiFileUri
       }),
     });
 

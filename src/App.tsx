@@ -625,7 +625,15 @@ export default function App() {
     }
   };
 
-  const handleSendMessage = useCallback(async (content: string, image?: string, isGeneral?: boolean, referencedFileIds?: string[], isThinking?: boolean, isImageGeneration?: boolean) => {
+  const handleSendMessage = useCallback(async (
+    content: string, 
+    image?: string, 
+    isGeneral?: boolean, 
+    referencedFileIds?: string[], 
+    isThinking?: boolean, 
+    isImageGeneration?: boolean,
+    attachedPdf?: { name: string; text: string; geminiFileUri?: string }
+  ) => {
     const allowed = await incrementApiUsage();
     if (!allowed) {
       setQuotaLimitValue(profile?.apiLimit || 30);
@@ -697,6 +705,7 @@ export default function App() {
           undefined,
           isThinking,
           isImageGeneration,
+          attachedPdf,
           (chunk) => {
             accumulatedText += chunk;
             setGeneralMessages((prev) =>
@@ -845,6 +854,7 @@ export default function App() {
         activeFile.textUrl,
         isThinking,
         isImageGeneration,
+        attachedPdf,
         (chunk) => {
           accumulatedText += chunk;
           setMessages((prev) =>
