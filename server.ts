@@ -550,6 +550,20 @@ function isTokenLimitError(error: any): boolean {
   );
 }
 
+function isUnrecoverableError(error: any): boolean {
+  if (!error) return false;
+  const message = String(error.message || error.statusText || error || "").toLowerCase();
+  return (
+    message.includes("hết hạn mức") ||
+    message.includes("quota") ||
+    message.includes("api key") ||
+    message.includes("không hợp lệ") ||
+    message.includes("billing") ||
+    message.includes("payment") ||
+    message.includes("exceeded your current quota")
+  );
+}
+
 async function reRegisterFileWithGemini(fileUrl: string, fileName: string): Promise<{ uri: string; name: string }> {
   console.log(`[Auto Self-Healing] Re-registering expired/invalid file on the fly: ${fileName} URL: ${fileUrl}`);
   const response = await fetch(fileUrl);
@@ -873,6 +887,9 @@ async function startServer() {
         try {
           streamResponse = await runStreamGeneral(contents);
         } catch (proErr: any) {
+          if (isUnrecoverableError(proErr)) {
+            throw proErr;
+          }
           if (isGeminiFileError(proErr)) {
             console.log("[Auto Self-Healing General Stream] Expired file caught. Restoring files to Gemini Files API...");
             let healSucceeded = false;
@@ -1039,6 +1056,9 @@ async function startServer() {
         try {
           streamResponse = await runStream(finalFileUri);
         } catch (proErr: any) {
+          if (isUnrecoverableError(proErr)) {
+            throw proErr;
+          }
           if (isGeminiFileError(proErr) && fileUrl) {
             console.log("[Auto Self-Healing Stream] Specific file error. Re-registering file on-the-fly...");
             try {
@@ -1517,6 +1537,9 @@ async function startServer() {
         console.log("Attempting chat with gemini-3.5-flash using fileUri...");
         response = await runSpecificChat(finalFileUri);
       } catch (proErr: any) {
+        if (isUnrecoverableError(proErr)) {
+          throw proErr;
+        }
         if (isTokenLimitError(proErr)) {
           console.log("[Auto Self-Healing] Token limit exceeded in specific chat. Falling back to plain text RAG prompt...");
           response = await runSpecificChat(undefined);
@@ -1623,6 +1646,9 @@ Yêu cầu cực kỳ nghiêm ngặt:
         console.log("Attempting structured extraction with gemini-3.5-flash...");
         response = await runExtraction(finalFileUri, "gemini-3.5-flash");
       } catch (proErr: any) {
+        if (isUnrecoverableError(proErr)) {
+          throw proErr;
+        }
         if (isTokenLimitError(proErr)) {
           console.log("[Auto Self-Healing] Token limit exceeded in extract fields. Falling back to plain text extraction with gemini-3.1-flash-lite...");
           response = await runExtraction(undefined, "gemini-3.1-flash-lite");
@@ -1929,6 +1955,9 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
         console.log(`[Compare Tool] Executing document synthesis and comparison for ${resolvedFiles.length} files using gemini-3.5-flash...`);
         response = await runCompareAI(resolvedFiles);
       } catch (proErr: any) {
+        if (isUnrecoverableError(proErr)) {
+          throw proErr;
+        }
         if (isTokenLimitError(proErr)) {
           console.log("[Auto Self-Healing] Token limit exceeded in compare tool. Falling back to text-only (truncated) compare mode...");
           const textOnlyFiles = resolvedFiles.map(f => {
@@ -2036,6 +2065,198 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
         ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
         : (error.message || "Gặp sự cố khi tổng hợp và đối chiếu các tài liệu kỹ thuật");
       res.status(500).json({ error: errorMsg, isPermissionError: isPermErr });
+    }
+  });
+
+  // API 3.7: Đối chiếu bản vẽ thông minh sử dụng Gemini và trả về JSON có cấu trúc
+  app.post("/api/compare-drawings", async (req, res) => {
+    const { file1, file2 } = req.body;
+
+    if (!file1 || !file2) {
+      return res.status(400).json({ error: "Không tìm thấy thông tin hai bản vẽ cần đối chiếu" });
+    }
+    if (!process.env.GEMINI_API_KEY) {
+      return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
+    }
+
+    try {
+      const resolvedFiles: any[] = [];
+      const newlyRegistered: { fileId: string; uri: string; name: string }[] = [];
+
+      const rawFiles = [file1, file2];
+
+      for (const file of rawFiles) {
+        let uri = file.geminiFileUri;
+        let name = file.geminiFileName || file.name;
+
+        const isExpired = file.uploadDate && (Date.now() - file.uploadDate > 40 * 60 * 60 * 1000);
+        if (uri && isExpired) {
+          console.log(`[Auto Self-Healing Drawing Compare] Proactively detecting expired Gemini File for ${file.name}. Clearing stale URI.`);
+          uri = undefined;
+        }
+
+        if (!uri && file.url) {
+          try {
+            console.log(`[On-The-Fly Drawing Compare Sync] Đang tải & đăng ký tệp "${file.name}" lên Gemini Files...`);
+            const fileResp = await fetch(file.url);
+            if (fileResp.ok) {
+              const fileBuffer = Buffer.from(await fileResp.arrayBuffer());
+              const uploadRes = await uploadToGeminiFilesAPI(fileBuffer, file.name);
+              uri = uploadRes.uri;
+              name = uploadRes.name;
+              newlyRegistered.push({
+                fileId: file.id,
+                uri: uploadRes.uri,
+                name: uploadRes.name
+              });
+              console.log(`[On-The-Fly Drawing Compare Sync] Đã đồng bộ xong tệp "${file.name}" -> ${uri}`);
+            }
+          } catch (syncErr: any) {
+            console.warn(`[On-The-Fly Drawing Compare Sync] Gặp lỗi khi đồng bộ tệp "${file.name}": ${syncErr.message || syncErr}`);
+          }
+        }
+
+        resolvedFiles.push({
+          id: file.id,
+          name: file.name,
+          text: file.text || "",
+          geminiFileUri: uri,
+          geminiFileName: name
+        });
+      }
+
+      const activeFile = resolvedFiles[0];
+      const compareWithFile = resolvedFiles[1];
+
+      const drawingCompareSystemInstruction = `Bạn là một CHUYÊN GIA PHÂN TÍCH, THẨM ĐỊNH VÀ ĐỐI CHIẾU BẢN VẼ XÂY DỰNG CAO CẤP.
+Nhiệm vụ của bạn là quét qua hai hồ sơ bản vẽ/tài liệu thiết kế và tìm ra sự khác nhau sơ bộ, định hướng để kỹ sư có thể nhanh chóng nắm bắt thông tin thiết kế và sự thay đổi giữa hai phiên bản.
+
+Bạn phải so sánh hai tài liệu:
+Tập hồ sơ 1 (Bản vẽ mới/hiệu chỉnh): "${activeFile.name}"
+Tập hồ sơ 2 (Bản vẽ gốc/tham chiếu): "${compareWithFile.name}"
+
+Hãy kiểm tra kỹ từng cấu kiện, thông số hình học, tiết diện cột, dầm, sàn, ghi chú kỹ thuật, bố trí mặt bằng, khoảng lùi, chỉ giới, cốt thép, kết nối MEP, quy chuẩn PCCC, hoặc các chỉ số quan trọng khác có trong văn bản và nội dung hình ảnh/file của cả hai tài liệu.
+
+Yêu cầu trả về đầu ra có cấu trúc chính xác theo JSON Schema được cấu hình.
+Trường "summary" chứa một báo cáo chi tiết bằng tiếng Việt dạng Markdown dồi dào thông tin kỹ thuật chuyên sâu, phân tích rõ sự sai khác tổng thể và sơ bộ giữa hai tài liệu và đưa ra các định hướng thiết kế/thi công hữu ích cho kỹ sư.
+Trường "diffMarkers" là danh sách các sự sai khác cụ thể, định hướng rõ ràng từng sự thay đổi. Tránh các thay đổi chung chung, hãy liệt kê tối thiểu 3-5 điểm sai khác cụ thể nếu có. Mỗi điểm khác biệt có tọa độ x, y, width, height ngẫu nhiên từ 10 đến 90 (ví dụ x: 25, y: 35, width: 20, height: 15) đại diện cho vị trí ước lượng trên bản vẽ để hệ thống vẽ khung đánh dấu trực quan. ID của marker phải có tiền tố 'diff-ai-' kèm mã ngẫu nhiên hoặc số thứ tự.`;
+
+      const responseSchema = {
+        type: "OBJECT",
+        properties: {
+          summary: {
+            type: "STRING",
+            description: "Báo cáo đối chiếu chi tiết bằng tiếng Việt định dạng Markdown cung cấp tổng quan, các điểm thay đổi chính và định hướng kỹ thuật cho kỹ sư."
+          },
+          diffMarkers: {
+            type: "ARRAY",
+            description: "Danh sách các điểm sai khác cụ thể phát hiện được giữa hai hồ sơ",
+            items: {
+              type: "OBJECT",
+              properties: {
+                id: { type: "STRING" },
+                page: { type: "INTEGER", description: "Trang phát hiện sai khác (mặc định là 1 nếu không rõ)" },
+                type: { 
+                  type: "STRING", 
+                  enum: ["addition", "modification", "deletion"],
+                  description: "Loại thay đổi: addition (thêm mới), modification (chỉnh sửa), deletion (loại bỏ)" 
+                },
+                title: { type: "STRING", description: "Tiêu đề ngắn gọn về sự sai khác" },
+                description: { type: "STRING", description: "Mô tả chi tiết kỹ thuật của sự sai khác đó" },
+                originalValue: { type: "STRING", description: "Giá trị hoặc thông số ở bản vẽ gốc" },
+                revisedValue: { type: "STRING", description: "Giá trị hoặc thông số ở bản vẽ mới" },
+                ruleReference: { type: "STRING", description: "Tiêu chuẩn, quy chuẩn liên quan hoặc ghi chú chỉ dẫn kỹ thuật" },
+                boundingBox: {
+                  type: "OBJECT",
+                  properties: {
+                    x: { type: "INTEGER" },
+                    y: { type: "INTEGER" },
+                    width: { type: "INTEGER" },
+                    height: { type: "INTEGER" }
+                  },
+                  required: ["x", "y", "width", "height"]
+                }
+              },
+              required: ["id", "page", "type", "title", "description", "originalValue", "revisedValue", "boundingBox"]
+            }
+          }
+        },
+        required: ["summary", "diffMarkers"]
+      };
+
+      const runDrawingCompareAI = async (filesToUse: any[]) => {
+        const parts: any[] = [];
+        
+        parts.push({ text: `=== BẢN VẼ HIỆN TẠI (MỚI/HIỆU CHỈNH): ${filesToUse[0].name} ===` });
+        if (filesToUse[0].geminiFileUri) {
+          parts.push({
+            fileData: {
+              fileUri: filesToUse[0].geminiFileUri,
+              mimeType: getMimeType(filesToUse[0].name)
+            }
+          });
+        } else if (filesToUse[0].text) {
+          parts.push({ text: `[VĂN BẢN TRÍCH XUẤT]:\n${filesToUse[0].text}` });
+        }
+        parts.push({ text: `=== KẾT THÚC BẢN VẼ HIỆN TẠI ===\n` });
+
+        parts.push({ text: `=== BẢN VẼ GỐC (THAM CHIẾU/GỐC): ${filesToUse[1].name} ===` });
+        if (filesToUse[1].geminiFileUri) {
+          parts.push({
+            fileData: {
+              fileUri: filesToUse[1].geminiFileUri,
+              mimeType: getMimeType(filesToUse[1].name)
+            }
+          });
+        } else if (filesToUse[1].text) {
+          parts.push({ text: `[VĂN BẢN TRÍCH XUẤT]:\n${filesToUse[1].text}` });
+        }
+        parts.push({ text: `=== KẾT THÚC BẢN VẼ GỐC ===\n` });
+
+        parts.push({ text: "Hãy thực hiện quét qua cả hai hồ sơ bản vẽ/tài liệu thiết kế trên để so sánh và tìm tất cả sự khác biệt kỹ thuật sơ bộ định hướng nhằm giúp kỹ sư nắm bắt thông tin nhanh chóng." });
+
+        const contents = [{ role: "user", parts }];
+
+        return await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+          model: model,
+          contents,
+          config: {
+            systemInstruction: drawingCompareSystemInstruction,
+            responseMimeType: "application/json",
+            responseSchema,
+            temperature: 0.15,
+          },
+        }), "gemini-3.5-flash", 2);
+      };
+
+      let aiResponse;
+      try {
+        console.log(`[Drawing Compare AI] Executing compare between ${activeFile.name} and ${compareWithFile.name}...`);
+        aiResponse = await runDrawingCompareAI(resolvedFiles);
+      } catch (err: any) {
+        if (isUnrecoverableError(err)) {
+          throw err;
+        }
+        // Fallback to text-only mode if token limit exceeded or file error
+        console.warn("[Drawing Compare AI] Gemini Files mode failed. Retrying with text-only data...", err);
+        const textOnlyFiles = resolvedFiles.map(f => ({
+          ...f,
+          geminiFileUri: undefined,
+          text: f.text ? f.text.substring(0, 150000) : "Không có văn bản trích xuất"
+        }));
+        aiResponse = await runDrawingCompareAI(textOnlyFiles);
+      }
+
+      const responseJson = JSON.parse(aiResponse.text || "{}");
+      res.json({
+        summary: responseJson.summary || "",
+        diffMarkers: responseJson.diffMarkers || [],
+        newlyRegistered
+      });
+
+    } catch (error: any) {
+      console.error("[Drawing Compare AI] Error:", error);
+      res.status(500).json({ error: error.message || "Gặp sự cố khi thực hiện đối chiếu bản vẽ bằng AI." });
     }
   });
 

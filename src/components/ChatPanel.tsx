@@ -397,6 +397,17 @@ export function ChatPanel({
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [selectedGeneralDocIds, setSelectedGeneralDocIds] = useState<string[]>([]);
   const [showDocSelectorInGeneral, setShowDocSelectorInGeneral] = useState(false);
+  const [compareDrawingSummary, setCompareDrawingSummary] = useState<string>("");
+  const [compareDrawingError, setCompareDrawingError] = useState<string | null>(null);
+
+  // Camera capture states and options menu
+  const [showCameraMenuId, setShowCameraMenuId] = useState<"rag" | "specific" | null>(null);
+  const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+  const [cameraFacingMode, setCameraFacingMode] = useState<"user" | "environment">("user");
+  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
+  const [activeDeviceId, setActiveDeviceId] = useState<string>("");
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Auto-toggle compareMode on the PDF viewer when switching tabs
   useEffect(() => {
@@ -1378,32 +1389,91 @@ export function ChatPanel({
     }
   };
 
-  const handleCompareDrawings = () => {
+  const handleCompareDrawings = async () => {
     if (!activeFile || !compareWithFileId) return;
-    setIsComparingAI?.(true);
-    setCompareStage?.("Đang tải hai bản vẽ & Phân tích cấu trúc hình học...");
     
-    setTimeout(() => {
-      setCompareStage?.("Tiến hành đối chiếu từng cặp tọa độ Vector/Pixel bằng AI...");
-    }, 1500);
+    if (onCheckQuota) {
+      const allowed = await onCheckQuota();
+      if (!allowed) return;
+    }
 
-    setTimeout(() => {
-      setCompareStage?.("Nhận diện các chi tiết thêm mới, sửa đổi, loại bỏ...");
-    }, 3500);
+    setIsComparingAI?.(true);
+    setCompareDrawingError(null);
+    setCompareDrawingSummary("");
+    setDiffMarkers?.([]);
 
-    setTimeout(() => {
-      setCompareStage?.("Đồng bộ hóa đánh dấu trực tiếp thành công!");
-    }, 5000);
-
-    setTimeout(() => {
+    setCompareStage?.("Đang tải hai hồ sơ bản vẽ & phân tích cấu trúc...");
+    
+    try {
       const refFile = allFiles.find(f => f.id === compareWithFileId);
-      if (refFile) {
-        const markers = generateDrawingDifferences(activeFile.name, refFile.name);
-        setDiffMarkers?.(markers);
+      if (!refFile) {
+        throw new Error("Không tìm thấy tệp bản vẽ tham chiếu.");
       }
+
+      // We will prepare the payload
+      const file1Payload = {
+        id: activeFile.id,
+        name: activeFile.name,
+        url: activeFile.url,
+        text: activeFile.text || "",
+        geminiFileUri: activeFile.geminiFileUri,
+        geminiFileName: activeFile.geminiFileName,
+        uploadDate: activeFile.uploadDate
+      };
+
+      const file2Payload = {
+        id: refFile.id,
+        name: refFile.name,
+        url: refFile.url,
+        text: refFile.text || "",
+        geminiFileUri: refFile.geminiFileUri,
+        geminiFileName: refFile.geminiFileName,
+        uploadDate: refFile.uploadDate
+      };
+
+      setCompareStage?.("Đang gửi dữ liệu đến Gemini để quét sai khác...");
+
+      const response = await fetch("/api/compare-drawings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          file1: file1Payload,
+          file2: file2Payload
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Lỗi từ máy chủ đối chiếu (${response.status})`);
+      }
+
+      setCompareStage?.("Đang giải mã kết quả phân tích & lập sơ đồ đánh dấu...");
+
+      const data = await response.json();
+
+      // Proactively sync newly registered files to parent
+      if (data.newlyRegistered && data.newlyRegistered.length > 0 && onUpdateFile) {
+        for (const reg of data.newlyRegistered) {
+          await onUpdateFile(reg.fileId, {
+            geminiFileUri: reg.uri,
+            geminiFileName: reg.name,
+            isAIReady: true
+          });
+        }
+      }
+
+      setCompareDrawingSummary(data.summary || "");
+      setDiffMarkers?.(data.diffMarkers || []);
+
+    } catch (err: any) {
+      console.error("Lỗi khi đối chiếu bản vẽ:", err);
+      setCompareDrawingError(err.message || "Gặp sự cố kết nối trong quá trình so sánh bản vẽ.");
+    } finally {
       setIsComparingAI?.(false);
       setCompareStage?.("");
-    }, 6000);
+    }
   };
 
   const handleComplianceExecution = async () => {
@@ -1862,6 +1932,184 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
   const removeAttachedPdf = () => {
     setAttachedPdf(null);
     setUploadPdfError(null);
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardItems = e.clipboardData?.items;
+    if (!clipboardItems) return;
+
+    for (let i = 0; i < clipboardItems.length; i++) {
+      const item = clipboardItems[i];
+      if (item.type.indexOf("image") !== -1) {
+        // It is an image file!
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            setSelectedImage(reader.result as string);
+            setAttachedPdf(null); // Clear PDF
+            setUploadPdfError(null);
+          };
+          reader.readAsDataURL(file);
+          break;
+        }
+      } else if (item.type === "application/pdf") {
+        const file = item.getAsFile();
+        if (file) {
+          e.preventDefault();
+          setIsUploadingPdf(true);
+          setUploadPdfError(null);
+          setSelectedImage(null);
+          try {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const response = await fetch(getApiUrl("/api/extract-pdf"), {
+              method: "POST",
+              body: formData,
+            });
+
+            if (!response.ok) {
+              const errMsg = await response.text();
+              throw new Error(errMsg || `Lỗi tải lên PDF (${response.status})`);
+            }
+
+            const data = await response.json();
+            setAttachedPdf({
+              name: file.name || "pasted-document.pdf",
+              text: data.text || "",
+              geminiFileUri: data.geminiFileUri || undefined
+            });
+          } catch (err: any) {
+            console.error("Lỗi trích xuất PDF trực tiếp từ paste:", err);
+            setUploadPdfError(err.message || "Không thể nạp và đọc file PDF này.");
+          } finally {
+            setIsUploadingPdf(false);
+          }
+          break;
+        }
+      }
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      if (file.type.startsWith("image/")) {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setSelectedImage(reader.result as string);
+          setAttachedPdf(null);
+          setUploadPdfError(null);
+        };
+        reader.readAsDataURL(file);
+      } else if (file.type === "application/pdf") {
+        setIsUploadingPdf(true);
+        setUploadPdfError(null);
+        setSelectedImage(null);
+        try {
+          const formData = new FormData();
+          formData.append("file", file);
+
+          const response = await fetch(getApiUrl("/api/extract-pdf"), {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!response.ok) {
+            const errMsg = await response.text();
+            throw new Error(errMsg || `Lỗi tải lên PDF (${response.status})`);
+          }
+
+          const data = await response.json();
+          setAttachedPdf({
+            name: file.name,
+            text: data.text || "",
+            geminiFileUri: data.geminiFileUri || undefined
+          });
+        } catch (err: any) {
+          console.error("Lỗi trích xuất PDF từ drag-drop:", err);
+          setUploadPdfError(err.message || "Không thể nạp và đọc file PDF này.");
+        } finally {
+          setIsUploadingPdf(false);
+        }
+      }
+    }
+  };
+
+  const startCamera = async (facingModeOrDeviceId?: string) => {
+    try {
+      setIsCameraModalOpen(true);
+      if (cameraStream) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+      }
+
+      const constraints: MediaStreamConstraints = {
+        video: facingModeOrDeviceId 
+          ? (facingModeOrDeviceId.length > 20 
+              ? { deviceId: { exact: facingModeOrDeviceId } } 
+              : { facingMode: facingModeOrDeviceId as any })
+          : { facingMode: cameraFacingMode }
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      setCameraStream(stream);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+
+      // Fetch all video devices to allow switching
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter((device) => device.kind === "videoinput");
+      setCameraDevices(videoDevices);
+      
+      // Update active device ID
+      const activeTrack = stream.getVideoTracks()[0];
+      if (activeTrack) {
+        const settings = activeTrack.getSettings();
+        if (settings.deviceId) {
+          setActiveDeviceId(settings.deviceId);
+        }
+      }
+    } catch (err) {
+      console.error("Không thể mở Camera:", err);
+      alert("Không thể truy cập camera. Vui lòng cấp quyền truy cập camera hoặc kiểm tra thiết bị của bạn.");
+    }
+  };
+
+  const stopCamera = () => {
+    if (cameraStream) {
+      cameraStream.getTracks().forEach((track) => track.stop());
+      setCameraStream(null);
+    }
+    setIsCameraModalOpen(false);
+  };
+
+  const capturePhoto = () => {
+    if (videoRef.current) {
+      const video = videoRef.current;
+      const canvas = document.createElement("canvas");
+      canvas.width = video.videoWidth || 640;
+      canvas.height = video.videoHeight || 480;
+      
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        // Draw the video frame to the canvas
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        setSelectedImage(dataUrl);
+        setAttachedPdf(null); // Clear PDF
+        setUploadPdfError(null);
+        stopCamera();
+      }
+    }
   };
 
   const handleExtract = async () => {
@@ -2501,8 +2749,15 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                   <span className="px-2.5 py-1 bg-emerald-50 text-emerald-600 border border-emerald-100 text-[8px] font-black uppercase tracking-wider rounded-md shrink-0">BẢN CHỈNH SỬA</span>
                 </div>
 
+                {/* Error Display if any */}
+                {compareDrawingError && (
+                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs font-semibold text-rose-800 leading-relaxed animate-in fade-in duration-300">
+                    ⚠️ {compareDrawingError}
+                  </div>
+                )}
+
                 {/* Setup or AI Compare trigger */}
-                {diffMarkers.length === 0 && !isComparingAI && (
+                {diffMarkers.length === 0 && !compareDrawingSummary && !isComparingAI && (
                   <div className="bg-white border border-gray-100 rounded-[32px] p-6 shadow-sm space-y-5 animate-in fade-in duration-300">
                     <div>
                       <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.15em] mb-2">
@@ -2555,7 +2810,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 )}
 
                 {/* Visual diff markers listed */}
-                {diffMarkers.length > 0 && !isComparingAI && (
+                {(diffMarkers.length > 0 || compareDrawingSummary) && !isComparingAI && (
                   <div className="space-y-6 animate-in fade-in duration-500">
                     {/* View Controller / Layer settings */}
                     <div className="bg-[#161822] text-white border border-white/5 rounded-[32px] p-5 shadow-lg space-y-4">
@@ -2568,6 +2823,8 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           onClick={() => {
                             setDiffMarkers?.([]);
                             setCompareWithFileId?.("");
+                            setCompareDrawingSummary("");
+                            setCompareDrawingError(null);
                           }}
                           className="text-[9px] font-black text-rose-400 hover:text-rose-300 uppercase tracking-widest bg-rose-500/10 border border-rose-500/25 px-2.5 py-1 rounded-lg"
                         >
@@ -2618,6 +2875,21 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         </div>
                       )}
                     </div>
+
+                    {/* AI-Generated Comparison Summary Report */}
+                    {compareDrawingSummary && (
+                      <div className="bg-[#fcfdff] border border-indigo-100 rounded-[28px] p-5 shadow-xs space-y-3">
+                        <div className="flex items-center gap-2 pb-2 border-b border-indigo-50">
+                          <span className="text-base">📋</span>
+                          <span className="text-[10px] font-black uppercase text-indigo-950 tracking-wider">BÁO CÁO SAI KHÁC & ĐỊNH HƯỚNG KỸ THUẬT</span>
+                        </div>
+                        <div className="text-xs text-gray-700 leading-relaxed font-medium prose max-w-none markdown-body text-justify">
+                          <ReactMarkdown>
+                            {compareDrawingSummary}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Diff Filters */}
                     <div className="bg-white border border-gray-150/40 rounded-2xl p-2.5 shadow-sm flex gap-1">
@@ -3188,7 +3460,11 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                   </div>
 
                   {/* Central Prominent Input box */}
-                  <div className="bg-white border border-gray-200 rounded-[24px] p-4 shadow-xl shadow-indigo-500/5 transition-all focus-within:ring-2 focus-within:ring-indigo-150 focus-within:border-indigo-600/50 hover:border-gray-350 flex flex-col gap-2 relative">
+                  <div 
+                    onDragOver={handleDragOver}
+                    onDrop={handleDrop}
+                    className="bg-white border border-gray-200 rounded-[24px] p-4 shadow-xl shadow-indigo-500/5 transition-all focus-within:ring-2 focus-within:ring-indigo-150 focus-within:border-indigo-600/50 hover:border-gray-350 flex flex-col gap-2 relative"
+                  >
                     <textarea
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
@@ -3198,6 +3474,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           handleSend();
                         }
                       }}
+                      onPaste={handlePaste}
                       placeholder="Nhập câu hỏi kỹ thuật (Ví dụ: Quy định chiều dày lớp bê tông bảo vệ cốt thép dầm sàn hay khoảng cách an toàn PCCC, mật độ xây dựng)..."
                       className="w-full bg-transparent border-none py-1.5 px-1 text-sm sm:text-base font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-28 placeholder:text-gray-400 text-gray-800"
                     />
@@ -3233,13 +3510,55 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     )}
                     <div className="flex items-center justify-between pt-2 border-t border-gray-50/50">
                       <div className="flex items-center gap-3">
-                        <button
-                          onClick={() => fileInputRef.current?.click()}
-                          className="p-2 bg-slate-50 text-slate-500 hover:text-indigo-600 rounded-full hover:bg-slate-100/80 transition-all flex items-center justify-center cursor-pointer"
-                          title="Tải đính kèm hình ảnh hoặc file PDF"
-                        >
-                          <Camera className="w-4 h-4" />
-                        </button>
+                        <div className="relative">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowCameraMenuId(showCameraMenuId === "rag" ? null : "rag");
+                            }}
+                            className="p-2 bg-slate-50 text-slate-500 hover:text-indigo-600 rounded-full hover:bg-slate-100/80 transition-all flex items-center justify-center cursor-pointer"
+                            title="Tải đính kèm hoặc Chụp ảnh"
+                          >
+                            <Camera className="w-4 h-4" />
+                          </button>
+                          
+                          {showCameraMenuId === "rag" && (
+                            <>
+                              <div 
+                                className="fixed inset-0 z-40 cursor-default" 
+                                onClick={() => setShowCameraMenuId(null)}
+                              />
+                              <div className="absolute left-0 bottom-11 w-56 bg-white border border-gray-200 rounded-2xl shadow-xl p-2 z-50 flex flex-col gap-1 text-slate-700 font-sans animate-in fade-in slide-in-from-bottom-2 duration-200">
+                                <button
+                                  onClick={() => {
+                                    setShowCameraMenuId(null);
+                                    fileInputRef.current?.click();
+                                  }}
+                                  className="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-50 rounded-xl text-left text-xs font-bold transition-all cursor-pointer w-full text-slate-700"
+                                >
+                                  <FileText className="w-4 h-4 text-slate-500 shrink-0" />
+                                  <div className="flex flex-col">
+                                    <span className="text-slate-800">Tải tệp từ thiết bị</span>
+                                    <span className="text-[9.5px] font-normal text-slate-400 font-medium">Chọn file ảnh hoặc PDF</span>
+                                  </div>
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setShowCameraMenuId(null);
+                                    startCamera();
+                                  }}
+                                  className="flex items-center gap-2.5 px-3 py-2 hover:bg-indigo-50 hover:text-indigo-950 rounded-xl text-left text-xs font-bold transition-all cursor-pointer w-full text-slate-700"
+                                >
+                                  <Camera className="w-4 h-4 text-indigo-600 shrink-0" />
+                                  <div className="flex flex-col">
+                                    <span className="text-slate-800">Chụp ảnh từ Camera</span>
+                                    <span className="text-[9.5px] font-normal text-slate-400 font-medium">Sử dụng webcam của bạn</span>
+                                  </div>
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
                         {selectedImage && (
                           <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-gray-200 shadow-sm">
                             <img src={selectedImage} alt="Preview" className="w-full h-full object-cover" />
@@ -4397,7 +4716,12 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           ) : (
             /* Main compact bottom input area */
             <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-[#f4f7fa] via-[#f4f7fa]/90 to-transparent pointer-events-none flex flex-col z-20 animate-in slide-in-from-bottom-4 duration-300">
-              <div ref={composerContainerRef} className="bg-white border border-gray-250/80 rounded-2xl p-2 shadow-lg shadow-indigo-100/10 focus-within:ring-2 focus-within:ring-indigo-100 transition-all font-sans flex flex-col gap-1.5 pointer-events-auto">
+              <div 
+                ref={composerContainerRef} 
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
+                className="bg-white border border-gray-250/80 rounded-2xl p-2 shadow-lg shadow-indigo-100/10 focus-within:ring-2 focus-within:ring-indigo-100 transition-all font-sans flex flex-col gap-1.5 pointer-events-auto"
+              >
                 {selectedImage && (
                   <div className="px-2 pt-1 flex flex-wrap gap-1.5 animate-in fade-in duration-200">
                     <div className="relative w-11 h-11 rounded-lg overflow-hidden border border-gray-150 shadow-sm group">
@@ -4450,18 +4774,61 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       handleSend();
                     }
                   }}
+                  onPaste={handlePaste}
                   placeholder="Đặt câu hỏi tra cứu, tìm thông số chuẩn..."
                   className="w-full bg-transparent border-none py-1.5 px-3 text-xs sm:text-sm font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-10 text-gray-800 placeholder:text-gray-400 no-scrollbar overflow-y-auto leading-normal"
                 />
                 <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100">
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
-                      title="Thêm hình ảnh hoặc file PDF để đọc phân tích"
-                    >
-                      <Camera className="w-4 h-4" />
-                    </button>
+                    <div className="relative">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowCameraMenuId(showCameraMenuId === "specific" ? null : "specific");
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
+                        title="Thêm hình ảnh hoặc file PDF để đọc phân tích"
+                      >
+                        <Camera className="w-4 h-4" />
+                      </button>
+                      
+                      {showCameraMenuId === "specific" && (
+                        <>
+                          <div 
+                            className="fixed inset-0 z-40 cursor-default" 
+                            onClick={() => setShowCameraMenuId(null)}
+                          />
+                          <div className="absolute left-0 bottom-8 w-56 bg-white border border-gray-200 rounded-2xl shadow-xl p-2 z-50 flex flex-col gap-1 text-slate-700 font-sans animate-in fade-in slide-in-from-bottom-2 duration-200">
+                            <button
+                              onClick={() => {
+                                setShowCameraMenuId(null);
+                                fileInputRef.current?.click();
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-50 rounded-xl text-left text-xs font-bold transition-all cursor-pointer w-full text-slate-700"
+                            >
+                              <FileText className="w-4 h-4 text-slate-500 shrink-0" />
+                              <div className="flex flex-col">
+                                <span className="text-slate-800">Tải tệp từ thiết bị</span>
+                                <span className="text-[9.5px] font-normal text-slate-400 font-medium">Chọn file ảnh hoặc PDF</span>
+                              </div>
+                            </button>
+                            <button
+                              onClick={() => {
+                                setShowCameraMenuId(null);
+                                startCamera();
+                              }}
+                              className="flex items-center gap-2.5 px-3 py-2 hover:bg-indigo-50 hover:text-indigo-950 rounded-xl text-left text-xs font-bold transition-all cursor-pointer w-full text-slate-700"
+                            >
+                              <Camera className="w-4 h-4 text-indigo-600 shrink-0" />
+                              <div className="flex flex-col">
+                                <span className="text-slate-800">Chụp ảnh từ Camera</span>
+                                <span className="text-[9.5px] font-normal text-slate-400 font-medium">Sử dụng webcam của bạn</span>
+                              </div>
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
                     <span className="text-[8px] text-gray-400 font-extrabold uppercase tracking-widest">
                       🔍 Global Engine
                     </span>
@@ -4811,6 +5178,98 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Lưu Ghi Chú</span>
               </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Camera Capture Modal */}
+      {isCameraModalOpen && createPortal(
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[9999] p-4 animate-in fade-in duration-300">
+          <div className="bg-white rounded-[32px] overflow-hidden w-full max-w-xl shadow-2xl flex flex-col border border-slate-100 animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-6 py-4.5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-slate-800">
+                <Camera className="w-5 h-5 text-indigo-600 animate-pulse" />
+                <span className="font-extrabold text-xs uppercase tracking-wider">Chụp ảnh trực tiếp từ Camera</span>
+              </div>
+              <button 
+                onClick={stopCamera} 
+                className="p-1.5 hover:bg-slate-200/70 text-slate-500 hover:text-slate-700 rounded-full cursor-pointer transition-all"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            
+            {/* Camera Feed Screen */}
+            <div className="bg-slate-950 aspect-video relative flex items-center justify-center overflow-hidden">
+              <video 
+                ref={videoRef}
+                autoPlay 
+                playsInline 
+                muted 
+                className="w-full h-full object-cover transform -scale-x-100" 
+              />
+              {/* Overlay guidelines box */}
+              <div className="absolute inset-6 border border-white/20 rounded-2xl pointer-events-none flex items-center justify-center">
+                <div className="text-[10px] text-white/45 bg-black/40 font-bold uppercase tracking-widest px-3 py-1 rounded-full">
+                  Khung căn chỉnh tài liệu / chi tiết bản vẽ
+                </div>
+              </div>
+            </div>
+            
+            {/* Camera Control panel */}
+            <div className="p-6 bg-slate-50 border-t border-slate-100 flex flex-col gap-4">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                {/* Device switches or Facing switch */}
+                {cameraDevices.length > 1 ? (
+                  <select
+                    value={activeDeviceId}
+                    onChange={(e) => {
+                      const newDeviceId = e.target.value;
+                      setActiveDeviceId(newDeviceId);
+                      startCamera(newDeviceId);
+                    }}
+                    className="bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-150"
+                  >
+                    {cameraDevices.map((device, idx) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || `Camera ${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <button
+                    onClick={() => {
+                      const nextMode = cameraFacingMode === "user" ? "environment" : "user";
+                      setCameraFacingMode(nextMode);
+                      startCamera(nextMode);
+                    }}
+                    className="px-3 py-2 bg-white hover:bg-slate-100 border border-slate-250 rounded-xl text-xs font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer transition-all"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Đổi Camera ({cameraFacingMode === "user" ? "Trước" : "Sau"})</span>
+                  </button>
+                )}
+                
+                {/* Capture button and cancel */}
+                <div className="flex items-center gap-3 ml-auto">
+                  <button
+                    onClick={stopCamera}
+                    className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Hủy bỏ
+                  </button>
+                  <button
+                    onClick={capturePhoto}
+                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-indigo-600/15 transition-all cursor-pointer"
+                  >
+                    <Camera className="w-4 h-4 fill-white/10" />
+                    <span>Chụp & Sử dụng</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>,

@@ -1,6 +1,6 @@
 {
   "name": "StandardCloud",
   "description": "Ứng dụng phân tích PDF thông minh với AI, hỗ trợ trích xuất dữ liệu theo schema và quản lý tài liệu nội bộ.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
