@@ -25,6 +25,7 @@ export interface Message {
   content: string;
   timestamp: number;
   image?: string;
+  isThinking?: boolean;
 }
 
 export interface PDFFile {

@@ -4,8 +4,8 @@ import {
   Send, Zap, ListFilter, Save, CheckCircle2, 
   AlertCircle, Loader2, Copy, Maximize2, Download,
   Plus, Trash2, Settings, Sparkles, X, LayoutGrid,
-  Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, Minimize2, BookOpen, FileText, Camera, Languages,
-  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen, List
+  Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, Minimize2, BookOpen, FileText, Languages, Paperclip,
+  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen, List, Brain
 } from "lucide-react";
 import pptxgen from "pptxgenjs";
 import ReactMarkdown from "react-markdown";
@@ -400,14 +400,7 @@ export function ChatPanel({
   const [compareDrawingSummary, setCompareDrawingSummary] = useState<string>("");
   const [compareDrawingError, setCompareDrawingError] = useState<string | null>(null);
 
-  // Camera capture states and options menu
-  const [showCameraMenuId, setShowCameraMenuId] = useState<"rag" | "specific" | null>(null);
-  const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
-  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
-  const [cameraFacingMode, setCameraFacingMode] = useState<"user" | "environment">("user");
-  const [cameraDevices, setCameraDevices] = useState<MediaDeviceInfo[]>([]);
-  const [activeDeviceId, setActiveDeviceId] = useState<string>("");
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+
 
   // Auto-toggle compareMode on the PDF viewer when switching tabs
   useEffect(() => {
@@ -2044,73 +2037,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
     }
   };
 
-  const startCamera = async (facingModeOrDeviceId?: string) => {
-    try {
-      setIsCameraModalOpen(true);
-      if (cameraStream) {
-        cameraStream.getTracks().forEach((track) => track.stop());
-      }
 
-      const constraints: MediaStreamConstraints = {
-        video: facingModeOrDeviceId 
-          ? (facingModeOrDeviceId.length > 20 
-              ? { deviceId: { exact: facingModeOrDeviceId } } 
-              : { facingMode: facingModeOrDeviceId as any })
-          : { facingMode: cameraFacingMode }
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      setCameraStream(stream);
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-
-      // Fetch all video devices to allow switching
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter((device) => device.kind === "videoinput");
-      setCameraDevices(videoDevices);
-      
-      // Update active device ID
-      const activeTrack = stream.getVideoTracks()[0];
-      if (activeTrack) {
-        const settings = activeTrack.getSettings();
-        if (settings.deviceId) {
-          setActiveDeviceId(settings.deviceId);
-        }
-      }
-    } catch (err) {
-      console.error("Không thể mở Camera:", err);
-      alert("Không thể truy cập camera. Vui lòng cấp quyền truy cập camera hoặc kiểm tra thiết bị của bạn.");
-    }
-  };
-
-  const stopCamera = () => {
-    if (cameraStream) {
-      cameraStream.getTracks().forEach((track) => track.stop());
-      setCameraStream(null);
-    }
-    setIsCameraModalOpen(false);
-  };
-
-  const capturePhoto = () => {
-    if (videoRef.current) {
-      const video = videoRef.current;
-      const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        // Draw the video frame to the canvas
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-        setSelectedImage(dataUrl);
-        setAttachedPdf(null); // Clear PDF
-        setUploadPdfError(null);
-        stopCamera();
-      }
-    }
-  };
 
   const handleExtract = async () => {
     setExtractStatus("loading");
@@ -3510,55 +3437,13 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     )}
                     <div className="flex items-center justify-between pt-2 border-t border-gray-50/50">
                       <div className="flex items-center gap-3">
-                        <div className="relative">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowCameraMenuId(showCameraMenuId === "rag" ? null : "rag");
-                            }}
-                            className="p-2 bg-slate-50 text-slate-500 hover:text-indigo-600 rounded-full hover:bg-slate-100/80 transition-all flex items-center justify-center cursor-pointer"
-                            title="Tải đính kèm hoặc Chụp ảnh"
-                          >
-                            <Camera className="w-4 h-4" />
-                          </button>
-                          
-                          {showCameraMenuId === "rag" && (
-                            <>
-                              <div 
-                                className="fixed inset-0 z-40 cursor-default" 
-                                onClick={() => setShowCameraMenuId(null)}
-                              />
-                              <div className="absolute left-0 bottom-11 w-56 bg-white border border-gray-200 rounded-2xl shadow-xl p-2 z-50 flex flex-col gap-1 text-slate-700 font-sans animate-in fade-in slide-in-from-bottom-2 duration-200">
-                                <button
-                                  onClick={() => {
-                                    setShowCameraMenuId(null);
-                                    fileInputRef.current?.click();
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-50 rounded-xl text-left text-xs font-bold transition-all cursor-pointer w-full text-slate-700"
-                                >
-                                  <FileText className="w-4 h-4 text-slate-500 shrink-0" />
-                                  <div className="flex flex-col">
-                                    <span className="text-slate-800">Tải tệp từ thiết bị</span>
-                                    <span className="text-[9.5px] font-normal text-slate-400 font-medium">Chọn file ảnh hoặc PDF</span>
-                                  </div>
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setShowCameraMenuId(null);
-                                    startCamera();
-                                  }}
-                                  className="flex items-center gap-2.5 px-3 py-2 hover:bg-indigo-50 hover:text-indigo-950 rounded-xl text-left text-xs font-bold transition-all cursor-pointer w-full text-slate-700"
-                                >
-                                  <Camera className="w-4 h-4 text-indigo-600 shrink-0" />
-                                  <div className="flex flex-col">
-                                    <span className="text-slate-800">Chụp ảnh từ Camera</span>
-                                    <span className="text-[9.5px] font-normal text-slate-400 font-medium">Sử dụng webcam của bạn</span>
-                                  </div>
-                                </button>
-                              </div>
-                            </>
-                          )}
-                        </div>
+                        <button
+                          onClick={() => fileInputRef.current?.click()}
+                          className="p-2 bg-slate-50 text-slate-500 hover:text-indigo-600 rounded-full hover:bg-slate-100/80 transition-all flex items-center justify-center cursor-pointer"
+                          title="Tải tệp đính kèm hình ảnh hoặc PDF"
+                        >
+                          <Paperclip className="w-4 h-4" />
+                        </button>
                         {selectedImage && (
                           <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-gray-200 shadow-sm">
                             <img src={selectedImage} alt="Preview" className="w-full h-full object-cover" />
@@ -4780,58 +4665,44 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 />
                 <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100">
                   <div className="flex items-center gap-2">
-                    <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
+                      title="Thêm hình ảnh hoặc file PDF để đọc phân tích"
+                    >
+                      <Paperclip className="w-4 h-4" />
+                    </button>
+                    <div className="flex items-center gap-1 bg-gray-100/90 p-0.5 rounded-lg border border-gray-200/60">
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowCameraMenuId(showCameraMenuId === "specific" ? null : "specific");
-                        }}
-                        className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
-                        title="Thêm hình ảnh hoặc file PDF để đọc phân tích"
+                        type="button"
+                        onClick={() => setAiMode("standard")}
+                        className={cn(
+                          "px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1",
+                          aiMode === "standard"
+                            ? "bg-white text-indigo-700 shadow-sm border border-gray-200/50 font-black"
+                            : "text-gray-500 hover:text-gray-800"
+                        )}
+                        title="Gemini 3.5 Flash - Trả lời nhanh"
                       >
-                        <Camera className="w-4 h-4" />
+                        <Zap className="w-3 h-3 text-amber-500" />
+                        <span>Nhanh</span>
                       </button>
-                      
-                      {showCameraMenuId === "specific" && (
-                        <>
-                          <div 
-                            className="fixed inset-0 z-40 cursor-default" 
-                            onClick={() => setShowCameraMenuId(null)}
-                          />
-                          <div className="absolute left-0 bottom-8 w-56 bg-white border border-gray-200 rounded-2xl shadow-xl p-2 z-50 flex flex-col gap-1 text-slate-700 font-sans animate-in fade-in slide-in-from-bottom-2 duration-200">
-                            <button
-                              onClick={() => {
-                                setShowCameraMenuId(null);
-                                fileInputRef.current?.click();
-                              }}
-                              className="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-50 rounded-xl text-left text-xs font-bold transition-all cursor-pointer w-full text-slate-700"
-                            >
-                              <FileText className="w-4 h-4 text-slate-500 shrink-0" />
-                              <div className="flex flex-col">
-                                <span className="text-slate-800">Tải tệp từ thiết bị</span>
-                                <span className="text-[9.5px] font-normal text-slate-400 font-medium">Chọn file ảnh hoặc PDF</span>
-                              </div>
-                            </button>
-                            <button
-                              onClick={() => {
-                                setShowCameraMenuId(null);
-                                startCamera();
-                              }}
-                              className="flex items-center gap-2.5 px-3 py-2 hover:bg-indigo-50 hover:text-indigo-950 rounded-xl text-left text-xs font-bold transition-all cursor-pointer w-full text-slate-700"
-                            >
-                              <Camera className="w-4 h-4 text-indigo-600 shrink-0" />
-                              <div className="flex flex-col">
-                                <span className="text-slate-800">Chụp ảnh từ Camera</span>
-                                <span className="text-[9.5px] font-normal text-slate-400 font-medium">Sử dụng webcam của bạn</span>
-                              </div>
-                            </button>
-                          </div>
-                        </>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => setAiMode("thinking")}
+                        className={cn(
+                          "px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1",
+                          aiMode === "thinking"
+                            ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white shadow-sm font-black"
+                            : "text-gray-500 hover:text-gray-800"
+                        )}
+                        title="Bật Gemini 3.1 Pro (High Thinking) - Phân tích & Suy nghĩ sâu"
+                      >
+                        <Brain className={cn("w-3 h-3", aiMode === "thinking" ? "text-purple-200 animate-pulse" : "text-purple-500")} />
+                        <span>Suy nghĩ sâu (High Thinking)</span>
+                      </button>
                     </div>
-                    <span className="text-[8px] text-gray-400 font-extrabold uppercase tracking-widest">
-                      🔍 Global Engine
-                    </span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <button
@@ -4858,8 +4729,14 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           {/* Elegant floating overlay dialog for easy popup queries */}
           {isComposerExpanded && (
             <QuickComposerOverlay
-              onSend={(text, image) => {
-                onSendMessage(text, image || undefined, mode === "general_chat", mode === "general_chat" ? selectedGeneralDocIds : undefined);
+              onSend={(text, image, isThinkingVal) => {
+                onSendMessage(
+                  text, 
+                  image || undefined, 
+                  mode === "general_chat", 
+                  mode === "general_chat" ? selectedGeneralDocIds : undefined,
+                  isThinkingVal
+                );
                 setIsComposerExpanded(false);
               }}
               onClose={() => setIsComposerExpanded(false)}
@@ -5184,98 +5061,6 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
         document.body
       )}
 
-      {/* Camera Capture Modal */}
-      {isCameraModalOpen && createPortal(
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md flex items-center justify-center z-[9999] p-4 animate-in fade-in duration-300">
-          <div className="bg-white rounded-[32px] overflow-hidden w-full max-w-xl shadow-2xl flex flex-col border border-slate-100 animate-in zoom-in-95 duration-200">
-            {/* Modal Header */}
-            <div className="px-6 py-4.5 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-              <div className="flex items-center gap-2 text-slate-800">
-                <Camera className="w-5 h-5 text-indigo-600 animate-pulse" />
-                <span className="font-extrabold text-xs uppercase tracking-wider">Chụp ảnh trực tiếp từ Camera</span>
-              </div>
-              <button 
-                onClick={stopCamera} 
-                className="p-1.5 hover:bg-slate-200/70 text-slate-500 hover:text-slate-700 rounded-full cursor-pointer transition-all"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-            
-            {/* Camera Feed Screen */}
-            <div className="bg-slate-950 aspect-video relative flex items-center justify-center overflow-hidden">
-              <video 
-                ref={videoRef}
-                autoPlay 
-                playsInline 
-                muted 
-                className="w-full h-full object-cover transform -scale-x-100" 
-              />
-              {/* Overlay guidelines box */}
-              <div className="absolute inset-6 border border-white/20 rounded-2xl pointer-events-none flex items-center justify-center">
-                <div className="text-[10px] text-white/45 bg-black/40 font-bold uppercase tracking-widest px-3 py-1 rounded-full">
-                  Khung căn chỉnh tài liệu / chi tiết bản vẽ
-                </div>
-              </div>
-            </div>
-            
-            {/* Camera Control panel */}
-            <div className="p-6 bg-slate-50 border-t border-slate-100 flex flex-col gap-4">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                {/* Device switches or Facing switch */}
-                {cameraDevices.length > 1 ? (
-                  <select
-                    value={activeDeviceId}
-                    onChange={(e) => {
-                      const newDeviceId = e.target.value;
-                      setActiveDeviceId(newDeviceId);
-                      startCamera(newDeviceId);
-                    }}
-                    className="bg-white border border-gray-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-150"
-                  >
-                    {cameraDevices.map((device, idx) => (
-                      <option key={device.deviceId} value={device.deviceId}>
-                        {device.label || `Camera ${idx + 1}`}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <button
-                    onClick={() => {
-                      const nextMode = cameraFacingMode === "user" ? "environment" : "user";
-                      setCameraFacingMode(nextMode);
-                      startCamera(nextMode);
-                    }}
-                    className="px-3 py-2 bg-white hover:bg-slate-100 border border-slate-250 rounded-xl text-xs font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer transition-all"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Đổi Camera ({cameraFacingMode === "user" ? "Trước" : "Sau"})</span>
-                  </button>
-                )}
-                
-                {/* Capture button and cancel */}
-                <div className="flex items-center gap-3 ml-auto">
-                  <button
-                    onClick={stopCamera}
-                    className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
-                  >
-                    Hủy bỏ
-                  </button>
-                  <button
-                    onClick={capturePhoto}
-                    className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-black uppercase tracking-wider flex items-center gap-2 shadow-lg shadow-indigo-600/15 transition-all cursor-pointer"
-                  >
-                    <Camera className="w-4 h-4 fill-white/10" />
-                    <span>Chụp & Sử dụng</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
-
       {/* PowerPoint & Gamma AI Presentation Exporter Modal */}
       {pptModalData && pptModalData.isOpen && createPortal(
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
@@ -5445,7 +5230,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
 }
 
 interface QuickComposerOverlayProps {
-  onSend: (text: string, image: string | null) => void;
+  onSend: (text: string, image: string | null, isThinking?: boolean) => void;
   onClose: () => void;
   isProcessing: boolean;
 }
@@ -5457,6 +5242,7 @@ function QuickComposerOverlay({
 }: QuickComposerOverlayProps) {
   const [localInput, setLocalInput] = useState("");
   const [localImage, setLocalImage] = useState<string | null>(null);
+  const [isThinking, setIsThinking] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -5474,7 +5260,7 @@ function QuickComposerOverlay({
   const handleSend = () => {
     if (!localInput.trim() && !localImage) return;
     if (isProcessing) return;
-    onSend(localInput, localImage);
+    onSend(localInput, localImage, isThinking);
     setLocalInput("");
     setLocalImage(null);
   };
@@ -5538,7 +5324,7 @@ function QuickComposerOverlay({
               className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-all cursor-pointer"
               title="Thêm hình ảnh"
             >
-              <Camera className="w-4 h-4" />
+              <Paperclip className="w-4 h-4" />
             </button>
             <span className="text-[8px] text-gray-400 font-extrabold uppercase tracking-widest leading-none">
               AI Engine

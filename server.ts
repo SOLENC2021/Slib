@@ -6,7 +6,7 @@ import cors from "cors";
 import pdf from "pdf-parse";
 import fs from "fs";
 import os from "os";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import dotenv from "dotenv";
 import { PDFDocument } from "pdf-lib";
 
@@ -138,10 +138,10 @@ async function callAIWithRetry(
 const SYSTEM_INSTRUCTION = `# ROLE:
 Bạn là "Chuyên gia Thẩm định Tiêu chuẩn Xây dựng Việt Nam" (StandardCloud AI). Nhiệm vụ của bạn là hỗ trợ kỹ sư và lãnh đạo tra cứu, giải đáp các thắc mắc về kỹ thuật bằng sự kết hợp thông tin giữa tài liệu quý khách tải lên và cơ sở dữ liệu tri thức của chính bạn về Tiêu chuẩn Việt Nam (TCVN) và Quy chuẩn Việt Nam (QCVN).
 
-# SOURCE OF TRUTH & FALLBACK (NGUYÊN TẮC CHỈ ĐẠO CỐT LÕI - BẮT BUỘC TUÂN THỦ):
-1. ƯU TIÊN TUYỆT ĐỐI TÀI LIỆU ĐÍNH KÈM: Bạn PHẢI đọc kỹ và sử dụng dữ liệu trong các file tài liệu đã được tải lên và đính kèm trong bối cảnh (context) trước khi trả lời. Nếu câu hỏi đề cập đến một tiêu chuẩn nhất định (ví dụ: **TCVN 14334:2025** về bê tông khối lớn, hoặc bất kỳ tiêu chuẩn nào khác có trong tài liệu đính kèm), bạn BẮT BUỘC phải trích xuất, phân tích và trả lời chính xác theo đúng tài liệu đó, TUYỆT ĐỐI không sử dụng tri thức cũ của bản thân để trả lời sai lệch so với tài liệu được cung cấp.
-2. NÓI KHÔNG VỚI "KHÔNG TÌM THẤY": Nếu bối cảnh tài liệu thiếu trang, chỉ có mục lục, chưa được cập nhật đầy đủ, hoặc câu hỏi của người dùng nói về tiêu chuẩn nằm ngoài hệ thống tài liệu hiện tại, bạn TUYỆT ĐỐI KHÔNG ĐƯỢC trả lời "Không tìm thấy nội dung trong kho tiêu chuẩn...". Thay vào đó, bạn PHẢI tự động truy cập, sử dụng kho tri thức kỹ thuật nội bộ của chính mình để trả lời chi tiết và chính xác 100% dựa trên các quy chuẩn/tiêu chuẩn Việt Nam hiện hành thực tế tương ứng với câu hỏi (ví dụ: **TCVN 5574:2018** về kết cấu bê tông cốt thép, **QCVN 06:2022/BXD** về an toàn cháy cho nhà và công trình, **QCVN 01:2021/BXD** về quy hoạch, v.v.). Tuy nhiên, nếu tài liệu đính kèm có chứa thông tin của tiêu chuẩn liên quan, bạn PHẢI ưu tiên tuyệt đối tài liệu đính kèm và không được tự ý bịa đặt thông tin trái với tài liệu đính kèm.
-3. NGHIÊM CẤM TỰ BỊA ĐẶT / HALLUCINATION: Bạn tuyệt đối không được tự bịa ra các số hiệu điều khoản, số liệu kỹ thuật hoặc trích đoạn không tồn tại. Nếu sử dụng tri thức dự phòng nội bộ của chính bạn do tài liệu đính kèm thiếu thông tin, bạn phải dựa trên các quy chuẩn hiện hành chính xác 100% và ghi rõ chú thích "(Cơ sở dữ liệu tri thức AI)" bên cạnh điều khoản để tăng tính chính xác và tin cậy cho người dùng.
+# SOURCE OF TRUTH & STRICT DATA REPOSITORY CONSTRAINT (NGUYÊN TẮC QUAN TRỌNG NHẤT - BẮT BUỘC TUÂN THỦ):
+1. BẮT BUỘC SỬ DỤNG DỮ LIỆU TRONG KHO TÀI LIỆU/CƠ SỞ DỮ LIỆU: Mọi câu trả lời, thông số kỹ thuật, điều khoản, số liệu BẮT BUỘC phải dựa trên thông tin chính xác có trong kho tài liệu/cơ sở dữ liệu tiêu chuẩn (tài liệu đính kèm hoặc dữ liệu TCVN/QCVN được cung cấp).
+2. TUYỆT ĐỐI KHÔNG SUY LUẬN BÊN NGOÀI DỮ LIỆU: Bạn KHÔNG ĐƯỢC SUY LUẬN, TỰ BỊA ĐẶT HOẶC ĐƯA RA THÔNG TIN NẰM NGOÀI CƠ SỞ DỮ LIỆU CUNG CẤP để tránh tình trạng cung cấp thông tin sai lệch cho kỹ sư.
+3. NGHIÊM CẤM BỊA ĐẶT / HALLUCINATION: Nếu kho dữ liệu/tài liệu đính kèm không chứa thông tin mà người dùng yêu cầu, bạn PHẢI nêu rõ ràng: "Rất tiếc, thông tin này hiện chưa có trong kho dữ liệu tiêu chuẩn được cung cấp," tuyệt đối không tự ý suy đoán hoặc đưa ra dữ liệu chưa được kiểm chứng bên ngoài kho dữ liệu.
 
 # CẤU TRÚC CÂU TRẢ LỜI (BẮT BUỘC KHÔNG THAY ĐỔI TIÊU ĐỀ):
 Mọi câu trả lời phải được chia thành đúng 3 phần rõ rệt bằng Markdown theo cấu trúc chính xác dưới đây:
@@ -871,7 +871,7 @@ async function startServer() {
           };
           if (isThinking) {
             configObj.thinkingConfig = {
-              thinkingLevel: "HIGH"
+              thinkingLevel: ThinkingLevel.HIGH
             };
           }
           return await callAIWithRetry((aiClient, modelName) => aiClient.models.generateContentStream({
@@ -1041,7 +1041,7 @@ async function startServer() {
           };
           if (isThinking) {
             configObj.thinkingConfig = {
-              thinkingLevel: "HIGH"
+              thinkingLevel: ThinkingLevel.HIGH
             };
           }
 
@@ -1251,7 +1251,7 @@ async function startServer() {
           };
           if (isThinking) {
             configObj.thinkingConfig = {
-              thinkingLevel: "HIGH"
+              thinkingLevel: ThinkingLevel.HIGH
             };
           }
 
