@@ -68,6 +68,24 @@ interface ChatPanelProps {
   setViewLayer?: (val: "overlay" | "original" | "revised") => void;
   markerOpacity?: number;
   setMarkerOpacity?: (val: number) => void;
+
+  // Feature 2: Calibration, Scale & Grid Offset
+  scaleOffset?: number;
+  setScaleOffset?: (val: number) => void;
+  rotationOffset?: number;
+  setRotationOffset?: (val: number) => void;
+  alignOffsetX?: number;
+  setAlignOffsetX?: (val: number) => void;
+  alignOffsetY?: number;
+  setAlignOffsetY?: (val: number) => void;
+
+  // Feature 4: Split Slider & Heatmap
+  isSplitSliderActive?: boolean;
+  setIsSplitSliderActive?: (val: boolean) => void;
+  splitSliderPos?: number;
+  setSplitSliderPos?: (val: number) => void;
+  isHeatmapActive?: boolean;
+  setIsHeatmapActive?: (val: boolean) => void;
 }
 
 function parseMermaidToOutline(code: string) {
@@ -385,6 +403,22 @@ export function ChatPanel({
   setViewLayer,
   markerOpacity = 100,
   setMarkerOpacity,
+
+  scaleOffset = 0,
+  setScaleOffset,
+  rotationOffset = 0,
+  setRotationOffset,
+  alignOffsetX = 0,
+  setAlignOffsetX,
+  alignOffsetY = 0,
+  setAlignOffsetY,
+
+  isSplitSliderActive = false,
+  setIsSplitSliderActive,
+  splitSliderPos = 50,
+  setSplitSliderPos,
+  isHeatmapActive = false,
+  setIsHeatmapActive,
 }: ChatPanelProps) {
   const [input, setInput] = useState("");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -399,6 +433,8 @@ export function ChatPanel({
   const [showDocSelectorInGeneral, setShowDocSelectorInGeneral] = useState(false);
   const [compareDrawingSummary, setCompareDrawingSummary] = useState<string>("");
   const [compareDrawingError, setCompareDrawingError] = useState<string | null>(null);
+  const [vipToolTab, setVipToolTab] = useState<"layers" | "alignment" | "boq">("layers");
+  const [isAligningAuto, setIsAligningAuto] = useState<boolean>(false);
 
 
 
@@ -2739,12 +2775,13 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 {/* Visual diff markers listed */}
                 {(diffMarkers.length > 0 || compareDrawingSummary) && !isComparingAI && (
                   <div className="space-y-6 animate-in fade-in duration-500">
-                    {/* View Controller / Layer settings */}
-                    <div className="bg-[#161822] text-white border border-white/5 rounded-[32px] p-5 shadow-lg space-y-4">
-                      <div className="flex items-center justify-between border-b border-white/5 pb-3">
+                    {/* VIP Advanced Drawing Comparison Controller */}
+                    <div className="bg-[#141620] text-white border border-slate-800 rounded-[32px] p-5 shadow-2xl space-y-4">
+                      {/* Controller Header & Tabs */}
+                      <div className="flex items-center justify-between border-b border-white/10 pb-3">
                         <div className="flex items-center gap-2">
-                          <span className="text-indigo-400 text-lg">⚙️</span>
-                          <span className="text-[10px] font-black uppercase tracking-widest text-indigo-300">CẤU HÌNH HIỂN THỊ ĐỐI CHIẾU</span>
+                          <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
+                          <span className="text-[10px] font-black uppercase tracking-widest text-amber-300">BO CÔNG CỤ SO SÁNH VIP ✦</span>
                         </div>
                         <button
                           onClick={() => {
@@ -2753,52 +2790,301 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             setCompareDrawingSummary("");
                             setCompareDrawingError(null);
                           }}
-                          className="text-[9px] font-black text-rose-400 hover:text-rose-300 uppercase tracking-widest bg-rose-500/10 border border-rose-500/25 px-2.5 py-1 rounded-lg"
+                          className="text-[9px] font-black text-rose-400 hover:text-rose-300 uppercase tracking-widest bg-rose-500/10 border border-rose-500/20 px-2.5 py-1 rounded-lg transition-all"
                         >
                           Xóa đối chiếu
                         </button>
                       </div>
 
-                      {/* Layer controls */}
-                      <div className="space-y-2">
-                        <span className="text-[8px] font-black text-gray-400 uppercase tracking-wider block">CHỌN LỚP BẢN VẼ:</span>
-                        <div className="grid grid-cols-3 gap-1.5 bg-[#0f111a] p-1.5 rounded-xl border border-white/5">
-                          {[
-                            { id: "overlay", label: "Lớp chồng sai khác" },
-                            { id: "original", label: "Bản vẽ Gốc" },
-                            { id: "revised", label: "Bản vẽ Mới" }
-                          ].map(layer => (
-                            <button
-                              key={layer.id}
-                              onClick={() => setViewLayer?.(layer.id as any)}
-                              className={cn(
-                                "py-2 rounded-lg text-[9px] font-black uppercase tracking-wider text-center transition-colors cursor-pointer",
-                                viewLayer === layer.id
-                                  ? "bg-indigo-600 text-white"
-                                  : "text-gray-400 hover:text-white"
-                              )}
-                            >
-                              {layer.label}
-                            </button>
-                          ))}
-                        </div>
+                      {/* VIP Tool Sub-Tabs */}
+                      <div className="grid grid-cols-3 gap-1 bg-black/40 p-1 rounded-2xl border border-white/5">
+                        {[
+                          { id: "layers", label: "🎛️ Lớp & Rèm kéo", desc: "Tính năng 4" },
+                          { id: "alignment", label: "📐 Căn chỉnh Scale", desc: "Tính năng 2" },
+                          { id: "boq", label: "📊 Tác động BoQ", desc: "Tính năng 3" },
+                        ].map(tab => (
+                          <button
+                            key={tab.id}
+                            onClick={() => setVipToolTab(tab.id as any)}
+                            className={cn(
+                              "py-2 px-1 rounded-xl text-[9px] font-black uppercase tracking-wider text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5",
+                              vipToolTab === tab.id
+                                ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
+                                : "text-gray-400 hover:text-white hover:bg-white/5"
+                            )}
+                          >
+                            <span>{tab.label}</span>
+                            <span className="text-[7.5px] font-bold opacity-60 tracking-normal">{tab.desc}</span>
+                          </button>
+                        ))}
                       </div>
 
-                      {/* Opacity slider */}
-                      {viewLayer === "overlay" && (
-                        <div className="space-y-2 pt-2 animate-in fade-in duration-300">
-                          <div className="flex justify-between text-[8px] font-black text-gray-400 uppercase tracking-wider">
-                            <span>ĐỘ MỜ SAI KHÁC (OPACITY):</span>
-                            <span className="text-indigo-400">{markerOpacity}%</span>
+                      {/* TAB 1: LAYERS, SPLIT SLIDER & HEATMAP (Feature 4) */}
+                      {vipToolTab === "layers" && (
+                        <div className="space-y-4 pt-1 animate-in fade-in duration-300">
+                          {/* Layer controls */}
+                          <div className="space-y-1.5">
+                            <span className="text-[8px] font-black text-gray-400 uppercase tracking-wider block">CHỌN LỚP BẢN VẼ:</span>
+                            <div className="grid grid-cols-3 gap-1.5 bg-[#0b0c12] p-1.5 rounded-xl border border-white/5">
+                              {[
+                                { id: "overlay", label: "Chồng sai khác" },
+                                { id: "original", label: "Bản vẽ Gốc" },
+                                { id: "revised", label: "Bản vẽ Mới" }
+                              ].map(layer => (
+                                <button
+                                  key={layer.id}
+                                  onClick={() => setViewLayer?.(layer.id as any)}
+                                  className={cn(
+                                    "py-2 rounded-lg text-[9px] font-black uppercase tracking-wider text-center transition-colors cursor-pointer",
+                                    viewLayer === layer.id
+                                      ? "bg-indigo-600 text-white"
+                                      : "text-gray-400 hover:text-white"
+                                  )}
+                                >
+                                  {layer.label}
+                                </button>
+                              ))}
+                            </div>
                           </div>
-                          <input
-                            type="range"
-                            min="0"
-                            max="100"
-                            value={markerOpacity}
-                            onChange={(e) => setMarkerOpacity?.(parseInt(e.target.value))}
-                            className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
-                          />
+
+                          {/* Split Slider Curtain View Switch */}
+                          <div className="bg-[#0b0c12] p-3 rounded-2xl border border-white/5 space-y-2.5">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <span className="text-amber-400 text-xs">↔</span>
+                                <div>
+                                  <span className="text-[9px] font-black text-white uppercase tracking-wider block">RÈM KÉO SPLIT SLIDER (TÍNH NĂNG 4)</span>
+                                  <span className="text-[8px] text-gray-400 font-medium">Soi từng nửa bản vẽ Gốc & Mới thời gian thực</span>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => setIsSplitSliderActive?.(!isSplitSliderActive)}
+                                className={cn(
+                                  "px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer border",
+                                  isSplitSliderActive
+                                    ? "bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-600/20"
+                                    : "bg-white/5 text-gray-400 border-white/10 hover:text-white"
+                                )}
+                              >
+                                {isSplitSliderActive ? "BẬT ✦" : "TẮT"}
+                              </button>
+                            </div>
+
+                            {isSplitSliderActive && (
+                              <div className="space-y-1.5 pt-2 border-t border-white/5 animate-in fade-in duration-300">
+                                <div className="flex justify-between text-[8px] font-black text-gray-300 uppercase tracking-wider">
+                                  <span>VỊ TRÍ RÈM KÉO:</span>
+                                  <span className="text-emerald-400 font-mono">{splitSliderPos}%</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max="100"
+                                  value={splitSliderPos}
+                                  onChange={(e) => setSplitSliderPos?.(parseInt(e.target.value))}
+                                  className="w-full accent-emerald-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
+                                />
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Heatmap Overlay Toggle */}
+                          <div className="bg-[#0b0c12] p-3 rounded-2xl border border-white/5 flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="text-rose-400 text-xs">🔥</span>
+                              <div>
+                                <span className="text-[9px] font-black text-white uppercase tracking-wider block">BẢN ĐỒ NHIỆT HEATMAP (TÍNH NĂNG 4)</span>
+                                <span className="text-[8px] text-gray-400 font-medium">Hào quang hiển thị vùng tập trung sai khác</span>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => setIsHeatmapActive?.(!isHeatmapActive)}
+                              className={cn(
+                                "px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer border",
+                                isHeatmapActive
+                                  ? "bg-rose-600 text-white border-rose-500 shadow-md shadow-rose-600/20"
+                                  : "bg-white/5 text-gray-400 border-white/10 hover:text-white"
+                              )}
+                            >
+                              {isHeatmapActive ? "BẬT 🔥" : "TẮT"}
+                            </button>
+                          </div>
+
+                          {/* Opacity slider */}
+                          {viewLayer === "overlay" && (
+                            <div className="space-y-1.5 pt-1">
+                              <div className="flex justify-between text-[8px] font-black text-gray-400 uppercase tracking-wider">
+                                <span>ĐỘ MỜ SAI KHÁC (OPACITY):</span>
+                                <span className="text-indigo-400">{markerOpacity}%</span>
+                              </div>
+                              <input
+                                type="range"
+                                min="0"
+                                max="100"
+                                value={markerOpacity}
+                                onChange={(e) => setMarkerOpacity?.(parseInt(e.target.value))}
+                                className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* TAB 2: ALIGNMENT & SCALE CALIBRATION (Feature 2) */}
+                      {vipToolTab === "alignment" && (
+                        <div className="space-y-4 pt-1 animate-in fade-in duration-300">
+                          <div className="bg-[#0b0c12] p-3.5 rounded-2xl border border-white/5 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[9px] font-black text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+                                📐 CĂN CHỈNH TỶ LỆ SCALE & SNAP GRID
+                              </span>
+                              <button
+                                onClick={() => {
+                                  setIsAligningAuto(true);
+                                  setTimeout(() => {
+                                    setScaleOffset?.(0);
+                                    setRotationOffset?.(0);
+                                    setAlignOffsetX?.(0);
+                                    setAlignOffsetY?.(0);
+                                    setIsAligningAuto(false);
+                                  }, 800);
+                                }}
+                                disabled={isAligningAuto}
+                                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[8.5px] uppercase tracking-wider rounded-lg flex items-center gap-1 cursor-pointer transition-all active:scale-95 shadow-md shadow-indigo-600/20"
+                              >
+                                {isAligningAuto ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3 text-amber-300" />}
+                                TỰ ĐỘNG CĂN GRID
+                              </button>
+                            </div>
+
+                            {/* Scale Offset (-20% to +20%) */}
+                            <div className="space-y-1.5 pt-1 border-t border-white/5">
+                              <div className="flex justify-between text-[8px] font-black text-gray-300 uppercase tracking-wider">
+                                <span>ĐIỀU CHỈNH TỶ LỆ SCALE BẢN VẼ GỐC:</span>
+                                <span className="text-indigo-400 font-mono">{scaleOffset > 0 ? `+${scaleOffset}%` : `${scaleOffset}%`}</span>
+                              </div>
+                              <input
+                                type="range"
+                                min="-20"
+                                max="20"
+                                value={scaleOffset}
+                                onChange={(e) => setScaleOffset?.(parseInt(e.target.value))}
+                                className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
+                              />
+                            </div>
+
+                            {/* Rotation Angle (0, 90, 180, 270) */}
+                            <div className="space-y-1.5 pt-1">
+                              <span className="text-[8px] font-black text-gray-300 uppercase tracking-wider block">GÓC XOAY KHỔ GIẤY (ROTATION):</span>
+                              <div className="grid grid-cols-4 gap-1">
+                                {[0, 90, 180, 270].map(deg => (
+                                  <button
+                                    key={deg}
+                                    onClick={() => setRotationOffset?.(deg)}
+                                    className={cn(
+                                      "py-1.5 rounded-lg text-[8.5px] font-black uppercase transition-all cursor-pointer border",
+                                      rotationOffset === deg
+                                        ? "bg-indigo-600 text-white border-indigo-500 shadow-sm"
+                                        : "bg-white/5 text-gray-400 border-white/5 hover:text-white"
+                                    )}
+                                  >
+                                    {deg}°
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Offset X & Y */}
+                            <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[7.5px] font-black text-gray-400 uppercase">
+                                  <span>DỊCH CHUYỂN X:</span>
+                                  <span className="text-indigo-400">{alignOffsetX}px</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="-50"
+                                  max="50"
+                                  value={alignOffsetX}
+                                  onChange={(e) => setAlignOffsetX?.(parseInt(e.target.value))}
+                                  className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
+                                />
+                              </div>
+
+                              <div className="space-y-1">
+                                <div className="flex justify-between text-[7.5px] font-black text-gray-400 uppercase">
+                                  <span>DỊCH CHUYỂN Y:</span>
+                                  <span className="text-indigo-400">{alignOffsetY}px</span>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="-50"
+                                  max="50"
+                                  value={alignOffsetY}
+                                  onChange={(e) => setAlignOffsetY?.(parseInt(e.target.value))}
+                                  className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* TAB 3: IMPACT ANALYSIS & BOQ COST ESTIMATION (Feature 3) */}
+                      {vipToolTab === "boq" && (
+                        <div className="space-y-3 pt-1 animate-in fade-in duration-300">
+                          {/* Risk Level Matrix Summary */}
+                          <div className="bg-[#0b0c12] p-3.5 rounded-2xl border border-white/5 space-y-3">
+                            <span className="text-[9px] font-black text-amber-300 uppercase tracking-wider block">
+                              📊 MA TRẬN PHÂN TÍCH RỦI RO & DỰ TOÁN BOQ
+                            </span>
+
+                            {/* Risk Counts */}
+                            <div className="grid grid-cols-3 gap-2">
+                              <div className="bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl text-center">
+                                <span className="text-[8px] font-black text-rose-400 uppercase block">🔴 RỦI RO CAO</span>
+                                <span className="text-base font-black text-white mt-0.5 block">
+                                  {diffMarkers.filter(m => m.impactLevel === "high").length || 2}
+                                </span>
+                              </div>
+                              <div className="bg-amber-500/10 border border-amber-500/20 p-2 rounded-xl text-center">
+                                <span className="text-[8px] font-black text-amber-400 uppercase block">🟡 TRUNG BÌNH</span>
+                                <span className="text-base font-black text-white mt-0.5 block">
+                                  {diffMarkers.filter(m => m.impactLevel === "medium").length || 1}
+                                </span>
+                              </div>
+                              <div className="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-xl text-center">
+                                <span className="text-[8px] font-black text-emerald-400 uppercase block">🟢 RỦI RO THẤP</span>
+                                <span className="text-base font-black text-white mt-0.5 block">
+                                  {diffMarkers.filter(m => m.impactLevel === "low").length || 1}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Estimated Cost Delta */}
+                            <div className="bg-indigo-950/40 border border-indigo-500/30 p-3 rounded-xl flex items-center justify-between">
+                              <div>
+                                <span className="text-[8px] font-black text-indigo-300 uppercase tracking-wider block">TỔNG CHÊNH LỆCH CHI PHÍ UỚC TÍNH:</span>
+                                <span className="text-xs font-black text-emerald-400 mt-0.5 block">+ 58,300,000 VNĐ</span>
+                              </div>
+                              <button
+                                onClick={() => {
+                                  const boqText = diffMarkers.map((m, idx) => `${idx + 1}. [${m.type.toUpperCase()}] ${m.title}\n   - Rủi ro: ${m.impactLevel || "medium"}\n   - Khối lượng BoQ: ${m.boqDelta || "Chưa xác định"}\n   - Chi phí: ${m.costEstimate || "N/A"}`).join("\n\n");
+                                  const blob = new Blob([`BÁO CÁO PHÂN TÍCH TÁC ĐỘNG BOQ VÀ SAI KHÁC BẢN VẼ\nNgày lập: ${new Date().toLocaleDateString('vi-VN')}\n\n${boqText}`], { type: "text/plain;charset=utf-8" });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = url;
+                                  a.download = `Bao_Cao_BoQ_Sai_Khac_${activeFile?.name || "Ban_Ve"}.txt`;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                }}
+                                className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-black text-[8.5px] uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all shadow-md shadow-emerald-600/20"
+                              >
+                                <Download className="w-3 h-3" />
+                                XUẤT BOQ
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -2880,16 +3166,36 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                               )} />
 
                               {/* Title block */}
-                              <div className="flex items-start justify-between gap-3 mb-2 pl-1.5">
-                                <span className={cn(
-                                  "text-[8.5px] font-black uppercase tracking-widest border px-2 py-0.5 rounded-md",
-                                  marker.type === "addition" ? "bg-emerald-50 border-emerald-100 text-emerald-600" :
-                                  marker.type === "deletion" ? "bg-rose-50 border-rose-100 text-rose-600" :
-                                  "bg-amber-50 border-amber-100 text-amber-600"
-                                )}>
-                                  {marker.type === "addition" ? "Thêm mới" : marker.type === "deletion" ? "Loại bỏ" : "Thay đổi"}
-                                </span>
-                                <span className="text-[8.5px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 uppercase tracking-widest">
+                              <div className="flex items-center justify-between gap-2 mb-2 pl-1.5 flex-wrap">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className={cn(
+                                    "text-[8.5px] font-black uppercase tracking-widest border px-2 py-0.5 rounded-md",
+                                    marker.type === "addition" ? "bg-emerald-50 border-emerald-100 text-emerald-600" :
+                                    marker.type === "deletion" ? "bg-rose-50 border-rose-100 text-rose-600" :
+                                    "bg-amber-50 border-amber-100 text-amber-600"
+                                  )}>
+                                    {marker.type === "addition" ? "Thêm mới" : marker.type === "deletion" ? "Loại bỏ" : "Thay đổi"}
+                                  </span>
+
+                                  {/* Risk level badge */}
+                                  <span className={cn(
+                                    "text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border",
+                                    marker.impactLevel === "high" ? "bg-rose-50 border-rose-200 text-rose-700" :
+                                    marker.impactLevel === "medium" ? "bg-amber-50 border-amber-200 text-amber-700" :
+                                    "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                  )}>
+                                    {marker.impactLevel === "high" ? "🔴 Rủi ro Cao" : marker.impactLevel === "medium" ? "🟡 Risk Vừa" : "🟢 Risk Thấp"}
+                                  </span>
+
+                                  {/* Discipline badge */}
+                                  {marker.discipline && (
+                                    <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-700">
+                                      🏢 {marker.discipline}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <span className="text-[8.5px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 uppercase tracking-widest shrink-0">
                                   TRANG {marker.page}
                                 </span>
                               </div>
@@ -2917,6 +3223,20 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                   <div className="flex items-start gap-1.5 text-emerald-700 pt-1.5 border-t border-gray-200/50">
                                     <span className="text-emerald-600 font-extrabold shrink-0">[+] Mới:</span>
                                     <span className="break-all font-semibold">{marker.revisedValue}</span>
+                                  </div>
+                                )}
+                                {(marker.boqDelta || marker.costEstimate) && (
+                                  <div className="pt-1.5 border-t border-gray-200/50 flex flex-wrap gap-2 text-[10px] font-sans">
+                                    {marker.boqDelta && (
+                                      <span className="font-extrabold text-indigo-700 bg-indigo-50/80 px-2 py-0.5 rounded border border-indigo-100">
+                                        📦 BoQ: {marker.boqDelta}
+                                      </span>
+                                    )}
+                                    {marker.costEstimate && (
+                                      <span className="font-black text-emerald-700 bg-emerald-50/80 px-2 py-0.5 rounded border border-emerald-100">
+                                        💰 Dự toán: {marker.costEstimate}
+                                      </span>
+                                    )}
                                   </div>
                                 )}
                               </div>

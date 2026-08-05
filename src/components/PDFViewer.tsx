@@ -177,6 +177,10 @@ export interface DiffMarker {
   originalValue?: string;
   revisedValue?: string;
   ruleReference?: string;
+  impactLevel?: "high" | "medium" | "low";
+  discipline?: "architecture" | "structural" | "mep" | "pccc" | "other";
+  boqDelta?: string;
+  costEstimate?: string;
 }
 
 // Custom mock difference generator based on file context
@@ -205,6 +209,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Dầm D4 (220x500 mm) - Thép dọc 3Φ20 + 2Φ18",
         revisedValue: "Dầm D4 (220x600 mm) - Cường hóa Thép dọc 4Φ22 + 2Φ20",
         ruleReference: "TCVN 5574:2018 - Khoản 5.2.3 về cường độ chịu uốn dầm sàn bê tông",
+        impactLevel: "high",
+        discipline: "structural",
+        boqDelta: "+ 1.25 m³ Bê tông M300, + 85 kg Thép CB400-V",
+        costEstimate: "+ 12,800,000 VNĐ"
       },
       {
         id: "diff-kc-2",
@@ -216,6 +224,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Cốt thép đai Φ6a150 thông dụng",
         revisedValue: "Cốt đai Φ8a100 gia cường khoảng gối dầm (Nén khép hẹp)",
         ruleReference: "TCVN 2737:2023 - Yêu cầu thiết kế tải trọng gió động cấu kiện",
+        impactLevel: "medium",
+        discipline: "structural",
+        boqDelta: "+ 32 kg Thép đai Φ8 CB240-T",
+        costEstimate: "+ 2,800,000 VNĐ"
       },
       {
         id: "diff-kc-3",
@@ -227,6 +239,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Dầm phụ nổi DX (150x250 mm) liên kết dầm biên chính",
         revisedValue: "Loại bỏ dầm biên phụ (Cấp sàn dốc chịu lực trực tiếp chịu tải)",
         ruleReference: "Bản vẽ sàn kết cấu bê tông khu phụ điều chỉnh",
+        impactLevel: "high",
+        discipline: "structural",
+        boqDelta: "- 0.95 m³ Bê tông B25, - 68 kg Thép CB300-V",
+        costEstimate: "- 8,400,000 VNĐ"
       },
       {
         id: "diff-kc-4",
@@ -238,6 +254,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Lớp bảo vệ dầm dày 25 mm",
         revisedValue: "Lớp bảo vệ dầm tăng cường dày 35 mm (Kháng xâm thực sun-fat)",
         ruleReference: "TCVN 5574:2018 - Tiêu chuẩn chống mòn hóa học móng ngầm bệ cột",
+        impactLevel: "low",
+        discipline: "structural",
+        boqDelta: "+ 0.35 m³ Bê tông lót kháng xâm thực",
+        costEstimate: "+ 1,500,000 VNĐ"
       }
     ];
   }
@@ -254,6 +274,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Hành lang kỹ thuật rộng 1.200 mm",
         revisedValue: "Hành lang mở rộng thông thủy đạt 1.600 mm (Đạt tiêu chuẩn)",
         ruleReference: "QCVN 06:2022/BXD - Bảng 4, Khoản 3.2.1 về kích thước thoát nạn",
+        impactLevel: "high",
+        discipline: "pccc",
+        boqDelta: "+ 12.5 m² Vách thạch cao chống cháy 2 mặt 120 phút",
+        costEstimate: "+ 18,200,000 VNĐ"
       },
       {
         id: "diff-pccc-2",
@@ -265,6 +289,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Vách mở tự do không cửa bảo vệ sảnh thang",
         revisedValue: "Cửa thép chống khói tự khép chặn khói độc đạt chuẩn EI 60",
         ruleReference: "QCVN 06:2022/BXD - Điều 3.2.4 về cấu kiện chống lan khói buồng sảnh",
+        impactLevel: "high",
+        discipline: "pccc",
+        boqDelta: "+ 02 Bộ Cửa thép bọc kính chống cháy EI 60 (1200x2200mm)",
+        costEstimate: "+ 34,000,000 VNĐ"
       },
       {
         id: "diff-pccc-3",
@@ -276,6 +304,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Cửa gỗ mở quay hướng ngược chiều dòng người (Mở quay vào)",
         revisedValue: "Điều chỉnh bản lề mở quay hướng ra sảnh hành lang thoát nạn (Mở quay ra)",
         ruleReference: "QCVN 06:2022/BXD - Khoản 3.2.8 quy định hướng mở cánh sảnh phòng hội thảo",
+        impactLevel: "medium",
+        discipline: "pccc",
+        boqDelta: "Điều chỉnh hướng bản lề & khóa thanh thoát hiểm Panic hardware",
+        costEstimate: "+ 2,100,000 VNĐ"
       }
     ];
   }
@@ -292,6 +324,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Không có sảnh phân phối khí dương độc lập",
         revisedValue: "Đường ống dẫn khí tươi sảnh cấp gió tươi liên hồi Φ300",
         ruleReference: "TCVN 5687:2010 - Tiêu chuẩn Thiết kế Thông gió và Điều hòa",
+        impactLevel: "medium",
+        discipline: "mep",
+        boqDelta: "+ 28 md Ống gió tôn mạ kẽm Φ300 + Bọc bảo ôn B1",
+        costEstimate: "+ 22,500,000 VNĐ"
       },
       {
         id: "diff-mep-2",
@@ -303,6 +339,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Cáp lõi đồng thường Cu/XLPE/PVC (4x16 mm2)",
         revisedValue: "Cáp đồng bọc giáp chống cháy chuyên dụng Cu/FR-XLPE/PVC (4x25 mm2)",
         ruleReference: "TCVN 9206:2012 - Thiết kế điện công trình dân dụng công cộng",
+        impactLevel: "high",
+        discipline: "mep",
+        boqDelta: "+ 65 md Cáp đồng chống cháy Cu/FR-XLPE/PVC 4x25mm²",
+        costEstimate: "+ 19,800,000 VNĐ"
       },
       {
         id: "diff-mep-3",
@@ -314,6 +354,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
         originalValue: "Hố ga ga đúc âm sàn kích thước 500x500x600 mm",
         revisedValue: "Điều chỉnh dốc sàn chảy tràn thoát trực tiếp ga hông ngoài biên",
         ruleReference: "Quy chuẩn cấp thoát nước mạng lưới ngoài nhà biên",
+        impactLevel: "low",
+        discipline: "mep",
+        boqDelta: "- 01 Hố ga đúc sẵn + Phễu thu inox 304",
+        costEstimate: "- 4,500,000 VNĐ"
       }
     ];
   }
@@ -330,6 +374,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
       originalValue: "Lối vào WC chật hẹp, cửa đi thông thủy rộng 750 mm",
       revisedValue: "Nới sảnh lùi, mở rộng WC, cửa đi thông thủy rộng 900 mm (Đạt chuẩn tiện ích)",
       ruleReference: "TCVN 4391:2015 - Quy chuẩn thiết kế công trình tiếp cận cho người khuyết tật",
+      impactLevel: "medium",
+      discipline: "architecture",
+      boqDelta: "+ 8.5 m² Vách thạch cao chống ẩm + 01 Bộ Cửa gỗ An Cường 900x2200mm",
+      costEstimate: "+ 11,200,000 VNĐ"
     },
     {
       id: "diff-arch-2",
@@ -341,6 +389,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
       originalValue: "Đại sảnh thông sàn không vách ngăn cố định",
       revisedValue: "Hệ vách kính lùa gấp trượt xếp đa năng (Độ cách âm âm tần đạt 38dB)",
       ruleReference: "Bản vẽ chi tiết thiết kế nội thất trang trí hành lang",
+      impactLevel: "high",
+      discipline: "architecture",
+      boqDelta: "+ 18 m² Vách kính xếp lùa khung nhôm Xingfa cách âm 12mm",
+      costEstimate: "+ 42,500,000 VNĐ"
     },
     {
       id: "diff-arch-3",
@@ -352,6 +404,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
       originalValue: "Hệ bồn đúc bồn hoa bê tông đổ bùn dày 150 mm đè biên lô-gia",
       revisedValue: "Thay bằng lan can sắt CNC uốn mỹ thuật gọn nhẹ, đặt bậu hoa chậu tháo lắp rời",
       ruleReference: "TCVN 2737:2023 - Hướng dẫn tối ưu phân bố tĩnh tải dầm biên công-xôn rìa ngoài",
+      impactLevel: "medium",
+      discipline: "architecture",
+      boqDelta: "- 1.8 m³ Bê tông đúc bồn hoa + 12 md Lan can sắt CNC sơn tĩnh điện",
+      costEstimate: "- 6,800,000 VNĐ"
     },
     {
       id: "diff-arch-4",
@@ -363,6 +419,10 @@ function generateDrawingDifferences(activeName: string, refName: string): DiffMa
       originalValue: "Cửa mở quay hướng ra ngoài hành lang sảnh dầm dập",
       revisedValue: "Cửa quay mở hướng quay vào trong sảnh phòng kho nội thất",
       ruleReference: "Bản vẽ quy chuẩn bố trí lỗ mở kỹ thuật sảnh tầng",
+      impactLevel: "low",
+      discipline: "architecture",
+      boqDelta: "Đảo hướng lề khung cửa gỗ chống cháy 900x2100mm",
+      costEstimate: "+ 800,000 VNĐ"
     }
   ];
 }
@@ -398,6 +458,24 @@ interface PDFViewerProps {
   setViewLayer?: (val: "overlay" | "original" | "revised") => void;
   markerOpacity?: number;
   setMarkerOpacity?: (val: number) => void;
+
+  // Feature 2: Auto Alignment, Scale Calibration & Grid Offset
+  scaleOffset?: number;
+  setScaleOffset?: (val: number) => void;
+  rotationOffset?: number;
+  setRotationOffset?: (val: number) => void;
+  alignOffsetX?: number;
+  setAlignOffsetX?: (val: number) => void;
+  alignOffsetY?: number;
+  setAlignOffsetY?: (val: number) => void;
+
+  // Feature 4: Split Slider Curtain View & Heatmap
+  isSplitSliderActive?: boolean;
+  setIsSplitSliderActive?: (val: boolean) => void;
+  splitSliderPos?: number;
+  setSplitSliderPos?: (val: number) => void;
+  isHeatmapActive?: boolean;
+  setIsHeatmapActive?: (val: boolean) => void;
 }
 
 export function PDFViewer({ 
@@ -430,6 +508,22 @@ export function PDFViewer({
   setViewLayer,
   markerOpacity = 100,
   setMarkerOpacity,
+
+  scaleOffset = 0,
+  setScaleOffset,
+  rotationOffset = 0,
+  setRotationOffset,
+  alignOffsetX = 0,
+  setAlignOffsetX,
+  alignOffsetY = 0,
+  setAlignOffsetY,
+
+  isSplitSliderActive = false,
+  setIsSplitSliderActive,
+  splitSliderPos = 50,
+  setSplitSliderPos,
+  isHeatmapActive = false,
+  setIsHeatmapActive,
 }: PDFViewerProps) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
@@ -927,13 +1021,19 @@ export function PDFViewer({
                   key={`${file.id}-page-${pageNo}`} 
                   pdfDoc={pdfDocRef.current} 
                   pageNo={pageNo} 
-                  scale={scale}
+                  scale={scale * (1 + (scaleOffset || 0) / 100)}
                   diffMarkers={pageMarkers}
                   activeMarkerId={activeMarkerId}
                   hoveredMarkerId={hoveredMarkerId}
                   onSelectMarker={selectMarker}
                   onHoverMarker={setHoveredMarkerId}
                   opacity={markerOpacity}
+                  rotationOffset={rotationOffset}
+                  alignOffsetX={alignOffsetX}
+                  alignOffsetY={alignOffsetY}
+                  isSplitSliderActive={isSplitSliderActive}
+                  splitSliderPos={splitSliderPos}
+                  isHeatmapActive={isHeatmapActive}
                 />
               );
             })
@@ -1009,7 +1109,13 @@ function PDFPage({
   hoveredMarkerId,
   onSelectMarker,
   onHoverMarker,
-  opacity
+  opacity,
+  rotationOffset = 0,
+  alignOffsetX = 0,
+  alignOffsetY = 0,
+  isSplitSliderActive = false,
+  splitSliderPos = 50,
+  isHeatmapActive = false
 }: { 
   pdfDoc: any, 
   pageNo: number, 
@@ -1019,7 +1125,13 @@ function PDFPage({
   hoveredMarkerId?: string | null,
   onSelectMarker: (markerId: string) => void,
   onHoverMarker: (markerId: string | null) => void,
-  opacity: number
+  opacity: number,
+  rotationOffset?: number,
+  alignOffsetX?: number,
+  alignOffsetY?: number,
+  isSplitSliderActive?: boolean,
+  splitSliderPos?: number,
+  isHeatmapActive?: boolean
 }) {
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1121,10 +1233,66 @@ function PDFPage({
       className="relative group transition-all duration-500"
       style={{ minHeight: rendered ? undefined : `${estimatedHeight}px` }}
     >
-      {/* Page Content */}
-      <div className="shadow-[0_32px_128px_-16px_rgba(0,0,0,0.6)] rounded-sm bg-white overflow-hidden transition-all duration-300 ring-1 ring-black/5 relative">
+      {/* Page Content with Calibration transform */}
+      <div 
+        className="shadow-[0_32px_128px_-16px_rgba(0,0,0,0.6)] rounded-sm bg-white overflow-hidden transition-all duration-300 ring-1 ring-black/5 relative"
+        style={{
+          transform: `rotate(${rotationOffset}deg) translate(${alignOffsetX}px, ${alignOffsetY}px)`,
+          transformOrigin: "center center"
+        }}
+      >
         <canvas ref={canvasRef} className="max-w-full h-auto block" style={{ display: rendered ? "block" : "none" }} />
         
+        {/* Heatmap Overlay (Feature 4) */}
+        {rendered && isHeatmapActive && diffMarkers.map(marker => (
+          <div
+            key={`heatmap-${marker.id}`}
+            style={{
+              position: "absolute",
+              left: `${marker.boundingBox.x - 5}%`,
+              top: `${marker.boundingBox.y - 5}%`,
+              width: `${marker.boundingBox.width + 10}%`,
+              height: `${marker.boundingBox.height + 10}%`,
+            }}
+            className="rounded-full bg-gradient-to-r from-rose-500/40 via-amber-500/30 to-emerald-500/20 blur-xl animate-pulse pointer-events-none z-0"
+          />
+        ))}
+
+        {/* Split Slider Curtain View Overlay (Feature 4) */}
+        {rendered && isSplitSliderActive && (
+          <div 
+            className="absolute inset-0 pointer-events-none z-20 overflow-hidden"
+          >
+            {/* Split Vertical Line */}
+            <div 
+              className="absolute top-0 bottom-0 w-1 bg-amber-400 shadow-[0_0_15px_rgba(251,191,36,0.9)] transition-all"
+              style={{ left: `${splitSliderPos}%` }}
+            >
+              <div className="absolute top-1/2 -translate-y-1/2 -left-3 w-7 h-7 bg-amber-400 rounded-full flex items-center justify-center text-black font-black text-xs shadow-xl border-2 border-white">
+                ↔
+              </div>
+            </div>
+
+            {/* Tint Overlay for Gốc vs Mới side */}
+            <div 
+              className="absolute top-0 bottom-0 left-0 bg-indigo-950/15 backdrop-hue-rotate-15 border-r border-amber-400/50"
+              style={{ width: `${splitSliderPos}%` }}
+            >
+              <span className="absolute top-4 left-4 bg-black/80 text-white font-black text-[9px] uppercase tracking-widest px-2.5 py-1 rounded-md border border-white/10">
+                📄 BẢN VẼ GỐC
+              </span>
+            </div>
+            <div 
+              className="absolute top-0 bottom-0 right-0 bg-emerald-950/10"
+              style={{ width: `${100 - splitSliderPos}%` }}
+            >
+              <span className="absolute top-4 right-4 bg-emerald-950/90 text-emerald-300 font-black text-[9px] uppercase tracking-widest px-2.5 py-1 rounded-md border border-emerald-500/30">
+                ✦ BẢN VẼ MỚI
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Render overlay markers absolutely positioned on top of drawing canvas */}
         {rendered && diffMarkers.map(marker => {
           const isActive = activeMarkerId === marker.id;
@@ -1169,21 +1337,39 @@ function PDFPage({
               </div>
 
               {/* Floating Tooltip displaying on Hover */}
-              <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-950/95 backdrop-blur-md px-3 py-2 rounded-2xl border border-white/10 text-white font-sans text-[10px] leading-relaxed max-w-[200px] w-48 text-left opacity-0 pointer-events-none group-hover/marker:opacity-100 transition-all duration-350 shadow-2xl z-30">
-                <span className={cn(
-                  "font-black uppercase text-[8px] tracking-widest block mb-0.5",
-                  marker.type === "addition" ? "text-emerald-400" :
-                  marker.type === "deletion" ? "text-rose-400" :
-                  "text-amber-400"
-                )}>
-                  {marker.type === "addition" ? "✦ Bổ sung mới" : marker.type === "deletion" ? "✘ Loại bỏ" : "✏ Thay đổi"}
-                </span>
-                <span className="font-extrabold text-white uppercase tracking-wide block">{marker.title}</span>
-                <p className="text-[9px] text-gray-400 mt-1 line-clamp-3 font-medium">
+              <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-950/95 backdrop-blur-md px-3.5 py-2.5 rounded-2xl border border-white/10 text-white font-sans text-[10px] leading-relaxed max-w-[220px] w-56 text-left opacity-0 pointer-events-none group-hover/marker:opacity-100 transition-all duration-350 shadow-2xl z-30 space-y-1">
+                <div className="flex items-center justify-between gap-1">
+                  <span className={cn(
+                    "font-black uppercase text-[8px] tracking-widest block",
+                    marker.type === "addition" ? "text-emerald-400" :
+                    marker.type === "deletion" ? "text-rose-400" :
+                    "text-amber-400"
+                  )}>
+                    {marker.type === "addition" ? "✦ Bổ sung mới" : marker.type === "deletion" ? "✘ Loại bỏ" : "✏ Thay đổi"}
+                  </span>
+                  {marker.impactLevel && (
+                    <span className={cn(
+                      "text-[7.5px] font-black uppercase px-1.5 py-0.2 rounded border",
+                      marker.impactLevel === "high" ? "bg-rose-500/20 text-rose-300 border-rose-500/40" :
+                      marker.impactLevel === "medium" ? "bg-amber-500/20 text-amber-300 border-amber-500/40" :
+                      "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                    )}>
+                      {marker.impactLevel === "high" ? "🔴 Risk Cao" : marker.impactLevel === "medium" ? "🟡 Risk Vừa" : "🟢 Risk Thấp"}
+                    </span>
+                  )}
+                </div>
+                <span className="font-extrabold text-white uppercase tracking-wide block leading-tight">{marker.title}</span>
+                <p className="text-[9px] text-gray-300 line-clamp-3 font-medium">
                   {marker.description}
                 </p>
+                {marker.boqDelta && (
+                  <div className="pt-1 border-t border-white/10 flex justify-between text-[8px] font-mono">
+                    <span className="text-indigo-300">📦 BoQ: {marker.boqDelta}</span>
+                    {marker.costEstimate && <span className="text-emerald-300 font-bold">{marker.costEstimate}</span>}
+                  </div>
+                )}
                 {marker.ruleReference && (
-                  <span className="text-[7.5px] font-black text-indigo-400 uppercase tracking-widest mt-1.5 block">
+                  <span className="text-[7.5px] font-black text-indigo-400 uppercase tracking-widest block pt-0.5">
                     {marker.ruleReference.split(" - ")[0]}
                   </span>
                 )}

@@ -98,5 +98,9 @@ export interface DiffMarker {
   originalValue?: string;
   revisedValue?: string;
   ruleReference?: string;
+  impactLevel?: "high" | "medium" | "low";
+  discipline?: "architecture" | "structural" | "mep" | "pccc" | "other";
+  boqDelta?: string;
+  costEstimate?: string;
 }
 
