@@ -152,27 +152,5 @@ export function getApiUrl(path: string): string {
     ? path.substring(path.indexOf("/api/")) 
     : (path.startsWith("/") ? path : `/${path}`);
 
-  if (typeof window === "undefined") {
-    return cleanPath;
-  }
-
-  const hostname = window.location.hostname;
-  
-  // If running in development, preview, or container with local proxy, use relative cleanPath
-  const isDirectOrPreview = 
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname.includes("run.app") ||
-    hostname.includes("googleusercontent.com") ||
-    hostname.includes("aistudio.google") ||
-    hostname.includes("web.app") ||
-    hostname.includes("firebaseapp.com");
-
-  if (!isDirectOrPreview && cachedApiUrl) {
-    const resolvedUrl = `${cachedApiUrl}${cleanPath}`;
-    console.log(`[API Redirect] External host detected. Redirecting request: ${cleanPath} -> ${resolvedUrl}`);
-    return resolvedUrl;
-  }
-
   return cleanPath;
 }

@@ -198,8 +198,54 @@ export async function chatWithDocumentStream(
 
     return { text: fullText, upgradedFile, upgradedReferencedFiles };
   } catch (error: any) {
-    console.error("Chat with document stream error:", error);
-    throw error;
+    console.warn("Chat with document stream failed, attempting graceful fallback to standard endpoint /api/chat:", error);
+    
+    // Check if error is quota or billing related; if so, propagate immediately
+    const errMsg = String(error?.message || error || "").toLowerCase();
+    if (
+      errMsg.includes("hết hạn mức") ||
+      errMsg.includes("quota") ||
+      errMsg.includes("billing") ||
+      errMsg.includes("429")
+    ) {
+      throw error;
+    }
+
+    try {
+      const fallbackResult = await chatWithDocument(
+        text,
+        prompt,
+        history,
+        image,
+        geminiFileUri,
+        isGeneral,
+        referencedFiles,
+        fileUrl,
+        fileName,
+        fileId,
+        textUrl,
+        isThinking,
+        isImageGeneration,
+        attachedPdf
+      );
+
+      const fallbackText = typeof fallbackResult === "string" 
+        ? fallbackResult 
+        : (fallbackResult?.text || "");
+
+      if (fallbackText && onChunk) {
+        onChunk(fallbackText);
+      }
+
+      return {
+        text: fallbackText,
+        upgradedFile: (fallbackResult as any)?.upgradedFile,
+        upgradedReferencedFiles: (fallbackResult as any)?.upgradedReferencedFiles
+      };
+    } catch (fallbackError: any) {
+      console.error("Chat with document stream and fallback both failed:", fallbackError);
+      throw fallbackError || error;
+    }
   }
 }
 
