@@ -148,8 +148,6 @@ export function setDynamicApiUrl(url: string) {
 export function getApiUrl(path: string): string {
   if (!path) return "";
 
-  // Bất kể path truyền vào là link tuyệt đối từ Firestore (như cái link run.app kia)
-  // Chúng ta sẽ cắt bỏ nó, chỉ giữ lại phần tương đối bắt đầu bằng /api
   const cleanPath = path.includes("/api/") 
     ? path.substring(path.indexOf("/api/")) 
     : (path.startsWith("/") ? path : `/${path}`);
@@ -160,18 +158,18 @@ export function getApiUrl(path: string): string {
 
   const hostname = window.location.hostname;
   
-  // Kiểm tra xem có đang chạy trên localhost hoặc domain của chính AI Studio không
-  const isLocalOrDirectBackend = 
+  // If running in development, preview, or container with local proxy, use relative cleanPath
+  const isDirectOrPreview = 
     hostname === "localhost" ||
     hostname === "127.0.0.1" ||
     hostname.includes("run.app") ||
     hostname.includes("googleusercontent.com") ||
-    hostname.includes("aistudio.google");
+    hostname.includes("aistudio.google") ||
+    hostname.includes("web.app") ||
+    hostname.includes("firebaseapp.com");
 
-  // Nếu đang chạy trên static client ngoài (như Hostinger), ép buộc sử dụng URL tuyệt đối của Cloud Run backend
-  if (!isLocalOrDirectBackend) {
-    const activeBackend = cachedApiUrl || "https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app";
-    const resolvedUrl = `${activeBackend}${cleanPath}`;
+  if (!isDirectOrPreview && cachedApiUrl) {
+    const resolvedUrl = `${cachedApiUrl}${cleanPath}`;
     console.log(`[API Redirect] External host detected. Redirecting request: ${cleanPath} -> ${resolvedUrl}`);
     return resolvedUrl;
   }
