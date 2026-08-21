@@ -6,7 +6,7 @@ import {
   ZoomIn, ZoomOut, Loader2, Sparkles, Layers,
   PlusCircle, MinusCircle, Info, HelpCircle, 
   CheckCircle2, SlidersHorizontal, Sliders, Eye, EyeOff,
-  RefreshCw, ListFilter, ArrowRight
+  RefreshCw, ListFilter, ArrowRight, UploadCloud, BookOpen
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PDFFile } from "@/types";
@@ -533,6 +533,9 @@ export function PDFViewer({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [renderedPages, setRenderedPages] = useState<number[]>([]);
+  const [isDigitalMode, setIsDigitalMode] = useState<boolean>(false);
+  const [storageQuotaExceeded, setStorageQuotaExceeded] = useState<boolean>(false);
+  const localFileInputRef = useRef<HTMLInputElement>(null);
   const pdfDocRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -792,6 +795,7 @@ export function PDFViewer({
   const loadPDF = async (url: string) => {
     setLoading(true);
     setLoadError(null);
+    setStorageQuotaExceeded(false);
     setRenderedPages([]);
     
     try {
@@ -799,13 +803,31 @@ export function PDFViewer({
       const pdf = await loadingTask.promise;
       pdfDocRef.current = pdf;
       setPdfDoc(pdf);
+      setIsDigitalMode(false);
       setNumPages(pdf.numPages);
       
       const pages = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
       setRenderedPages(pages);
     } catch (error: any) {
-      console.error("PDF.js loading error:", error);
-      setLoadError(error.message || "Không thể tải tài liệu");
+      console.warn("PDF.js loading error:", error);
+      const is402 = error?.message?.includes("402") || error?.message?.includes("Unexpected server response (402)");
+      
+      if (is402) {
+        setStorageQuotaExceeded(true);
+      }
+
+      // If 402 or network error and we have file text or fallback
+      if (file && (file.text || is402)) {
+        setIsDigitalMode(true);
+        setLoadError(null);
+        const parsed = file.text ? parsePagesFromText(file.text) : {};
+        const pageKeys = Object.keys(parsed).map(Number);
+        const total = pageKeys.length > 0 ? Math.max(...pageKeys) : (file.numpages || 1);
+        setNumPages(total);
+        setRenderedPages(Array.from({ length: total }, (_, i) => i + 1));
+      } else {
+        setLoadError(error.message || "Không thể tải tài liệu");
+      }
     } finally {
       setLoading(false);
     }
@@ -959,7 +981,48 @@ export function PDFViewer({
         </div>
       </div>
 
-
+      {/* Fallback Digital Mode Banner if Cloud Storage quota reached or digital mode */}
+      {isDigitalMode && (
+        <div className="bg-gradient-to-r from-amber-500/15 via-indigo-500/15 to-emerald-500/15 border-b border-white/10 px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs z-20 shrink-0">
+          <div className="flex items-center gap-2 text-amber-200">
+            <Sparkles className="w-4 h-4 text-amber-400 shrink-0 animate-pulse" />
+            <span className="font-bold">
+              {storageQuotaExceeded 
+                ? "Tệp đám mây tạm hết hạn mức (402) • Đã tự động kích hoạt Chế độ Đọc Số hóa Kỹ thuật (Digital OCR) với đầy đủ điều khoản & tra cứu AI" 
+                : "Chế độ Đọc Số hóa Kỹ thuật (Digital View) đang hoạt động"}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <input 
+              type="file" 
+              ref={localFileInputRef} 
+              accept="application/pdf" 
+              className="hidden" 
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) {
+                  const blobUrl = URL.createObjectURL(f);
+                  loadPDF(blobUrl);
+                }
+              }} 
+            />
+            <button 
+              onClick={() => localFileInputRef.current?.click()}
+              className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-white rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer border border-white/10"
+            >
+              <UploadCloud className="w-3.5 h-3.5" />
+              <span>Mở PDF từ máy</span>
+            </button>
+            <button 
+              onClick={() => loadPDF(file.url)}
+              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold text-[10px] uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Thử lại</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Main split work area */}
       <div className="flex-1 flex overflow-hidden relative">
@@ -1034,13 +1097,15 @@ export function PDFViewer({
                   isSplitSliderActive={isSplitSliderActive}
                   splitSliderPos={splitSliderPos}
                   isHeatmapActive={isHeatmapActive}
+                  isDigitalMode={isDigitalMode}
+                  pageText={parentPageTexts[pageNo] || pageTexts[pageNo] || ""}
+                  documentTitle={file.name}
+                  searchQuery={searchQuery}
                 />
               );
             })
           )}
         </div>
-
-
       </div>
 
       {/* Floating Page Indicator */}
@@ -1115,7 +1180,11 @@ function PDFPage({
   alignOffsetY = 0,
   isSplitSliderActive = false,
   splitSliderPos = 50,
-  isHeatmapActive = false
+  isHeatmapActive = false,
+  isDigitalMode = false,
+  pageText = "",
+  documentTitle = "",
+  searchQuery = ""
 }: { 
   pdfDoc: any, 
   pageNo: number, 
@@ -1131,13 +1200,25 @@ function PDFPage({
   alignOffsetY?: number,
   isSplitSliderActive?: boolean,
   splitSliderPos?: number,
-  isHeatmapActive?: boolean
+  isHeatmapActive?: boolean,
+  isDigitalMode?: boolean,
+  pageText?: string,
+  documentTitle?: string,
+  searchQuery?: string
 }) {
   const pageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isVisible, setIsVisible] = useState(false);
   const [rendered, setRendered] = useState(false);
   const renderTaskRef = useRef<any>(null);
+
+  // In digital mode, we consider it rendered immediately
+  useEffect(() => {
+    if (isDigitalMode) {
+      setRendered(true);
+      setIsVisible(true);
+    }
+  }, [isDigitalMode]);
 
   // Use IntersectionObserver to lazy load/render pages
   useEffect(() => {
@@ -1231,7 +1312,7 @@ function PDFPage({
       ref={pageRef}
       data-page={pageNo}
       className="relative group transition-all duration-500"
-      style={{ minHeight: rendered ? undefined : `${estimatedHeight}px` }}
+      style={{ minHeight: (rendered || isDigitalMode) ? undefined : `${estimatedHeight}px` }}
     >
       {/* Page Content with Calibration transform */}
       <div 
@@ -1241,7 +1322,76 @@ function PDFPage({
           transformOrigin: "center center"
         }}
       >
-        <canvas ref={canvasRef} className="max-w-full h-auto block" style={{ display: rendered ? "block" : "none" }} />
+        {isDigitalMode ? (
+          <div 
+            style={{ width: `${scale * 620}px`, minHeight: `${scale * 880}px` }}
+            className="p-8 sm:p-12 text-slate-800 bg-[#fdfdfd] border-2 border-slate-200 relative flex flex-col justify-between select-text"
+          >
+            {/* Technical Document Header */}
+            <div>
+              <div className="flex items-center justify-between border-b-2 border-slate-800 pb-3 mb-6">
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-widest text-indigo-700 block">
+                    BẢN VẼ / TIÊU CHUẨN KỸ THUẬT SỐ HÓA
+                  </span>
+                  <h3 className="text-sm font-black text-slate-900 uppercase">
+                    {documentTitle || `Tài liệu kỹ thuật`}
+                  </h3>
+                </div>
+                <div className="text-right">
+                  <span className="text-[11px] font-black text-slate-900 bg-slate-100 px-2.5 py-1 rounded border border-slate-300">
+                    TRANG {pageNo}
+                  </span>
+                </div>
+              </div>
+
+              {/* Digital Content Area */}
+              <div className="prose prose-slate max-w-none text-xs leading-relaxed font-sans space-y-4">
+                {pageText ? (
+                  pageText.split("\n\n").map((para, pIdx) => {
+                    if (searchQuery && para.toLowerCase().includes(searchQuery.toLowerCase())) {
+                      const regex = new RegExp(`(${searchQuery})`, "gi");
+                      const parts = para.split(regex);
+                      return (
+                        <p key={pIdx} className="text-justify text-slate-700 leading-relaxed">
+                          {parts.map((pt, i) => 
+                            pt.toLowerCase() === searchQuery.toLowerCase() ? (
+                              <mark key={i} className="bg-amber-300 text-slate-900 font-bold px-0.5 rounded">
+                                {pt}
+                              </mark>
+                            ) : pt
+                          )}
+                        </p>
+                      );
+                    }
+                    return (
+                      <p key={pIdx} className="text-justify text-slate-700 leading-relaxed">
+                        {para}
+                      </p>
+                    );
+                  })
+                ) : (
+                  <div className="py-12 px-6 bg-slate-50 rounded-2xl border border-dashed border-slate-300 text-center space-y-3">
+                    <p className="text-slate-600 font-medium text-xs">
+                      📄 Nội dung kỹ thuật số hoá trang {pageNo} đang sẵn sàng cho việc tra cứu và phân tích AI.
+                    </p>
+                    <p className="text-[11px] text-slate-400">
+                      Bạn có thể đặt câu hỏi trong khung AI bên phải hoặc tải tệp PDF trực tiếp từ máy để xem chi tiết bản vẽ đồ hoạ gốc.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Technical Document Footer */}
+            <div className="border-t border-slate-200 pt-3 mt-8 flex items-center justify-between text-[9px] text-slate-400 uppercase tracking-widest font-mono">
+              <span>HỆ THỐNG QUẢN LÝ TIÊU CHUẨN & BẢN VẼ KỸ THUẬT</span>
+              <span>TRANG {pageNo} • KIỂM DUYỆT TỰ ĐỘNG</span>
+            </div>
+          </div>
+        ) : (
+          <canvas ref={canvasRef} className="max-w-full h-auto block" style={{ display: rendered ? "block" : "none" }} />
+        )}
         
         {/* Heatmap Overlay (Feature 4) */}
         {rendered && isHeatmapActive && diffMarkers.map(marker => (
