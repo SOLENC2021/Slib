@@ -222,7 +222,8 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
       console.error("Login failed:", error);
       let errorMsg = error.message || "Lỗi đăng nhập không xác định.";
       if (error.code === 'auth/unauthorized-domain') {
-        errorMsg = "Tên miền hiện tại chưa được cấp quyền truy cập trong Firebase Console (Authorized domains). Hãy thêm 'solenc2021.github.io' vào Firebase Console của bạn.";
+        const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'tên miền của bạn';
+        errorMsg = `Tên miền hiện tại (${currentHost}) chưa được thêm vào danh sách được phép đăng nhập (Authorized domains) trong Firebase Console. Hãy truy cập Firebase Console -> Authentication -> Settings -> Authorized domains và thêm "${currentHost}".`;
       } else if (error.code === 'auth/popup-blocked') {
         errorMsg = "Trình duyệt đã chặn cửa sổ Popup. Vui lòng cho phép hiện Popup để tiếp tục đăng nhập.";
       } else if (error.code === 'auth/popup-closed-by-user') {

@@ -152,5 +152,31 @@ export function getApiUrl(path: string): string {
     ? path.substring(path.indexOf("/api/")) 
     : (path.startsWith("/") ? path : `/${path}`);
 
+  if (typeof window === "undefined") {
+    return cleanPath;
+  }
+
+  const hostname = window.location.hostname;
+  
+  // When running directly on the backend container or AI studio preview dev server, use relative path
+  const isDirectOrPreview = 
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname.includes("run.app") ||
+    hostname.includes("googleusercontent.com") ||
+    hostname.includes("aistudio.google");
+
+  // When exported to an external static website (e.g. Hostinger, Vercel, Firebase hosting, custom domain),
+  // automatically route all /api/* requests to the production Cloud Run backend server.
+  if (!isDirectOrPreview) {
+    const activeBackend = 
+      cachedApiUrl || 
+      (import.meta as any).env?.VITE_BACKEND_URL || 
+      "https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app";
+      
+    const resolvedUrl = `${activeBackend}${cleanPath}`;
+    return resolvedUrl;
+  }
+
   return cleanPath;
 }
