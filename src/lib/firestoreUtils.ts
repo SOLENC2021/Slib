@@ -22,20 +22,24 @@ export function suspendFirestore(reason: string) {
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errorMessage = error instanceof Error ? error.message : String(error);
   
-  const isQuotaOrPermission = 
+  const isQuota = 
     errorMessage.toLowerCase().includes('quota') || 
     errorMessage.toLowerCase().includes('resource_exhausted') || 
+    errorMessage.toLowerCase().includes('free daily read units') ||
+    errorMessage.includes('429');
+
+  const isPermission = 
     errorMessage.toLowerCase().includes('insufficient permissions') ||
     errorMessage.toLowerCase().includes('permission') ||
     errorMessage.toLowerCase().includes('permission-denied');
 
-  if (isQuotaOrPermission) {
-    const reason = (errorMessage.toLowerCase().includes('quota') || errorMessage.toLowerCase().includes('resource_exhausted'))
-      ? "LỖI HỆ THỐNG: Hạn mức truy cập cơ sở dữ liệu Firebase Firestore đã cạn kiệt (Quota limit exceeded). Vui lòng nâng cấp gói hoặc liên hệ solenc2021@gmail.com."
+  if (isQuota || isPermission) {
+    const reason = isQuota
+      ? "Hạn mức đọc/ghi miễn phí trong ngày của Firestore đã cạn kiệt (Free daily read units exceeded). Hệ thống đã tự động chuyển sang chế độ hoạt động đệm bộ nhớ cục bộ (Local Session Fallback). Hạn mức sẽ tự động đặt lại (reset) vào ngày tiếp theo hoặc bạn có thể nâng cấp trong Firebase Console."
       : "LỖI HỆ THỐNG: Thiếu quyền truy cập cơ sở dữ liệu Firebase Firestore (Missing or insufficient permissions). Hãy kiểm tra lại file rules hoặc kiểm tra tài khoản.";
     suspendFirestore(reason);
-    console.error(`[Firestore CRITICAL] ${reason} Operation: ${operationType}, Path: ${path}`);
-    return; // Stop execution without throwing to avoid severe loop-crashing
+    console.warn(`[Firestore Status] ${reason} Operation: ${operationType}, Path: ${path}`);
+    return; // Stop execution without throwing unhandled exceptions to avoid crashing React render loops
   }
 
   // Handle other transient errors gracefully

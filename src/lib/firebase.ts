@@ -3,6 +3,7 @@ import { getAuth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { suspendFirestore } from './firestoreUtils';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -10,14 +11,25 @@ export const auth = getAuth(app);
 export const storage = getStorage(app);
 
 // Test connection CRITICAL with robust exponential backoff retry.
-async function testConnection(retries = 5, delay = 1500) {
+async function testConnection(retries = 3, delay = 1500) {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
     console.log("Firebase connection successful");
   } catch (error: any) {
     const errorMsg = error instanceof Error ? error.message : String(error);
+    const isQuota = errorMsg.toLowerCase().includes('quota') || 
+                    errorMsg.toLowerCase().includes('free daily read units') ||
+                    errorMsg.toLowerCase().includes('resource_exhausted') ||
+                    errorMsg.includes('429');
+
+    if (isQuota) {
+      const reason = "Hạn mức đọc miễn phí trong ngày của Firestore đã cạn kiệt (Free daily read units per project limit reached). Hệ thống đã tự động chuyển sang chế độ đệm cục bộ (Offline Cache Mode).";
+      console.warn(`[Firebase Quota Guard] ${reason}`);
+      suspendFirestore(reason);
+      return;
+    }
+
     const isTemporary = errorMsg.toLowerCase().includes('temporarily unavailable') ||
-                        errorMsg.toLowerCase().includes('resource_exhausted') ||
                         errorMsg.toLowerCase().includes('unavailable') ||
                         errorMsg.toLowerCase().includes('client is offline') ||
                         errorMsg.includes('500') ||

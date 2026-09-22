@@ -158,24 +158,31 @@ export function getApiUrl(path: string): string {
 
   const hostname = window.location.hostname;
   
-  // When running directly on the backend container or AI studio preview dev server, use relative path
-  const isDirectOrPreview = 
+  // All AI Studio domains (*.ai.studio, aistudio.google), Cloud Run (*.run.app), and local development
+  // run the full Express backend directly on the same origin, so ALWAYS use clean relative path.
+  const isDirectOrAiStudio = 
     hostname === "localhost" ||
     hostname === "127.0.0.1" ||
     hostname.includes("run.app") ||
-    hostname.includes("googleusercontent.com") ||
-    hostname.includes("aistudio.google");
+    hostname.includes("ai.studio") ||
+    hostname.includes("aistudio.google") ||
+    hostname.includes("googleusercontent.com");
 
-  // When exported to an external static website (e.g. Hostinger, Vercel, Firebase hosting, custom domain),
-  // automatically route all /api/* requests to the production Cloud Run backend server.
-  if (!isDirectOrPreview) {
-    const activeBackend = 
-      cachedApiUrl || 
-      (import.meta as any).env?.VITE_BACKEND_URL || 
-      "https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app";
-      
-    const resolvedUrl = `${activeBackend}${cleanPath}`;
-    return resolvedUrl;
+  if (isDirectOrAiStudio) {
+    // If there is any stale external backend url cached in localStorage, clear it
+    if (cachedApiUrl && typeof window !== "undefined") {
+      try {
+        window.localStorage.removeItem("backend_api_url");
+        cachedApiUrl = null;
+      } catch (e) {}
+    }
+    return cleanPath;
+  }
+
+  // For external pure-static hosts (like GitHub Pages solenc2021.github.io)
+  const configuredBackend = (import.meta as any).env?.VITE_BACKEND_URL || cachedApiUrl;
+  if (configuredBackend) {
+    return `${configuredBackend.replace(/\/+$/, "")}${cleanPath}`;
   }
 
   return cleanPath;

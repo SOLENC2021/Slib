@@ -760,11 +760,17 @@ async function startServer() {
 
         let upgradedReferencedFiles: any[] = [];
 
-        const buildGeneralContents = async (useFilesApi: boolean, excludedFileId?: string) => {
+        const buildGeneralContents = async (
+          useFilesApi: boolean, 
+          useAttachedPdfUri: boolean = true, 
+          isCompact: boolean = false, 
+          excludedFileId?: string
+        ) => {
           const userParts: any[] = [];
           let textContext = "";
           let filesApiCount = 0;
-          const maxFilesApi = 2; // Limit to at most 2 Files API attachments to avoid 1M token limits
+          // When attachedPdfUri is present, do NOT attach library PDF File URIs to stay strictly below 1M tokens
+          const maxFilesApi = attachedPdfUri ? 0 : 1; 
 
           for (const file of contextFiles) {
             const shouldAttemptFilesApi = useFilesApi && filesApiCount < maxFilesApi && file.id !== excludedFileId;
@@ -811,17 +817,26 @@ async function startServer() {
                 }
               }
               if (fileText) {
-                const relevantParts = retrieveRelevantChunks(fileText, prompt, 3);
-                textContext += `--- [BẮT ĐẦU TRÍCH ĐOẠN PHÙ HỢP CÔNG TRÌNH - TÀI LIỆU: ${file.name}] ---\n${relevantParts}\n--- [KẾT THÚC TRÍCH ĐOẠN - TÀI LIỆU: ${file.name}] ---\n\n`;
+                const chunksLimit = isCompact ? 2 : 3;
+                const relevantParts = retrieveRelevantChunks(fileText, prompt, chunksLimit);
+                if (relevantParts && relevantParts.trim().length > 0) {
+                  textContext += `--- [BẮT ĐẦU TRÍCH ĐOẠN PHÙ HỢP CÔNG TRÌNH - TÀI LIỆU: ${file.name}] ---\n${relevantParts}\n--- [KẾT THÚC TRÍCH ĐOẠN - TÀI LIỆU: ${file.name}] ---\n\n`;
+                }
               }
             }
+          }
+
+          // Safety budget on total RAG textContext
+          const maxTextContextLength = isCompact ? 18000 : 45000;
+          if (textContext.length > maxTextContextLength) {
+            textContext = textContext.substring(0, maxTextContextLength) + "\n...[Nội dung ngữ cảnh được tối ưu hóa độ dài]";
           }
 
           if (textContext.trim().length > 0) {
             userParts.push({ text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${textContext}` });
           }
 
-          if (attachedPdfUri) {
+          if (useAttachedPdfUri && attachedPdfUri) {
             console.log(`[Stream General RAG] Attaching user-uploaded PDF via File API: ${attachedPdfUri}`);
             userParts.push({
               fileData: {
@@ -831,8 +846,11 @@ async function startServer() {
             });
           } else if (attachedPdfText) {
             console.log(`[Stream General RAG] Attaching user-uploaded PDF via plain text: ${attachedPdfName}`);
+            const cleanAttachedText = attachedPdfText.length > 25000
+              ? retrieveRelevantChunks(attachedPdfText, prompt, isCompact ? 2 : 4)
+              : attachedPdfText;
             userParts.push({
-              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${attachedPdfText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
+              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${cleanAttachedText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
             });
           }
 
@@ -850,15 +868,17 @@ async function startServer() {
             userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên [DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN] đã được nhồi trực tiếp ở trên và kiến thức chuyên ngành. Hãy trích dẫn chuẩn xác các điều khoản kỹ thuật, số liệu, bảng biểu có trong context:\n\nYêu cầu câu hỏi kỹ thuật: ${prompt}` });
           } else {
             // If we have attached PDF text but no library RAG context, provide a context hint
-            if (attachedPdfText && !attachedPdfUri) {
+            if (attachedPdfText && (!useAttachedPdfUri || !attachedPdfUri)) {
               userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên tài liệu PDF đính kèm đã được cung cấp ở trên:\n\nYêu cầu câu hỏi: ${prompt}` });
             } else {
               userParts.push({ text: prompt });
             }
           }
 
+          const effectiveHistory = isCompact ? trimmedHistory.slice(-2) : trimmedHistory;
+
           return [
-            ...trimmedHistory,
+            ...effectiveHistory,
             {
               role: "user",
               parts: userParts
@@ -886,7 +906,7 @@ async function startServer() {
         };
 
         let streamResponse;
-        let contents = await buildGeneralContents(true);
+        let contents = await buildGeneralContents(true, true, false);
 
         try {
           streamResponse = await runStreamGeneral(contents);
@@ -894,7 +914,16 @@ async function startServer() {
           if (isUnrecoverableError(proErr)) {
             throw proErr;
           }
-          if (isGeminiFileError(proErr)) {
+          if (isTokenLimitError(proErr)) {
+            console.warn("[Auto Self-Healing General Stream] Token limit exceeded (1M tokens). Falling back to ultra-compact text-only RAG mode...");
+            try {
+              contents = await buildGeneralContents(false, false, true);
+              streamResponse = await runStreamGeneral(contents);
+            } catch (compactErr: any) {
+              console.error("[General Stream API] Compact fallback error:", compactErr);
+              throw compactErr;
+            }
+          } else if (isGeminiFileError(proErr)) {
             console.log("[Auto Self-Healing General Stream] Expired file caught. Restoring files to Gemini Files API...");
             let healSucceeded = false;
             try {
@@ -914,7 +943,7 @@ async function startServer() {
 
               if (upgradedReferencedFiles.length > 0) {
                 healSucceeded = true;
-                contents = await buildGeneralContents(true);
+                contents = await buildGeneralContents(true, true, false);
                 streamResponse = await runStreamGeneral(contents);
               }
             } catch (healErr) {
@@ -923,13 +952,33 @@ async function startServer() {
 
             if (!healSucceeded) {
               console.log("[Auto Self-Healing General Stream] Hard fallback to optimized local text parsing...");
-              contents = await buildGeneralContents(false);
-              streamResponse = await runStreamGeneral(contents);
+              contents = await buildGeneralContents(false, false, false);
+              try {
+                streamResponse = await runStreamGeneral(contents);
+              } catch (retryErr: any) {
+                if (isTokenLimitError(retryErr)) {
+                  console.warn("[General Stream API] Secondary token limit caught -> running compact RAG fallback...");
+                  contents = await buildGeneralContents(false, false, true);
+                  streamResponse = await runStreamGeneral(contents);
+                } else {
+                  throw retryErr;
+                }
+              }
             }
           } else {
             console.warn("[General Stream API] Non-file error caught, falling back to text-mode:", proErr.message || proErr);
-            contents = await buildGeneralContents(false);
-            streamResponse = await runStreamGeneral(contents);
+            try {
+              contents = await buildGeneralContents(false, false, false);
+              streamResponse = await runStreamGeneral(contents);
+            } catch (fallbackErr: any) {
+              if (isTokenLimitError(fallbackErr)) {
+                console.warn("[General Stream API] Token limit caught in text fallback -> running compact RAG mode...");
+                contents = await buildGeneralContents(false, false, true);
+                streamResponse = await runStreamGeneral(contents);
+              } else {
+                throw fallbackErr;
+              }
+            }
           }
         }
 
@@ -987,7 +1036,7 @@ async function startServer() {
           }
         }
 
-        const runStream = async (uri: string | undefined) => {
+        const runStream = async (uri: string | undefined, includeAttachedPdfUri: boolean = true, isCompact: boolean = false) => {
           const parts: any[] = [];
           if (uri) {
             parts.push({
@@ -997,11 +1046,12 @@ async function startServer() {
               }
             });
           } else if (resolvedText) {
-            const relevantParts = retrieveRelevantChunks(resolvedText, prompt, 4);
+            const chunksCount = isCompact ? 2 : 4;
+            const relevantParts = retrieveRelevantChunks(resolvedText, prompt, chunksCount);
             parts.push({ text: `[DỮ LIỆU TÀI LIỆU GỐC (RAG CHUNKS)]\n${relevantParts}\n[KẾT THÚC DỮ LIỆU TÀI LIỆU]` });
           }
 
-          if (attachedPdfUri) {
+          if (includeAttachedPdfUri && attachedPdfUri && !uri) {
             console.log(`[Stream Specific] Attaching user-uploaded PDF via File API: ${attachedPdfUri}`);
             parts.push({
               fileData: {
@@ -1011,8 +1061,11 @@ async function startServer() {
             });
           } else if (attachedPdfText) {
             console.log(`[Stream Specific] Attaching user-uploaded PDF via plain text: ${attachedPdfName}`);
+            const cleanAttached = attachedPdfText.length > 25000
+              ? retrieveRelevantChunks(attachedPdfText, prompt, isCompact ? 2 : 4)
+              : attachedPdfText;
             parts.push({
-              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${attachedPdfText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
+              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${cleanAttached}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
             });
           }
 
@@ -1026,8 +1079,10 @@ async function startServer() {
             });
           }
 
+          const effectiveHistory = isCompact ? trimmedHistory.slice(-2) : trimmedHistory;
+
           const contents = [
-            ...trimmedHistory,
+            ...effectiveHistory,
             {
               role: "user",
               parts: [
@@ -1058,12 +1113,20 @@ async function startServer() {
 
         let streamResponse;
         try {
-          streamResponse = await runStream(finalFileUri);
+          streamResponse = await runStream(finalFileUri, true, false);
         } catch (proErr: any) {
           if (isUnrecoverableError(proErr)) {
             throw proErr;
           }
-          if (isGeminiFileError(proErr) && fileUrl) {
+          if (isTokenLimitError(proErr)) {
+            console.warn("[Auto Self-Healing Stream] Token limit exceeded in specific stream. Falling back to compact text-only mode...");
+            try {
+              streamResponse = await runStream(undefined, false, true);
+            } catch (tokenErr: any) {
+              console.error("[Specific Stream] Compact fallback failed:", tokenErr);
+              throw tokenErr;
+            }
+          } else if (isGeminiFileError(proErr) && fileUrl) {
             console.log("[Auto Self-Healing Stream] Specific file error. Re-registering file on-the-fly...");
             try {
               const newReg = await reRegisterFileWithGemini(fileUrl, fileName);
@@ -1075,17 +1138,26 @@ async function startServer() {
                   geminiFileName: newReg.name
                 };
                 console.log(`[Auto Self-Healing Stream] Re-registration successful -> retrying stream...`);
-                streamResponse = await runStream(finalFileUri);
+                streamResponse = await runStream(finalFileUri, true, false);
               } else {
                 throw new Error("Blank URI returned");
               }
             } catch (reRegErr) {
               console.error("[Auto Self-Healing Stream] Re-registration retry failed. Falling back to text mode...", reRegErr);
-              streamResponse = await runStream(undefined);
+              streamResponse = await runStream(undefined, false, false);
             }
           } else {
             console.warn("[Specific Stream] Falling back to text mode due to error:", proErr.message || proErr);
-            streamResponse = await runStream(undefined);
+            try {
+              streamResponse = await runStream(undefined, false, false);
+            } catch (fallbackErr: any) {
+              if (isTokenLimitError(fallbackErr)) {
+                console.warn("[Specific Stream] Token limit in fallback -> falling back to compact text mode...");
+                streamResponse = await runStream(undefined, false, true);
+              } else {
+                throw fallbackErr;
+              }
+            }
           }
         }
 
@@ -1179,30 +1251,36 @@ async function startServer() {
       if (isGeneral) {
         console.log("Processing general chat query using gemini-3.5-flash...");
         
-        const runGeneralChat = async (filesToAttach: any[], useFileUris = false) => {
+        const runGeneralChat = async (filesToAttach: any[], useFileUris = false, isCompact = false) => {
           const userParts: any[] = [];
           
-          if (compiledContext.trim().length > 0) {
+          let safeContext = compiledContext;
+          const maxTextContextLength = isCompact ? 18000 : 45000;
+          if (safeContext.length > maxTextContextLength) {
+            safeContext = safeContext.substring(0, maxTextContextLength) + "\n...[Nội dung bối cảnh được rút gọn]";
+          }
+
+          if (safeContext.trim().length > 0) {
             userParts.push({
-              text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${compiledContext}`
+              text: `[DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN]:\n${safeContext}`
             });
           }
 
-          if (useFileUris) {
-            filesToAttach.forEach((file) => {
-              if (file.geminiFileUri) {
-                console.log(`General Chat: supplemented referencing PDF ${file.name} (URI: ${file.geminiFileUri})`);
-                userParts.push({
-                  fileData: {
-                    fileUri: file.geminiFileUri,
-                    mimeType: "application/pdf"
-                  }
-                });
-              }
-            });
+          if (useFileUris && !attachedPdfUri) {
+            // Only attach 1 library file URI if no attachedPdfUri to prevent token overflow
+            const fileToAttach = filesToAttach.find(f => f.geminiFileUri);
+            if (fileToAttach) {
+              console.log(`General Chat: supplemented referencing PDF ${fileToAttach.name} (URI: ${fileToAttach.geminiFileUri})`);
+              userParts.push({
+                fileData: {
+                  fileUri: fileToAttach.geminiFileUri,
+                  mimeType: "application/pdf"
+                }
+              });
+            }
           }
 
-          if (attachedPdfUri) {
+          if (attachedPdfUri && !isCompact) {
             console.log(`General Chat: attaching uploaded PDF via File API: ${attachedPdfUri}`);
             userParts.push({
               fileData: {
@@ -1212,8 +1290,11 @@ async function startServer() {
             });
           } else if (attachedPdfText) {
             console.log(`General Chat: attaching uploaded PDF via plain text: ${attachedPdfName}`);
+            const cleanAttached = attachedPdfText.length > 25000
+              ? retrieveRelevantChunks(attachedPdfText, prompt, isCompact ? 2 : 4)
+              : attachedPdfText;
             userParts.push({
-              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${attachedPdfText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
+              text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${cleanAttached}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
             });
           }
 
@@ -1227,18 +1308,20 @@ async function startServer() {
             });
           }
 
-          if (compiledContext.trim().length > 0 || filesToAttach.length > 0) {
+          if (safeContext.trim().length > 0 || filesToAttach.length > 0) {
             userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên [DỮ LIỆU CONTEXT THAM KHẢO CHÍNH XÁC/BỐI CẢNH TIÊU CHUẨN] đã được nhồi trực tiếp ở trên và kiến thức chuyên ngành. Hãy trích dẫn chuẩn xác các điều khoản kỹ thuật, số liệu, bảng biểu có trong context:\n\nYêu cầu câu hỏi kỹ thuật: ${prompt}` });
           } else {
-            if (attachedPdfText && !attachedPdfUri) {
+            if (attachedPdfText && (!attachedPdfUri || isCompact)) {
               userParts.push({ text: `Hãy trả lời câu hỏi sau đây dựa trên tài liệu PDF đính kèm đã được cung cấp ở trên:\n\nYêu cầu câu hỏi: ${prompt}` });
             } else {
               userParts.push({ text: prompt });
             }
           }
 
+          const effectiveHistory = isCompact ? trimmedHistory.slice(-2) : trimmedHistory;
+
           const contents = [
-            ...trimmedHistory,
+            ...effectiveHistory,
             {
               role: "user",
               parts: userParts
@@ -1388,17 +1471,13 @@ async function startServer() {
         // 4. Also restrict rich document attachments to exactly these top context files
         const attachableFiles = contextFilesToUse.filter(f => f.score > 0 || !compiledContext.trim().length);
 
-        // 5. In general chat, with text-only RAG enabled, we completely bypass full PDF fileUri on-the-fly healing
-        // because we don't need to load the full heavy documents over the Gemini File API.
-        // This avoids unnecessary network checks and gives instant results.
-
         try {
-          response = await runGeneralChat(attachableFiles, false);
+          response = await runGeneralChat(attachableFiles, false, false);
         } catch (genErr: any) {
           if (isTokenLimitError(genErr)) {
-            console.log("[Auto Self-Healing] Token limit exceeded in general chat. Falling back to text-only mode immediately...");
+            console.warn("[Auto Self-Healing] Token limit exceeded in general chat. Falling back to compact mode...");
             try {
-              response = await runGeneralChat(attachableFiles, false);
+              response = await runGeneralChat(attachableFiles, false, true);
             } catch (limitFallbackErr: any) {
               throw limitFallbackErr;
             }
@@ -1435,7 +1514,7 @@ async function startServer() {
         }
       }
 
-      const runSpecificChat = async (uri: string | undefined) => {
+      const runSpecificChat = async (uri: string | undefined, includeAttachedPdfUri = true, isCompact = false) => {
         const parts: any[] = [];
         
         // Đưa context tài liệu vào một cách rõ ràng hơn
@@ -1476,12 +1555,12 @@ async function startServer() {
 
           if (resolvedText) {
             // RAG Simulation: Segment input text and retrieve only relevant snippets
-            const relevantParts = retrieveRelevantChunks(resolvedText, prompt, 4);
+            const relevantParts = retrieveRelevantChunks(resolvedText, prompt, isCompact ? 2 : 4);
             parts.push({ text: `[DỮ LIỆU TÀI LIỆU GỐC (RAG CHUNKS)]\n${relevantParts}\n[KẾT THÚC DỮ LIỆU TÀI LIỆU]` });
           }
         }
         
-        if (attachedPdfUri) {
+        if (includeAttachedPdfUri && attachedPdfUri && !uri) {
           console.log(`[Specific Chat] Attaching user-uploaded PDF via File API: ${attachedPdfUri}`);
           parts.push({
             fileData: {
@@ -1491,8 +1570,11 @@ async function startServer() {
           });
         } else if (attachedPdfText) {
           console.log(`[Specific Chat] Attaching user-uploaded PDF via plain text: ${attachedPdfName}`);
+          const cleanAttached = attachedPdfText.length > 25000
+            ? retrieveRelevantChunks(attachedPdfText, prompt, isCompact ? 2 : 4)
+            : attachedPdfText;
           parts.push({
-            text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${attachedPdfText}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
+            text: `--- [BẮT ĐẦU NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM TRỰC TIẾP: ${attachedPdfName || "tailieu.pdf"}] ---\n${cleanAttached}\n--- [KẾT THÚC NỘI DUNG TÀI LIỆU PDF ĐÍNH KÈM] ---`
           });
         }
         
@@ -1507,8 +1589,10 @@ async function startServer() {
           });
         }
 
+        const effectiveHistory = isCompact ? trimmedHistory.slice(-2) : trimmedHistory;
+
         const contents = [
-          ...trimmedHistory,
+          ...effectiveHistory,
           {
             role: "user",
             parts: [
@@ -1526,7 +1610,7 @@ async function startServer() {
         };
         if (isThinking) {
           configObj.thinkingConfig = {
-            thinkingLevel: "HIGH"
+            thinkingLevel: ThinkingLevel.HIGH
           };
         }
 
@@ -1539,14 +1623,14 @@ async function startServer() {
 
       try {
         console.log("Attempting chat with gemini-3.5-flash using fileUri...");
-        response = await runSpecificChat(finalFileUri);
+        response = await runSpecificChat(finalFileUri, true, false);
       } catch (proErr: any) {
         if (isUnrecoverableError(proErr)) {
           throw proErr;
         }
         if (isTokenLimitError(proErr)) {
-          console.log("[Auto Self-Healing] Token limit exceeded in specific chat. Falling back to plain text RAG prompt...");
-          response = await runSpecificChat(undefined);
+          console.warn("[Auto Self-Healing] Token limit exceeded in specific chat. Falling back to compact text-only RAG prompt...");
+          response = await runSpecificChat(undefined, false, true);
         } else if (isGeminiFileError(proErr) && fileUrl) {
           console.log("[Auto Self-Healing] Gemini File error in specific chat. Re-registering file on-the-fly...");
           try {
@@ -1559,22 +1643,30 @@ async function startServer() {
                 geminiFileName: newReg.name
               };
               console.log(`[Auto Self-Healing] Re-registration successful -> new URI: ${newReg.uri}. Retrying specific chat.`);
-              response = await runSpecificChat(finalFileUri);
+              response = await runSpecificChat(finalFileUri, true, false);
             } else {
               throw new Error("Re-registration returned blank URI");
             }
           } catch (reRegErr: any) {
             if (isTokenLimitError(reRegErr)) {
-              console.log("[Auto Self-Healing] Token limit exceeded during specific chat retry. Falling back to plain text RAG prompt...");
-              response = await runSpecificChat(undefined);
+              console.warn("[Auto Self-Healing] Token limit exceeded during specific chat retry. Falling back to compact text-only RAG prompt...");
+              response = await runSpecificChat(undefined, false, true);
             } else {
               console.error("[Auto Self-Healing] Specific chat re-registration failed. Falling back to plain text prompting...", reRegErr);
-              response = await runSpecificChat(undefined);
+              response = await runSpecificChat(undefined, false, false);
             }
           }
         } else {
           console.warn("gemini-3.5-flash chat with fileUri failed. Falling back to plain text prompting...", proErr.message || proErr);
-          response = await runSpecificChat(undefined);
+          try {
+            response = await runSpecificChat(undefined, false, false);
+          } catch (fallbackErr: any) {
+            if (isTokenLimitError(fallbackErr)) {
+              response = await runSpecificChat(undefined, false, true);
+            } else {
+              throw fallbackErr;
+            }
+          }
         }
       }
 

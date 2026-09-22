@@ -246,24 +246,8 @@ export default function App() {
     loadFiles();
   }, [user, profile, viewMode, isDbSuspended, filesTrigger]);
 
-  // Self-healing: Ensure existing documents have isPublic = true so they are visible to members
-  useEffect(() => {
-    if (isFirestoreSuspended() || isDbSuspended) return;
-    const isAdminUser = profile?.role === "admin" || user?.email === "solenc2021@gmail.com";
-    if (isAdminUser && files.length > 0 && viewMode === "admin") {
-      files.forEach(async (file) => {
-        if (file.isPublic === undefined) {
-          try {
-            const docRef = doc(db, "files", file.id);
-            await updateDoc(docRef, { isPublic: true });
-            console.log(`[Self-Healing] Automatically marked file as public for members: ${file.name}`);
-          } catch (err) {
-            console.warn(`[Self-Healing] Failed to set public flag for ${file.name}:`, err);
-          }
-        }
-      });
-    }
-  }, [files, profile, user, viewMode, isDbSuspended]);
+  // Self-healing: Files already store isPublic flag on creation
+  // Bypassed eager loop to avoid consuming quota read/write units
 
   const [notes, setNotes] = useState<Note[]>(() => {
     if (typeof window !== "undefined") {
