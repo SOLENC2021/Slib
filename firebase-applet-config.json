@@ -6,5 +6,7 @@
   "firestoreDatabaseId": "ai-studio-2b5d1fc4-b77c-4748-be18-9c42d03881e3",
   "storageBucket": "thuviennoibo.firebasestorage.app",
   "messagingSenderId": "623963284867",
-  "measurementId": ""
+  "measurementId": "",
+  "oAuthClientId": "623963284867-3h4v2n259r4v95n7985i4mvk0qr4fkrj.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }

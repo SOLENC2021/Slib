@@ -66,7 +66,7 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
               const mockProfile: UserProfile = {
                 uid: firebaseUser.uid,
                 email: firebaseUser.email || '',
-                displayName: firebaseUser.displayName || (firebaseUser.isAnonymous ? 'Kỹ sư Khách' : 'Kỹ sư'),
+                displayName: firebaseUser.displayName || (firebaseUser.isAnonymous ? 'Guest' : 'Kỹ sư'),
                 photoURL: firebaseUser.photoURL || '',
                 createdAt: new Date().toISOString(),
                 role: 'user',
@@ -93,7 +93,7 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
               const newProfile: UserProfile = {
                 uid: firebaseUser.uid,
                 email: firebaseUser.email || '',
-                displayName: firebaseUser.displayName || (firebaseUser.isAnonymous ? 'Kỹ sư Khách' : 'Kỹ sư'),
+                displayName: firebaseUser.displayName || (firebaseUser.isAnonymous ? 'Guest' : 'Kỹ sư'),
                 photoURL: firebaseUser.photoURL || '',
                 createdAt: new Date().toISOString(),
                 role: 'user',
@@ -205,7 +205,7 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
 
             const guestUser: any = {
               uid: guestId,
-              displayName: "Kỹ sư Khách",
+              displayName: "Guest",
               email: "",
               photoURL: "",
               isAnonymous: true
@@ -214,7 +214,7 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
             setProfile({
               uid: guestId,
               email: "",
-              displayName: "Kỹ sư Khách",
+              displayName: "Guest",
               photoURL: "",
               createdAt: new Date().toISOString(),
               role: "user",

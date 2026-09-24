@@ -1198,35 +1198,60 @@ export default function App() {
             {isAiPanelOpen ? "ẨN PHÂN TÍCH AI ✦" : "HIỂN THỊ TRUY VẤN AI ✦"}
           </button>
 
-          <div className="flex flex-col items-end">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-black text-gray-700">
-                {user?.displayName || "Kỹ sư Khách"}
-              </span>
-              <div className="w-9 h-9 rounded-full bg-gray-200 border-2 border-white shadow-xs overflow-hidden shrink-0">
-                <img 
-                  src={user?.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.displayName || "Ky su")}&background=4f46e5&color=fff`} 
-                  alt="Avatar" 
-                  className="w-full h-full object-cover" 
-                />
+          {/* Account / Mode Widget */}
+          {user && !user.isAnonymous && user.email ? (
+            <div className="flex items-center gap-3 pl-3 border-l border-gray-250/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-full ring-2 ring-indigo-500/20 shadow-xs overflow-hidden shrink-0">
+                  <img 
+                    src={user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName || user.email)}&background=4f46e5&color=fff`} 
+                    alt="Avatar" 
+                    className="w-full h-full object-cover" 
+                  />
+                </div>
+                <div className="flex flex-col items-start leading-tight">
+                  <span className="text-xs font-black text-gray-800 max-w-[130px] truncate">{user.displayName || user.email}</span>
+                  <span className="text-[9px] font-extrabold text-emerald-600 uppercase tracking-wider">Đã kết nối</span>
+                </div>
               </div>
-            </div>
-            {user && !user.isAnonymous && user.email ? (
               <button 
                 onClick={logout}
-                className="text-[9.5px] font-black text-red-500 hover:text-red-700 uppercase tracking-widest mt-0.5 flex items-center gap-1 transition-colors cursor-pointer"
+                className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                title="Đăng xuất tài khoản Google"
               >
-                <LogOut className="w-2.5 h-2.5" /> ĐĂNG XUẤT
+                <LogOut className="w-4 h-4" />
               </button>
-            ) : (
-              <button 
+            </div>
+          ) : (
+            <div className="flex items-center gap-2.5 pl-3 border-l border-gray-250/70">
+              {/* Guest Mode Indicator */}
+              <div 
+                className="flex items-center gap-2 px-3 py-1.5 bg-slate-100/90 border border-slate-200/80 rounded-xl select-none shadow-2xs"
+                title="Đang mở tự do không giới hạn cho tất cả mọi người"
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span className="text-[11px] font-black uppercase tracking-wider text-slate-700">Guest Mode</span>
+              </div>
+
+              {/* Clean Google Login Button */}
+              <button
                 onClick={login}
-                className="text-[9.5px] font-black text-indigo-600 hover:text-indigo-800 uppercase tracking-widest mt-0.5 transition-colors cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 active:scale-95 text-slate-700 hover:text-indigo-600 rounded-xl font-black text-[11px] uppercase tracking-wider border border-slate-200 shadow-xs hover:border-slate-300 transition-all cursor-pointer group select-none"
+                title="Đăng nhập bằng tài khoản Google cá nhân"
               >
-                Đăng nhập Google
+                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/>
+                  <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.26v3.15C3.26 21.36 7.34 24 12 24z"/>
+                  <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.26C.46 8.16 0 9.97 0 12s.46 3.84 1.26 5.42l4.02-3.15z"/>
+                  <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.26 6.58l4.02 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                </svg>
+                <span>Đăng nhập</span>
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </header>
 
