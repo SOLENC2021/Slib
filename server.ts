@@ -50,17 +50,17 @@ const getAIClient = () => {
 // Helper for retries on server side (with automatic model fallback on High Demand 503 errors and network retries)
 async function callAIWithRetry(
   fn: (aiClient: GoogleGenAI, model: string) => Promise<any>,
-  modelOrRetries: string | number = "gemini-3.5-flash",
+  modelOrRetries: string | number = "gemini-3.8-flash",
   retriesArg?: number,
-  delayArg: number = 1500
+  delayArg: number = 600
 ) {
-  let primaryModel = "gemini-3.5-flash";
-  let maxRetries = 5;
+  let primaryModel = "gemini-3.8-flash";
+  let maxRetries = 3;
   let delay = delayArg;
 
   if (typeof modelOrRetries === "number") {
     maxRetries = modelOrRetries;
-    primaryModel = "gemini-3.5-flash";
+    primaryModel = "gemini-3.8-flash";
   } else {
     primaryModel = modelOrRetries;
     if (typeof retriesArg === "number") {
@@ -111,22 +111,21 @@ async function callAIWithRetry(
                              errorMsg.includes("abort");
 
       if (isRateLimit || isHighDemand || isInternalError || isTimeout || isNetworkError) {
-        // Model Fallback Logic: If gemini-3.5-flash is failing due to overloading, retry limit exceeded, or high demand:
-        // Automatically switch the model name on subsequent retry attempts to stable alternatives to maximize user uptime.
-        if (i >= 1 && currentModel === "gemini-3.5-flash") {
+        // High-speed Model Fallback: If gemini-3.8-flash is failing or busy, switch immediately to ultra-fast gemini-3.1-flash-lite
+        if (i >= 1 && (currentModel === "gemini-3.8-flash" || currentModel === "gemini-3.5-flash")) {
           currentModel = "gemini-3.1-flash-lite";
-          console.log(`[Auto Model Fallback] Model ${primaryModel} is experiencing transient issues or is overloaded. Dynamic fallback switching to: ${currentModel}`);
+          console.log(`[Auto Model Fallback] Model ${primaryModel} transient issue. Fast fallback switching to: ${currentModel}`);
         } else if (i >= 1 && currentModel === "gemini-3.1-flash-lite") {
           currentModel = "gemini-flash-latest";
-          console.log(`[Auto Model Fallback] Model 'gemini-3.1-flash-lite' is also busy. Dynamic fallback switching to: ${currentModel}`);
+          console.log(`[Auto Model Fallback] Model 'gemini-3.1-flash-lite' is busy. Dynamic fallback switching to: ${currentModel}`);
         }
 
-        // Add randomized jitter to avoid thundering herd problem
-        const jitter = Math.floor(Math.random() * 800) + 400; // 400ms to 1200ms of random jitter
+        // Reduced randomized jitter for quick resumption
+        const jitter = Math.floor(Math.random() * 400) + 200; // 200ms to 600ms
         const totalDelay = delay + jitter;
         
         console.warn(`[Gemini Transient Error Caught] Retrying in ${totalDelay}ms (base ${delay}ms + jitter ${jitter}ms)... (Attempt ${i + 1}/${maxRetries}). Model: ${currentModel}. Error detail: ${fullErrorStr.substring(0, 300)}`);
-        delay = Math.floor(delay * 2.2);
+        delay = Math.floor(delay * 1.8);
       } else {
         throw error;
       }
@@ -162,6 +161,48 @@ Mọi câu trả lời phải được chia thành đúng 3 phần rõ rệt b�
 - Luôn bôi đậm (ví dụ: **TCVN 5574:2018**) cho tất cả các mã số hiệu standard TCVN và QCVN trong toàn bộ nội dung câu trả lời.
 - LIÊN KẾT TRANG & ĐIỀU KHOẢN (BẮT BUỘC): Khi bạn đề cập đến một số trang cụ thể hoặc một điều khoản, mục nào đó nằm trong một trang cụ thể, ví dụ: Trang 133, Trang 134, hay Mục 10.3.1 ở Trang 133, v.v. Bạn BẮT BUỘC phải định dạng chúng thành các liên kết Markdown có dạng \`[Trang X](#page-X)\` hoặc \`[Mục Y (Trang X)](#page-X)\` (trong đó X là số nguyên ứng với số trang PDF, ví dụ: \`[Trang 133](#page-133)\`, \`[Mục 10.3.1 (Trang 133)](#page-133)\`, \`[Trang 133, 134](#page-133)\`). Hệ thống sẽ tự động biến các liên kết này thành nút bấm giúp người dùng click để nhảy trực tiếp đến trang đó trên bản vẽ/tiêu chuẩn PDF đang mở.
 - Thể hiện công thức toán học/kỹ thuật: Sử dụng chuẩn LaTeX ($...$ trong dòng và $$...$$ riêng dòng) cho mọi công thức toán học và đơn vị kỹ thuật ($kN/m^2$, $MPa$, $f_{cd}$,... ).`;
+
+const ROLE_SYSTEM_INSTRUCTIONS: Record<string, string> = {
+  compliance_expert: SYSTEM_INSTRUCTION,
+  structural_specialist: `# ROLE:
+Bạn là "Kỹ sư Kết cấu & Tính toán Sức bền Công trình Cấp cao" (Senior Structural & Mechanics Specialist). Nhiệm vụ của bạn là hỗ trợ kỹ sư kết cấu giải quyết các bài toán cơ học, sức bền vật liệu, tính toán nội lực, và thiết kế cấu kiện chịu lực công trình.
+
+# NGUYÊN TẮC CHUYÊN MÔN:
+1. TRÌNH BÀY CÔNG THỨC TOÁN HỌC CHUẨN XÁC: Toàn bộ công thức, biểu thức, phép tính vi tích phân và phương trình BẮT BUỘC dùng định dạng LaTeX ($...$ inline và $$...$$ block).
+2. NÊU RÕ CÁC BƯỚC TÍNH TOÁN:
+   - Bước 1: Liệt kê giả thiết, kích thước tiết diện, cấp độ bền bê tông ($B$, $f_{cd}$, $f_{ctd}$), mác thép ($CB240-T$, $CB400-V$, $R_s$).
+   - Bước 2: Xác định nội lực tính toán (Mô men $M$, Lực cắt $Q$, Lực dọc $N$).
+   - Bước 3: Áp dụng công thức kiểm toán theo tiêu chuẩn hiện hành (**TCVN 5574:2018**, **TCVN 5575:2012** hoặc Eurocode).
+   - Bước 4: Kiểm tra điều kiện hàm lượng cốt thép hợp lý ($\\mu_{min} \\le \\mu \\le \\mu_{max}$).
+3. ĐÁNH GIÁ BIÊN ĐỘ AN TOÀN & KHUYẾN NGHỊ THI CÔNG: Nhận xét tính khả thi khi bố trí thép trên thực tế tại công trường.
+4. LIÊN KẾT TRANG & ĐIỀU KHOẢN: Định dạng [Trang X](#page-X) khi tham chiếu đến bản vẽ hoặc tiêu chuẩn kỹ thuật.`,
+
+  document_analyst: `# ROLE:
+Bạn là "Trợ lý Bóc tách & Tóm tắt Kỹ thuật Siêu tốc" (StandardCloud Rapid Document Analyst). Nhiệm vụ của bạn là xử lý và trích xuất thông tin kỹ thuật với tốc độ cao nhất, độ súc tích tối đa.
+
+# PHONG CÁCH LÀM VIỆC:
+1. TỐC ĐỘ & SÚC TÍCH: Đi thẳng vào dữ liệu cốt lõi, không mở đầu dài dòng hay kính chào rườm rà.
+2. BẢNG BIỂU HÓA: Ưu tiên trình bày dưới dạng Markdown Table hoặc danh sách gạch đầu dòng ngắn gọn.
+3. CHÍNH XÁC VỀ CON SỐ: Trích xuất chuẩn xác các số đo, dung sai, đơn vị ($mm$, $m$, $kg/m^3$, $MPa$).
+4. GẮN LIÊN KẾT TRANG: Luôn ghi chú vị trí trang nguồn [Trang X](#page-X) để kỹ sư kiểm chứng tức thì.`,
+
+  project_manager: `# ROLE:
+Bạn là "Chuyên gia Tư vấn Quản lý Dự án & Pháp lý Xây dựng Đô thị" (Project Director & Construction Legal Advisor).
+
+# TRỌNG TÂM TƯ VẤN:
+1. PHÁP LÝ & QUY HOẠCH: Quy chuẩn quy hoạch đô thị (**QCVN 01:2021/BXD**), chỉ giới đường đỏ, khoảng lùi, tầng cao, hệ số sử dụng đất (FAR).
+2. THẨM DUYỆT PCCC: Các yêu cầu cấp thiết về an toàn cháy cho nhà và công trình (**QCVN 06:2022/BXD** và các sửa đổi bổ sung).
+3. TRÌNH TỰ ĐẦU TƯ XÂY DỰNG: Giai đoạn chuẩn bị dự án, lập báo cáo nghiên cứu khả thi, thẩm định thiết kế cơ sở, cấp giấy phép xây dựng.
+4. LỜI KHUYÊN THỰC CHIẾN: Nêu rõ các rủi ro pháp lý thường gặp khi triển khai dự án tại Việt Nam.`,
+
+  general_assistant: `# ROLE:
+Bạn là "Trợ lý Kỹ thuật Đa năng StandardCloud AI". Bạn có kiến thức tổng hợp sâu rộng về ngành xây dựng, kiến trúc công trình, kết cấu, điện nước (MEP), và quản lý thi công.
+
+# PHONG CÁCH TƯ VẤN:
+- Tác phong thân thiện, giải thích mạch lạc, phân tích đa chiều.
+- Khi người dùng hỏi chung, cung cấp câu trả lời có tính hệ thống cao, nêu ví dụ minh họa thực tiễn.
+- Luôn liên kết điều khoản pháp lý hoặc tài liệu đính kèm khi có sẵn.`
+};
 
 /**
  * Lightweight cleaning utility to remove excess whitespaces, empty lines, and control character anomalies in PDF streams.
@@ -633,7 +674,8 @@ async function startServer() {
   app.post("/api/chat-stream", async (req, res) => {
     const { 
       text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration,
-      attachedPdfText, attachedPdfName, attachedPdfUri
+      attachedPdfText, attachedPdfName, attachedPdfUri,
+      model, chatbotRole, customSystemInstruction
     } = req.body;
     
     if (!process.env.GEMINI_API_KEY) {
@@ -704,10 +746,11 @@ async function startServer() {
         return res.end();
       }
 
+      // Preserve up to 20 messages for multi-turn conversation history
       let trimmedHistory = history || [];
-      if (trimmedHistory.length > 6) {
-        trimmedHistory = trimmedHistory.slice(-6);
-        console.log(`Optimization: Trimmed stream history from ${history.length} to ${trimmedHistory.length} messages.`);
+      if (trimmedHistory.length > 20) {
+        trimmedHistory = trimmedHistory.slice(-20);
+        console.log(`Optimization: Preserved 20 messages for multi-turn history (trimmed from ${history.length}).`);
       }
 
       const fetchTextWithTimeout = async (url: string, timeoutMs = 2500): Promise<string> => {
@@ -728,7 +771,7 @@ async function startServer() {
       };
 
       if (isGeneral) {
-        console.log("Processing general chat query using gemini-3.5-flash with STREAMING...");
+        console.log("Processing general chat query using gemini-3.8-flash with STREAMING...");
         let finalFiles = referencedFiles ? JSON.parse(JSON.stringify(referencedFiles)) : [];
         
         const queryWordsForPreFilter = extractHighValueKeywords(prompt, 45);
@@ -887,13 +930,14 @@ async function startServer() {
         };
 
         const runStreamGeneral = async (contentsArr: any[]) => {
-          const selectedModel = (isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.5-flash";
+          const selectedModel = model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash");
+          const effectiveSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
           const configObj: any = {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            temperature: 0.15,
+            systemInstruction: effectiveSystemInstruction,
+            temperature: (selectedModel === "gemini-3.1-pro-preview" || isThinking) ? 0.1 : 0.15,
             topP: 0.95,
           };
-          if (isThinking) {
+          if (isThinking || selectedModel === "gemini-3.1-pro-preview") {
             configObj.thinkingConfig = {
               thinkingLevel: ThinkingLevel.HIGH
             };
@@ -996,7 +1040,7 @@ async function startServer() {
         return res.end();
 
       } else {
-        console.log("Processing specific chat query using gemini-3.5-flash with STREAMING...");
+        console.log("Processing specific chat query using gemini-3.8-flash with STREAMING...");
         let resolvedText = text || "";
         
         if (textUrl && (!resolvedText || resolvedText.length < 150000)) {
@@ -1092,13 +1136,14 @@ async function startServer() {
             }
           ];
 
-          const selectedModel = (isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.5-flash";
+          const selectedModel = model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash");
+          const effectiveSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
           const configObj: any = {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            temperature: 0.1,
+            systemInstruction: effectiveSystemInstruction,
+            temperature: (selectedModel === "gemini-3.1-pro-preview" || isThinking) ? 0.1 : 0.15,
             topP: 0.95,
           };
-          if (isThinking) {
+          if (isThinking || selectedModel === "gemini-3.1-pro-preview") {
             configObj.thinkingConfig = {
               thinkingLevel: ThinkingLevel.HIGH
             };
@@ -1186,7 +1231,8 @@ async function startServer() {
   app.post("/api/chat", async (req, res) => {
     const { 
       text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration,
-      attachedPdfText, attachedPdfName, attachedPdfUri
+      attachedPdfText, attachedPdfName, attachedPdfUri,
+      model, chatbotRole, customSystemInstruction
     } = req.body;
     
     if (!process.env.GEMINI_API_KEY) {
@@ -1239,17 +1285,17 @@ async function startServer() {
         return res.json({ text: replyText });
       }
 
-      const model = "gemini-3.5-flash";
+      const selectedGeneralModel = model || "gemini-3.8-flash";
       
-      // OPTIMIZATION: Limit chat history to max 3 QA pairs (6 messages) to prevent token multiplication cost
+      // Preserve up to 20 messages for multi-turn conversation history
       let trimmedHistory = history || [];
-      if (trimmedHistory.length > 6) {
-        trimmedHistory = trimmedHistory.slice(-6);
-        console.log(`Optimization: Trimmed history from ${history.length} to ${trimmedHistory.length} messages.`);
+      if (trimmedHistory.length > 20) {
+        trimmedHistory = trimmedHistory.slice(-20);
+        console.log(`Optimization: Preserved 20 messages for multi-turn history (trimmed from ${history.length}).`);
       }
 
       if (isGeneral) {
-        console.log("Processing general chat query using gemini-3.5-flash...");
+        console.log("Processing general chat query using gemini-3.8-flash...");
         
         const runGeneralChat = async (filesToAttach: any[], useFileUris = false, isCompact = false) => {
           const userParts: any[] = [];
@@ -1328,15 +1374,15 @@ async function startServer() {
             }
           ];
 
-          const chatSystemInstruction = SYSTEM_INSTRUCTION;
+          const chatSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
 
-          const selectedModel = (isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.5-flash";
+          const selectedModel = model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash");
           const configObj: any = {
             systemInstruction: chatSystemInstruction,
-            temperature: 0.15, // Low temperature for high precision, objective answers
+            temperature: (selectedModel === "gemini-3.1-pro-preview" || isThinking) ? 0.1 : 0.15,
             topP: 0.95,
           };
-          if (isThinking) {
+          if (isThinking || selectedModel === "gemini-3.1-pro-preview") {
             configObj.thinkingConfig = {
               thinkingLevel: ThinkingLevel.HIGH
             };
@@ -1602,13 +1648,14 @@ async function startServer() {
           }
         ];
 
-        const selectedModel = (isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.5-flash";
+        const selectedModel = model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash");
+        const chatSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
         const configObj: any = {
-          systemInstruction: SYSTEM_INSTRUCTION,
-          temperature: 0.1,
+          systemInstruction: chatSystemInstruction,
+          temperature: (selectedModel === "gemini-3.1-pro-preview" || isThinking) ? 0.1 : 0.15,
           topP: 0.95,
         };
-        if (isThinking) {
+        if (isThinking || selectedModel === "gemini-3.1-pro-preview") {
           configObj.thinkingConfig = {
             thinkingLevel: ThinkingLevel.HIGH
           };
@@ -1622,7 +1669,7 @@ async function startServer() {
       };
 
       try {
-        console.log("Attempting chat with gemini-3.5-flash using fileUri...");
+        console.log("Attempting chat with gemini-3.8-flash using fileUri...");
         response = await runSpecificChat(finalFileUri, true, false);
       } catch (proErr: any) {
         if (isUnrecoverableError(proErr)) {
@@ -1657,7 +1704,7 @@ async function startServer() {
             }
           }
         } else {
-          console.warn("gemini-3.5-flash chat with fileUri failed. Falling back to plain text prompting...", proErr.message || proErr);
+          console.warn("gemini-3.8-flash chat with fileUri failed. Falling back to plain text prompting...", proErr.message || proErr);
           try {
             response = await runSpecificChat(undefined, false, false);
           } catch (fallbackErr: any) {
@@ -1739,8 +1786,11 @@ Yêu cầu cực kỳ nghiêm ngặt:
       };
 
       try {
-        console.log("Attempting structured extraction with gemini-3.5-flash...");
-        response = await runExtraction(finalFileUri, "gemini-3.5-flash");
+        console.log("Attempting high-speed structured extraction with gemini-3.8-flash...");
+        // If text is already present and sufficiently detailed, prioritize direct text extraction for 3x faster speed!
+        const shouldUseTextDirectly = Boolean(text && text.trim().length > 100);
+        const extractionTargetUri = shouldUseTextDirectly ? undefined : finalFileUri;
+        response = await runExtraction(extractionTargetUri, "gemini-3.8-flash");
       } catch (proErr: any) {
         if (isUnrecoverableError(proErr)) {
           throw proErr;
@@ -1761,8 +1811,8 @@ Yêu cầu cực kỳ nghiêm ngặt:
                   geminiFileUri: newReg.uri,
                   geminiFileName: newReg.name
                 };
-                console.log(`[Auto Self-Healing] Re-registration successful -> new URI: ${newReg.uri}. Retrying extract with gemini-3.5-flash.`);
-                response = await runExtraction(finalFileUri, "gemini-3.5-flash");
+                console.log(`[Auto Self-Healing] Re-registration successful -> new URI: ${newReg.uri}. Retrying extract with gemini-3.8-flash.`);
+                response = await runExtraction(finalFileUri, "gemini-3.8-flash");
                 reRegistered = true;
               }
             } catch (reRegErr: any) {
@@ -1780,7 +1830,7 @@ Yêu cầu cực kỳ nghiêm ngặt:
             response = await runExtraction(undefined, "gemini-3.1-flash-lite");
           }
         } else {
-          console.warn("gemini-3.5-flash extraction failed, falling back to gemini-3.1-flash-lite...", proErr.message || proErr);
+          console.warn("gemini-3.8-flash extraction failed, falling back to ultra-fast gemini-3.1-flash-lite...", proErr.message || proErr);
           try {
             response = await runExtraction(finalFileUri, "gemini-3.1-flash-lite");
           } catch (flashErr: any) {
@@ -2371,103 +2421,49 @@ Trường "diffMarkers" là danh sách các sự sai khác cụ thể, định h
       const fullBuffer = Buffer.from(await response.arrayBuffer());
 
       const pdfDoc = await PDFDocument.load(fullBuffer);
-      const results: { page: number; text: string }[] = [];
-
-      for (const pageNum of pages) {
-        try {
-          // Tạo một tài liệu PDF mới chỉ chứa trang này để tối ưu size gửi AI
-          const newPdf = await PDFDocument.create();
-          const [copiedPage] = await newPdf.copyPages(pdfDoc, [pageNum - 1]);
-          newPdf.addPage(copiedPage);
-          const pageBuffer = Buffer.from(await newPdf.save());
-
-          // 1. Phân tích text cục bộ thô trước bằng pdf-parse (MIỄN PHÍ HOÀN TOÀN)
-          let localExtractedText = "";
-          const originalWarn = console.warn;
-          const originalError = console.error;
+      const results = await Promise.all(
+        pages.map(async (pageNum: number) => {
           try {
-            // Tạm thời lọc bỏ các cảnh báo nhiễu về định dạng stream/ nén flate của thư viện pdf.js cũ
-            console.warn = (...args: any[]) => {
-              const str = args.join(" ");
-              if (str.includes("Invalid stream") || str.includes("compression method") || str.includes("flate stream") || str.includes("Unknown compression")) {
-                return;
-              }
-              originalWarn.apply(console, args);
-            };
-            console.error = (...args: any[]) => {
-              const str = args.join(" ");
-              if (str.includes("Invalid stream") || str.includes("compression method") || str.includes("flate stream") || str.includes("Unknown compression")) {
-                return;
-              }
-              originalError.apply(console, args);
-            };
+            // Tạo một tài liệu PDF mới chỉ chứa trang này để tối ưu size gửi AI
+            const newPdf = await PDFDocument.create();
+            const [copiedPage] = await newPdf.copyPages(pdfDoc, [pageNum - 1]);
+            newPdf.addPage(copiedPage);
+            const pageBuffer = Buffer.from(await newPdf.save());
 
-            const parsed = await pdf(pageBuffer);
-            localExtractedText = cleanExtractedText(parsed.text || "");
-          } catch (pdfErr) {
-            console.log(`[Thông tin] Trình phân tích thô (pdf-parse) không bóc tách được trang ${pageNum}. Hệ thống sẽ kích hoạt Gemini OCR để phân tích tự động.`);
-          } finally {
-            console.warn = originalWarn;
-            console.error = originalError;
-          }
-
-          let aiResponseText = "";
-
-          if (localExtractedText && localExtractedText.trim().length > 30) {
-            console.log(`Successfully extracted ${localExtractedText.trim().length} chars of local text on page ${pageNum} via free pdf-parse. Cleaning/formatting with Gemini 3.1 Flash Lite...`);
+            // 1. Phân tích text cục bộ thô trước bằng pdf-parse (MIỄN PHÍ HOÀN TOÀN, SIÊU NHANH)
+            let localExtractedText = "";
+            const originalWarn = console.warn;
+            const originalError = console.error;
             try {
-              const cleanupResponse = await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
-                model: model,
-                contents: `Dưới đây là văn bản kỹ thuật được trích xuất trực tiếp từ trang ${pageNum}.
-Hãy sửa các lỗi chính tả rách dòng hoặc dính chữ ghép từ tiếng Việt thô, cấu trúc lại nội dung logic tốt nhất, giữ nguyên toàn bộ các thông số kỹ thuật, công thức, số liệu và đơn vị đo đạc. Vẽ lại bảng bằng GitHub Markdown nếu có dữ liệu bảng thống kê.
-Tuyệt đối không tự bịa đặt, thay đổi hay suy diễn các thông số số liệu kỹ thuật gốc dưới bất kỳ hình thức nào. Nếu dữ liệu có vẻ sạch đẹp, hãy trả về nguyên trạng.
+              console.warn = (...args: any[]) => {
+                const str = args.join(" ");
+                if (str.includes("Invalid stream") || str.includes("compression method") || str.includes("flate stream") || str.includes("Unknown compression")) return;
+                originalWarn.apply(console, args);
+              };
+              console.error = (...args: any[]) => {
+                const str = args.join(" ");
+                if (str.includes("Invalid stream") || str.includes("compression method") || str.includes("flate stream") || str.includes("Unknown compression")) return;
+                originalError.apply(console, args);
+              };
 
-Văn bản thô của trang ${pageNum}:
----
-${localExtractedText}
----`,
-                config: {
-                  temperature: 0.1,
-                }
-              }), "gemini-3.1-flash-lite");
-              aiResponseText = cleanupResponse.text || localExtractedText;
-              console.log(`Formatted page ${pageNum} using Gemini 3.1 Flash Lite text-to-text formatting.`);
-            } catch (cleanupErr) {
-              console.warn(`Gemini 3.1 Flash Lite formatting failed for page ${pageNum}. Customarily saving locally extracted text with $0 cost.`, cleanupErr);
-              aiResponseText = localExtractedText; // Safe, 100% free save!
+              const parsed = await pdf(pageBuffer);
+              localExtractedText = cleanExtractedText(parsed.text || "");
+            } catch (pdfErr) {
+              console.log(`[Thông tin] Trình phân tích thô (pdf-parse) không bóc tách được trang ${pageNum}. Sẽ dùng Gemini OCR.`);
+            } finally {
+              console.warn = originalWarn;
+              console.error = originalError;
             }
-          } else {
-            // Không tìm thấy text thô hoặc trang là ảnh scan/bản vẽ -> bắt buộc OCR
-            console.log(`Page ${pageNum} is a scanned page/image. Running Gemini 3.1 Flash Lite OCR...`);
-            try {
-              const aiResponseLite = await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
-                model: model,
-                contents: [
-                  {
-                    role: "user",
-                    parts: [
-                      {
-                        inlineData: {
-                          mimeType: "application/pdf",
-                          data: pageBuffer.toString("base64")
-                        }
-                      },
-                      {
-                        text: `Analyze this document page. 
-Target: Reconstruct readable text, preserve tables in Markdown, and handle Vietnamese engineering terms.
-Constraint: Do not hallucinate values. Mark uncertain text with [?]. Output reconstructed text only.`
-                      }
-                    ]
-                  }
-                ],
-                config: {
-                  temperature: 0.1,
-                }
-              }), "gemini-3.1-flash-lite");
-              aiResponseText = aiResponseLite.text || "";
-              console.log(`Gemini 3.1 Flash Lite OCR succeeded for page ${pageNum}.`);
-            } catch (liteErr: any) {
-              console.warn(`Gemini 3.1 Flash Lite OCR failed on page ${pageNum}. Retrying with Gemini 3.5 Flash OCR...`);
+
+            let aiResponseText = "";
+
+            // Fast-path: Nếu trang đã có text rõ ràng (> 25 kí tự), dùng ngay kết quả cực nhanh mà không cần gọi thêm AI làm chậm
+            if (localExtractedText && localExtractedText.trim().length > 25) {
+              console.log(`[Fast Path] Trang ${pageNum} đã có ${localExtractedText.trim().length} kí tự text gốc sạch. Bỏ qua độ trễ định dạng AI.`);
+              aiResponseText = localExtractedText;
+            } else {
+              // Không tìm thấy text thô hoặc trang là ảnh scan/bản vẽ -> bắt buộc OCR
+              console.log(`Page ${pageNum} is a scanned page/image. Running high-speed Gemini 3.8 Flash OCR...`);
               try {
                 const aiResponse = await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
                   model: model,
@@ -2490,25 +2486,49 @@ Constraint: Do not hallucinate values. Mark uncertain text with [?]. Output reco
                   config: {
                     temperature: 0.1,
                   }
-                }), "gemini-3.5-flash");
+                }), "gemini-3.8-flash");
                 aiResponseText = aiResponse.text || "";
-                console.log(`Gemini 3.5 Flash OCR succeeded for page ${pageNum}.`);
-              } catch (flashErr: any) {
-                console.error(`Gemini 3.5 Flash OCR also failed on page ${pageNum}:`, flashErr);
-                aiResponseText = localExtractedText || `[Lỗi trích xuất trang ${pageNum} do dịch vụ AI bận]`;
+                console.log(`Gemini 3.8 Flash OCR succeeded for page ${pageNum}.`);
+              } catch (ocrErr: any) {
+                console.warn(`Gemini 3.8 Flash OCR failed on page ${pageNum}. Fallback to flash-lite...`, ocrErr.message || ocrErr);
+                try {
+                  const fallbackResp = await callAIWithRetry((aiClient, model) => aiClient.models.generateContent({
+                    model: model,
+                    contents: [
+                      {
+                        role: "user",
+                        parts: [
+                          {
+                            inlineData: {
+                              mimeType: "application/pdf",
+                              data: pageBuffer.toString("base64")
+                            }
+                          },
+                          {
+                            text: `Reconstruct readable text and tables in Vietnamese from this page.`
+                          }
+                        ]
+                      }
+                    ],
+                    config: { temperature: 0.1 }
+                  }), "gemini-3.1-flash-lite");
+                  aiResponseText = fallbackResp.text || localExtractedText;
+                } catch (fallbackErr) {
+                  aiResponseText = localExtractedText || `[Lỗi trích xuất trang ${pageNum}]`;
+                }
               }
             }
-          }
 
-          results.push({
-            page: pageNum,
-            text: aiResponseText || ""
-          });
-        } catch (pageErr: any) {
-          console.error(`Error on page ${pageNum}:`, pageErr);
-          results.push({ page: pageNum, text: `[Lỗi trích xuất trang ${pageNum}: ${pageErr.message || pageErr}]` });
-        }
-      }
+            return {
+              page: pageNum,
+              text: aiResponseText || ""
+            };
+          } catch (pageErr: any) {
+            console.error(`Error on page ${pageNum}:`, pageErr);
+            return { page: pageNum, text: `[Lỗi trích xuất trang ${pageNum}: ${pageErr.message || pageErr}]` };
+          }
+        })
+      );
 
       res.json({ pages: results });
     } catch (error: any) {

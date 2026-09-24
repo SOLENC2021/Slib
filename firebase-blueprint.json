@@ -13,6 +13,7 @@
         "role": { "type": "string", "enum": ["admin", "user"] },
         "apiLimit": { "type": "integer" },
         "apiUsageCount": { "type": "integer" },
+        "tokensUsed": { "type": "integer" },
         "lastRequestDate": { "type": "string" }
       },
       "required": ["uid", "email"]

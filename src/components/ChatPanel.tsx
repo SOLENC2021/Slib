@@ -5,7 +5,7 @@ import {
   AlertCircle, Loader2, Copy, Maximize2, Download,
   Plus, Trash2, Settings, Sparkles, X, LayoutGrid,
   Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, Minimize2, BookOpen, FileText, Languages, Paperclip,
-  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen, List, Brain
+  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen, List, Brain, Info, Bot
 } from "lucide-react";
 import pptxgen from "pptxgenjs";
 import ReactMarkdown from "react-markdown";
@@ -14,8 +14,13 @@ import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
 import { cn, getApiUrl, cleanLatexForClipboard } from "@/lib/utils";
 import Mermaid from "./Mermaid";
-import { Message, ExtractionField, PDFFile, Note, DiffMarker } from "@/types";
+import DocumentSummaryView from "./DocumentSummaryView";
+import ChatbotRoleSelector from "./ChatbotRoleSelector";
+import QuickPromptsPopup from "./QuickPromptsPopup";
+import { Message, ExtractionField, PDFFile, Note, DiffMarker, ChatbotRoleId, GeminiModelId } from "@/types";
+import { getChatbotRole, getGeminiModel } from "@/lib/chatbotRoles";
 import { generateDrawingDifferences } from "@/utils/drawingUtils";
+import { useAuth } from "./FirebaseProvider";
 
 interface ChatPanelProps {
   messages: Message[];
@@ -28,8 +33,13 @@ interface ChatPanelProps {
     referencedFileIds?: string[], 
     isThinking?: boolean, 
     isImageGeneration?: boolean,
-    attachedPdf?: { name: string; text: string; geminiFileUri?: string }
+    attachedPdf?: { name: string; text: string; geminiFileUri?: string },
+    model?: string,
+    chatbotRole?: string,
+    customSystemInstruction?: string
   ) => void;
+  onClearGeneralMessages?: () => void;
+  onClearMessages?: () => void;
   onExtract: (fields: ExtractionField[]) => Promise<any>;
   isProcessing: boolean;
   onSync: (data: any) => Promise<void>;
@@ -45,7 +55,6 @@ interface ChatPanelProps {
   isPdfViewerOpen?: boolean;
   onTogglePdfViewer?: () => void;
   onCheckQuota?: () => Promise<boolean>;
-  viewMode?: "admin" | "member";
 
   // Drawing Visual Comparison states from App.tsx
   compareMode?: boolean;
@@ -381,7 +390,8 @@ export function ChatPanel({
   isPdfViewerOpen = false,
   onTogglePdfViewer,
   onCheckQuota,
-  viewMode = "member",
+  onClearGeneralMessages,
+  onClearMessages,
 
   compareMode = false,
   setCompareMode,
@@ -420,12 +430,16 @@ export function ChatPanel({
   isHeatmapActive = false,
   setIsHeatmapActive,
 }: ChatPanelProps) {
+  const { profile } = useAuth();
+  const remainingQuestions = Math.max(0, (profile?.apiLimit || 50) - (profile?.apiUsageCount || 0));
+  const remainingTokens = Math.max(0, 1000000 - (profile?.tokensUsed || 0));
+
   const [input, setInput] = useState("");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [attachedPdf, setAttachedPdf] = useState<{ name: string; text: string; geminiFileUri?: string } | null>(null);
   const [isUploadingPdf, setIsUploadingPdf] = useState<boolean>(false);
   const [uploadPdfError, setUploadPdfError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"general_chat" | "chat" | "extract" | "mindmap" | "notes" | "compare" | "compliance" | "draw_compare">("general_chat");
+  const [mode, setMode] = useState<"general_chat" | "chat" | "extract" | "mindmap" | "notes" | "compare" | "compliance" | "draw_compare" | "summary">("general_chat");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<string[]>([]);
@@ -435,6 +449,37 @@ export function ChatPanel({
   const [compareDrawingError, setCompareDrawingError] = useState<string | null>(null);
   const [vipToolTab, setVipToolTab] = useState<"layers" | "alignment" | "boq">("layers");
   const [isAligningAuto, setIsAligningAuto] = useState<boolean>(false);
+
+  const [selectedChatbotRole, setSelectedChatbotRole] = useState<ChatbotRoleId>(() => {
+    return (localStorage.getItem("preferred_chatbot_role") as ChatbotRoleId) || "compliance_expert";
+  });
+  const [selectedModel, setSelectedModel] = useState<GeminiModelId>(() => {
+    return (localStorage.getItem("preferred_gemini_model") as GeminiModelId) || "gemini-3.5-flash";
+  });
+  const [customSystemInstruction, setCustomSystemInstruction] = useState<string>(() => {
+    return localStorage.getItem("custom_chatbot_instruction") || "";
+  });
+
+  const handleSelectRole = (roleId: ChatbotRoleId) => {
+    setSelectedChatbotRole(roleId);
+    try {
+      localStorage.setItem("preferred_chatbot_role", roleId);
+    } catch {}
+  };
+
+  const handleSelectModel = (modelId: GeminiModelId) => {
+    setSelectedModel(modelId);
+    try {
+      localStorage.setItem("preferred_gemini_model", modelId);
+    } catch {}
+  };
+
+  const handleUpdateCustomInstruction = (val: string) => {
+    setCustomSystemInstruction(val);
+    try {
+      localStorage.setItem("custom_chatbot_instruction", val);
+    } catch {}
+  };
 
 
 
@@ -1896,11 +1941,42 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
       mode === "general_chat" ? selectedGeneralDocIds : undefined,
       isThinking,
       isImageGeneration,
-      attachedPdf || undefined
+      attachedPdf || undefined,
+      selectedModel,
+      selectedChatbotRole,
+      customSystemInstruction || undefined
     );
     setInput("");
     setSelectedImage(null);
     setAttachedPdf(null);
+  };
+
+  const handleExecuteQuickPrompt = (promptText: string, autoSend: boolean = true) => {
+    if (!promptText.trim()) return;
+    setIsComposerCollapsed(false);
+    if (autoSend) {
+      if (isProcessing) return;
+      const isThinking = aiMode === "thinking";
+      const isImageGeneration = aiMode === "image";
+
+      onSendMessage(
+        promptText,
+        selectedImage || undefined,
+        mode === "general_chat",
+        mode === "general_chat" ? selectedGeneralDocIds : undefined,
+        isThinking,
+        isImageGeneration,
+        attachedPdf || undefined,
+        selectedModel,
+        selectedChatbotRole,
+        customSystemInstruction || undefined
+      );
+      setInput("");
+      setSelectedImage(null);
+      setAttachedPdf(null);
+    } else {
+      setInput(promptText);
+    }
   };
 
   const handleImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2195,6 +2271,36 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           <Sparkles className="w-3.5 h-3.5 text-current" />
           <span>HỎI ĐÁP CHUNG</span>
         </button>
+
+        {activeFile && (
+          <button
+            onClick={() => setMode("chat")}
+            className={cn(
+              "px-5 py-3 rounded-2xl text-[11px] sm:text-[12px] font-black uppercase tracking-widest transition-all shrink-0 flex items-center gap-2 border shadow-sm",
+              mode === "chat" 
+                ? "bg-indigo-600 text-white border-indigo-600 shadow-[0_6px_16px_rgba(79,70,229,0.22)]" 
+                : "bg-white text-gray-500 hover:text-gray-900 border-gray-200/60"
+            )}
+          >
+            <Bot className="w-3.5 h-3.5 text-current" />
+            <span>CHAT TÀI LIỆU</span>
+          </button>
+        )}
+
+        {activeFile && (
+          <button
+            onClick={() => setMode("summary")}
+            className={cn(
+              "px-5 py-3 rounded-2xl text-[11px] sm:text-[12px] font-black uppercase tracking-widest transition-all shrink-0 flex items-center gap-2 border shadow-sm",
+              mode === "summary" 
+                ? "bg-indigo-600 text-white border-indigo-600 shadow-[0_6px_16px_rgba(79,70,229,0.22)]" 
+                : "bg-white text-gray-500 hover:text-gray-900 border-gray-200/60"
+            )}
+          >
+            <Info className="w-3.5 h-3.5 text-current" />
+            <span>SUMMARY</span>
+          </button>
+        )}
         <button
           onClick={() => setMode("compare")}
           className={cn(
@@ -2254,7 +2360,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
         }}
         className="flex-1 overflow-y-auto px-6 pt-6 pb-40 space-y-6 no-scrollbar"
       >
-        {activeFile && mode !== "compare" && mode !== "compliance" && mode !== "general_chat" && mode !== "notes" && mode !== "draw_compare" && (
+        {activeFile && mode !== "compare" && mode !== "compliance" && mode !== "general_chat" && mode !== "notes" && mode !== "draw_compare" && mode !== "summary" && (
           <div className="bg-white border border-gray-200/60 rounded-3xl p-6 shadow-[0_12px_32px_rgba(0,0,0,0.035),0_1px_3px_rgba(0,0,0,0.015)] space-y-4 animate-in fade-in duration-300">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2332,7 +2438,30 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           </div>
         )}
 
-        {mode === "compliance" ? (
+        {mode === "summary" ? (
+          activeFile ? (
+            <DocumentSummaryView
+              file={activeFile}
+              onUpdateFile={onUpdateFile}
+              onSwitchToChat={() => setMode("chat")}
+              onOpenPdfViewer={onTogglePdfViewer}
+            />
+          ) : (
+            <div className="bg-white border border-gray-200/60 rounded-3xl p-10 text-center space-y-4 shadow-sm animate-in fade-in duration-300">
+              <div className="w-14 h-14 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center mx-auto text-indigo-600">
+                <FileText className="w-7 h-7" />
+              </div>
+              <div className="space-y-1 max-w-md mx-auto">
+                <h3 className="text-base font-black text-gray-900 uppercase tracking-wider">
+                  Chưa chọn tài liệu PDF
+                </h3>
+                <p className="text-xs text-gray-500 leading-relaxed">
+                  Vui lòng nhấp chọn một tài liệu PDF từ danh sách bên trái để xem bảng tổng quan và các thuộc tính trích xuất (Tác giả, Ngày khởi tạo, Ngôn ngữ, Số trang...).
+                </p>
+              </div>
+            </div>
+          )
+        ) : mode === "compliance" ? (
           <div className="space-y-6 animate-in fade-in duration-500">
             {/* Header */}
             <div className="flex items-center gap-3 pb-2">
@@ -3698,7 +3827,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         Trợ lý AI thiết kế
                       </h3>
                       <p className="text-[9px] sm:text-[10.5px] text-indigo-600 font-extrabold uppercase tracking-widest">
-                        Design AI Cloud Engine — Tìm kiếm & Đồng hành Sáng tạo
+                        Tra cứu & Thẩm định tiêu chuẩn kỹ thuật xây dựng
                       </p>
                     </div>
                     <p className="text-xs text-gray-500 leading-relaxed max-w-lg mx-auto font-medium">
@@ -3756,7 +3885,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       </div>
                     )}
                     <div className="flex items-center justify-between pt-2 border-t border-gray-50/50">
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
                         <button
                           onClick={() => fileInputRef.current?.click()}
                           className="p-2 bg-slate-50 text-slate-500 hover:text-indigo-600 rounded-full hover:bg-slate-100/80 transition-all flex items-center justify-center cursor-pointer"
@@ -3764,6 +3893,11 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         >
                           <Paperclip className="w-4 h-4" />
                         </button>
+                        <QuickPromptsPopup
+                          file={null}
+                          onExecutePrompt={handleExecuteQuickPrompt}
+                          isProcessing={isProcessing}
+                        />
                         {selectedImage && (
                           <div className="relative w-8 h-8 rounded-lg overflow-hidden border border-gray-200 shadow-sm">
                             <img src={selectedImage} alt="Preview" className="w-full h-full object-cover" />
@@ -3775,9 +3909,6 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             </button>
                           </div>
                         )}
-                        <span className="text-[9px] text-gray-450 font-extrabold uppercase tracking-[0.12em] hidden sm:inline border-l pl-3 border-gray-200">
-                          🔍 Global Engine Search 
-                        </span>
                       </div>
                       <button
                         onClick={handleSend}
@@ -4453,39 +4584,173 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
             })()}
           </div>
 
-        ) : !activeFile ? (
+        ) : mode === "chat" && !activeFile ? (
           <div className="flex-1 h-full flex flex-col items-center justify-center p-12 text-center space-y-6">
-            <div className="w-16 h-16 rounded-[24px] bg-amber-50 hover:bg-amber-100 border border-amber-100 flex items-center justify-center text-amber-500 shadow-sm mx-auto transition-all">
+            <div className="w-16 h-16 rounded-[24px] bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shadow-sm mx-auto transition-all">
               <BookOpen className="w-8 h-8" />
             </div>
             <div className="space-y-2 max-w-sm">
-              <p className="text-gray-950 text-base font-black uppercase tracking-widest">Hỏi đáp & Tra cứu nâng cao</p>
-              <p className="text-gray-450 text-xs sm:text-sm leading-relaxed font-semibold">
-                Tính năng này yêu cầu chọn một tài liệu kỹ thuật ở danh sách bên trái để mở khóa khả năng tra cứu tự động, trích xuất dữ liệu, hoặc đối chiếu.
+              <p className="text-gray-950 text-base font-black uppercase tracking-widest">Chat Theo Tài Liệu Kỹ Thuật</p>
+              <p className="text-gray-500 text-xs sm:text-sm leading-relaxed font-semibold">
+                Tính năng này yêu cầu chọn một tài liệu kỹ thuật ở danh sách bên trái để mở khóa khả năng tra cứu tự động, hoặc bạn có thể chuyển sang tab <button onClick={() => setMode("general_chat")} className="text-indigo-600 font-bold underline cursor-pointer">Hỏi đáp chung</button> để trò chuyện ngay.
               </p>
             </div>
           </div>
         ) : mode === "chat" ? (
-          <>
-            <div className="space-y-4">
-              {messages.map((msg) => {
-                const parsed = msg.role === "ai" ? parseAIResponse(msg.content) : null;
-                const isTranslated = visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && translations[msg.id]?.[visibleLanguages[msg.id]];
-                
+          <div className="space-y-4">
+            {/* Multi-turn Chatbot Role & Model Selector Panel */}
+            <ChatbotRoleSelector
+              selectedRole={selectedChatbotRole}
+              onSelectRole={handleSelectRole}
+              selectedModel={selectedModel}
+              onSelectModel={handleSelectModel}
+              customSystemInstruction={customSystemInstruction}
+              onUpdateCustomSystemInstruction={handleUpdateCustomInstruction}
+              onClearHistory={onClearMessages}
+              onSelectSamplePrompt={(prompt) => {
+                setInput(prompt);
+                setIsComposerCollapsed(false);
+              }}
+              messageCount={messages.length}
+            />
+
+            {/* Conversation Messages */}
+            {(() => {
+              const currentChatMessages = messages;
+              const activeRoleConfig = getChatbotRole(selectedChatbotRole);
+              const activeModelConfig = getGeminiModel(selectedModel);
+
+              if (currentChatMessages.length === 0) {
                 return (
-                  <div
-                    key={msg.id}
-                    className="w-full flex flex-row items-start gap-2.5 group/msg animate-in fade-in duration-300 text-left"
-                  >
-                    {/* Chat Bubble */}
-                    <div
-                      className={cn(
-                        "rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 flex flex-col min-w-0",
-                        msg.role === "user"
-                          ? "bg-indigo-600 text-white max-w-[65%] w-fit mr-auto"
-                          : "bg-[#f8fafc] border border-gray-200/50 flex-1 w-full"
-                      )}
-                    >
+                  <div className="bg-gradient-to-br from-white via-indigo-50/20 to-slate-50 border border-indigo-100/70 rounded-[28px] p-6 sm:p-8 shadow-sm space-y-5 text-center animate-in fade-in duration-300">
+                    <div className="w-16 h-16 rounded-2xl bg-indigo-600 text-white flex items-center justify-center text-3xl mx-auto shadow-lg shadow-indigo-600/20">
+                      {activeRoleConfig.icon}
+                    </div>
+                    <div className="space-y-1.5 max-w-md mx-auto">
+                      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-50 text-indigo-700 text-[10px] font-black uppercase tracking-wider border border-indigo-100/80 mb-1">
+                        <span>{activeRoleConfig.badge}</span>
+                        <span>•</span>
+                        <span>{activeModelConfig.name}</span>
+                      </div>
+                      <h3 className="text-base sm:text-lg font-black text-gray-900 uppercase tracking-wider">
+                        {activeRoleConfig.name}
+                      </h3>
+                      <p className="text-xs text-gray-500 font-medium leading-relaxed">
+                        {activeRoleConfig.description}
+                      </p>
+                    </div>
+
+                    {/* 3 Core Quick Starter Prompts based on File Content */}
+                    <div className="pt-2 text-left space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                          Thao tác nhanh cho tài liệu này:
+                        </span>
+                        <QuickPromptsPopup
+                          file={activeFile}
+                          onExecutePrompt={handleExecuteQuickPrompt}
+                          isProcessing={isProcessing}
+                        />
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => handleExecuteQuickPrompt(`Hãy tóm tắt ngắn gọn các nội dung cốt lõi, mục tiêu thiết kế và thông số kỹ thuật quan trọng nhất trong tài liệu "${activeFile?.name || "này"}".`, true)}
+                          className="p-3 bg-white hover:bg-indigo-50/60 border border-gray-150 hover:border-indigo-200 rounded-2xl text-left transition-all shadow-3xs cursor-pointer flex flex-col justify-between gap-1.5 group"
+                        >
+                          <div className="flex items-center gap-1.5 font-black text-xs text-slate-800 group-hover:text-indigo-900">
+                            <span>📋</span>
+                            <span>Tóm tắt nội dung</span>
+                          </div>
+                          <p className="text-[10.5px] text-gray-400 line-clamp-2">Bóc tách 3-5 ý chính và thông số cốt lõi</p>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleExecuteQuickPrompt(`Tìm kiếm, bóc tách và trích dẫn toàn bộ các tiêu chuẩn kỹ thuật, quy chuẩn quốc gia (TCVN, QCVN, ASTM, Eurocode) được viện dẫn trong tài liệu "${activeFile?.name || "này"}".`, true)}
+                          className="p-3 bg-white hover:bg-indigo-50/60 border border-gray-150 hover:border-indigo-200 rounded-2xl text-left transition-all shadow-3xs cursor-pointer flex flex-col justify-between gap-1.5 group"
+                        >
+                          <div className="flex items-center gap-1.5 font-black text-xs text-slate-800 group-hover:text-indigo-900">
+                            <span>⚖️</span>
+                            <span>Tìm quy chuẩn kỹ thuật</span>
+                          </div>
+                          <p className="text-[10.5px] text-gray-400 line-clamp-2">Rà soát TCVN, QCVN và căn cứ pháp lý</p>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleExecuteQuickPrompt(`Liệt kê chi tiết các danh mục thiết kế, bản vẽ, cấu kiện chịu lực và các hạng mục kỹ thuật chính được trình bày trong "${activeFile?.name || "này"}".`, true)}
+                          className="p-3 bg-white hover:bg-indigo-50/60 border border-gray-150 hover:border-indigo-200 rounded-2xl text-left transition-all shadow-3xs cursor-pointer flex flex-col justify-between gap-1.5 group"
+                        >
+                          <div className="flex items-center gap-1.5 font-black text-xs text-slate-800 group-hover:text-indigo-900">
+                            <span>📐</span>
+                            <span>Danh mục thiết kế</span>
+                          </div>
+                          <p className="text-[10.5px] text-gray-400 line-clamp-2">Bóc tách danh mục bản vẽ & cấu kiện</p>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Role Specific Starter Prompts */}
+                    <div className="pt-2 text-left space-y-2 border-t border-gray-150/70 mt-4">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                        Gợi ý theo vai trò chuyên gia ({activeRoleConfig.shortTitle}):
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {activeRoleConfig.samplePrompts.map((prompt, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => handleExecuteQuickPrompt(prompt, true)}
+                            className="p-3 bg-white hover:bg-indigo-50/60 border border-gray-150 hover:border-indigo-200 rounded-xl text-left text-xs font-semibold text-gray-700 hover:text-indigo-900 transition-all flex items-center justify-between group shadow-3xs cursor-pointer"
+                          >
+                            <span className="line-clamp-1">{prompt}</span>
+                            <ChevronRight className="w-4 h-4 text-gray-400 group-hover:text-indigo-600 transition-transform group-hover:translate-x-0.5 shrink-0 ml-2" />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="space-y-4">
+                  {currentChatMessages.map((msg) => {
+                    const parsed = msg.role === "ai" ? parseAIResponse(msg.content) : null;
+                    const isTranslated = visibleLanguages[msg.id] && visibleLanguages[msg.id] !== 'vi' && translations[msg.id]?.[visibleLanguages[msg.id]];
+                    const roleConfig = getChatbotRole((msg as any).roleUsed || selectedChatbotRole);
+                    const modelConfig = getGeminiModel((msg as any).modelUsed || selectedModel);
+                    
+                    return (
+                      <div
+                        key={msg.id}
+                        className="w-full flex flex-row items-start gap-2.5 group/msg animate-in fade-in duration-300 text-left"
+                      >
+                        {/* Chat Bubble */}
+                        <div
+                          className={cn(
+                            "rounded-3xl p-5 shadow-sm transition-all drop-shadow-sm/80 flex flex-col min-w-0",
+                            msg.role === "user"
+                              ? "bg-indigo-600 text-white max-w-[65%] w-fit mr-auto"
+                              : "bg-[#f8fafc] border border-gray-200/50 flex-1 w-full"
+                          )}
+                        >
+                          {/* Role & Model Tag for AI responses */}
+                          {msg.role === "ai" && (
+                            <div className="flex items-center justify-between pb-2 mb-3 border-b border-gray-200/60 text-[10px]">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider bg-indigo-100 text-indigo-900 border border-indigo-200/60 shadow-3xs">
+                                  <span>{roleConfig.icon}</span>
+                                  <span>{roleConfig.shortTitle}</span>
+                                </span>
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-white text-gray-600 border border-gray-200/60 shadow-3xs">
+                                  <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
+                                  <span>{modelConfig.name}</span>
+                                </span>
+                              </div>
+                              <span className="text-gray-400 font-semibold">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
+                          )}
                       {msg.image && (
                         <div className="mb-3 rounded-2xl overflow-hidden border border-white/20">
                           <img src={msg.image} alt="User upload" className="max-w-full h-auto object-cover max-h-60" />
@@ -4708,14 +4973,16 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                   </div>
                 );
               })}
-              {isProcessing && (
-                <div className="flex items-center gap-2 text-gray-400 text-[10px] font-black uppercase tracking-widest italic ml-4 text-left">
-                  <Loader2 className="w-4 h-4 animate-spin text-indigo-500" />
-                  Gemini đang suy nghĩ...
+                  {isProcessing && (
+                    <div className="flex items-center gap-2.5 text-indigo-700 bg-indigo-50/70 border border-indigo-100 rounded-2xl p-4 text-[11px] font-bold uppercase tracking-wider animate-pulse ml-2 text-left">
+                      <Loader2 className="w-4 h-4 animate-spin text-indigo-600" />
+                      <span>{activeRoleConfig.icon} {activeRoleConfig.name} ({activeModelConfig.name}) đang suy nghĩ và phân tích...</span>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </>
+              );
+            })()}
+          </div>
         ) : (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
@@ -4905,18 +5172,26 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
         )}
       </div>
 
-      {((mode === "general_chat" && generalMessages.length > 0) || (activeFile && mode === "chat")) && (
+      {((mode === "general_chat" && !!generalMessages && generalMessages.length > 0) || (activeFile && mode === "chat")) && (
         <>
           {isComposerCollapsed ? (
             /* Compact Collapsed Floating Button to ask AI, sits beautifully at the bottom, zero clutter */
-            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 pointer-events-auto">
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 pointer-events-auto flex items-center gap-2">
               <button
                 onClick={() => setIsComposerCollapsed(false)}
-                className="composer-trigger-btn px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full font-black text-[11px] uppercase tracking-widest transition-all flex items-center gap-2 shadow-lg shadow-indigo-600/35 border border-indigo-500 hover:scale-[1.03] active:scale-95 cursor-pointer whitespace-nowrap animate-in fade-in duration-300"
+                className="composer-trigger-btn px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full font-black text-[11px] uppercase tracking-widest transition-all flex items-center gap-2 shadow-lg shadow-indigo-600/35 border border-indigo-500 hover:scale-[1.03] active:scale-95 cursor-pointer whitespace-nowrap shrink-0"
               >
                 <Sparkles className="w-3.5 h-3.5 fill-white/10 animate-pulse text-indigo-200" />
-                <span>💬 ĐẶT CÂU HỎI / HỎI TIẾP AI</span>
+                <span>💬 ĐẶT CÂU HỎI AI</span>
+                <span className="text-[9.5px] font-bold bg-white/20 px-2 py-0.5 rounded-full text-white ml-0.5">
+                  Còn {remainingQuestions} câu
+                </span>
               </button>
+              <QuickPromptsPopup
+                file={mode === "chat" ? activeFile : null}
+                onExecutePrompt={handleExecuteQuickPrompt}
+                isProcessing={isProcessing}
+              />
             </div>
           ) : (
             /* Main compact bottom input area */
@@ -4993,6 +5268,11 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     >
                       <Paperclip className="w-4 h-4" />
                     </button>
+                    <QuickPromptsPopup
+                      file={mode === "chat" ? activeFile : null}
+                      onExecutePrompt={handleExecuteQuickPrompt}
+                      isProcessing={isProcessing}
+                    />
                     <div className="flex items-center gap-1 bg-gray-100/90 p-0.5 rounded-lg border border-gray-200/60">
                       <button
                         type="button"
@@ -5024,7 +5304,18 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="hidden sm:flex items-center gap-1.5 text-[10px] font-bold text-gray-400 mr-1 select-none">
+                      <span className="flex items-center gap-1 text-emerald-700 font-extrabold bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-100" title="Số lượng câu hỏi còn lại hôm nay">
+                        <Zap className="w-3 h-3 text-amber-500" />
+                        Còn {remainingQuestions} câu
+                      </span>
+                      <span className="text-gray-300">•</span>
+                      <span title="Lượng token khả dụng ước tính">
+                        ~{remainingTokens >= 1000 ? `${Math.round(remainingTokens / 1000)}k` : remainingTokens} tok
+                      </span>
+                    </div>
+
                     <button
                       onClick={() => setIsComposerCollapsed(true)}
                       className="px-3 py-1.5 text-gray-400 hover:text-gray-600 bg-gray-50 hover:bg-gray-100 rounded-lg text-[9px] font-black uppercase tracking-wider transition-all cursor-pointer flex items-center gap-1 border border-transparent hover:border-gray-150"

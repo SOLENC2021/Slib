@@ -19,6 +19,32 @@ export interface FirestoreErrorInfo {
   }
 }
 
+export type GeminiModelId = 
+  | "gemini-3.8-flash"
+  | "gemini-3.1-pro-preview" 
+  | "gemini-3.5-flash" 
+  | "gemini-3.1-flash-lite";
+
+export type ChatbotRoleId =
+  | "compliance_expert"
+  | "structural_specialist"
+  | "document_analyst"
+  | "project_manager"
+  | "general_assistant";
+
+export interface ChatbotRoleConfig {
+  id: ChatbotRoleId;
+  name: string;
+  shortTitle: string;
+  badge: string;
+  iconName: string;
+  icon?: string;
+  description: string;
+  recommendedModel: GeminiModelId;
+  systemInstruction: string;
+  samplePrompts: string[];
+}
+
 export interface Message {
   id: string;
   role: "user" | "ai";
@@ -26,6 +52,8 @@ export interface Message {
   timestamp: number;
   image?: string;
   isThinking?: boolean;
+  modelUsed?: string;
+  roleUsed?: ChatbotRoleId;
 }
 
 export interface PDFFile {
@@ -46,6 +74,10 @@ export interface PDFFile {
   geminiFileName?: string;
   textUrl?: string;
   isPublic?: boolean;
+  author?: string;
+  creationDate?: string | number;
+  language?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface PageData {

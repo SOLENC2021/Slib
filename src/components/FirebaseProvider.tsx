@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
+  signInAnonymously,
   GoogleAuthProvider, 
   signOut, 
   User 
@@ -20,7 +21,9 @@ export interface UserProfile {
   role: 'admin' | 'user';
   apiLimit: number;
   apiUsageCount: number;
+  tokensUsed: number;
   lastRequestDate: string;
+  isGuest?: boolean;
 }
 
 interface AuthContextType {
@@ -31,7 +34,8 @@ interface AuthContextType {
   login: () => Promise<void>;
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
-  incrementApiUsage: () => Promise<boolean>;
+  incrementApiUsage: (estimatedTokens?: number) => Promise<boolean>;
+  resetDailyQuota: () => Promise<void>;
   setLoginError: (err: string | null) => void;
 }
 
@@ -44,173 +48,196 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
   const [loginError, setLoginError] = useState<string | null>(null);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        setUser(firebaseUser);
-        try {
-          const isDefaultAdmin = firebaseUser.email === 'solenc2021@gmail.com';
-          const todayStr = new Date().toLocaleDateString('vi-VN');
+    let isMounted = true;
 
-          if (isFirestoreSuspended()) {
-            console.warn("[FirebaseProvider] Firestore is suspended, initializing mock offline profile.");
-            const mockProfile: UserProfile = {
-              uid: firebaseUser.uid,
-              email: firebaseUser.email || '',
-              displayName: firebaseUser.displayName || 'Kỹ sư (Offline)',
-              photoURL: firebaseUser.photoURL || '',
-              createdAt: new Date().toISOString(),
-              role: isDefaultAdmin ? 'admin' : 'user',
-              apiLimit: isDefaultAdmin ? 999999 : 30,
-              apiUsageCount: 0,
-              lastRequestDate: todayStr
-            };
-            setProfile(mockProfile);
-            setLoading(false);
-            return;
-          }
+    const setupAuth = async () => {
+      // 1. Listen to Firebase auth changes
+      const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (!isMounted) return;
 
-          // Sync user to Firestore using the retry mechanism
-          const userRef = doc(db, 'users', firebaseUser.uid);
-          const userSnap = await withFirestoreRetry(
-            () => getDoc(userRef),
-            OperationType.GET,
-            `users/${firebaseUser.uid}`
-          );
-          
-          if (!userSnap) {
-            console.warn("[FirebaseProvider] Failed to fetch profile from Firestore, falling back to mock offline profile.");
-            const mockProfile: UserProfile = {
-              uid: firebaseUser.uid,
-              email: firebaseUser.email || '',
-              displayName: firebaseUser.displayName || 'Kỹ sư (Offline)',
-              photoURL: firebaseUser.photoURL || '',
-              createdAt: new Date().toISOString(),
-              role: isDefaultAdmin ? 'admin' : 'user',
-              apiLimit: isDefaultAdmin ? 999999 : 30,
-              apiUsageCount: 0,
-              lastRequestDate: todayStr
-            };
-            setProfile(mockProfile);
-            setLoading(false);
-            return;
-          }
-          
-          if (!userSnap.exists()) {
-            const newProfile: UserProfile = {
-              uid: firebaseUser.uid,
-              email: firebaseUser.email || '',
-              displayName: firebaseUser.displayName || 'Kỹ sư',
-              photoURL: firebaseUser.photoURL || '',
-              createdAt: new Date().toISOString(),
-              role: isDefaultAdmin ? 'admin' : 'user',
-              apiLimit: isDefaultAdmin ? 999999 : 30, // Default daily limit of 30 requests
-              apiUsageCount: 0,
-              lastRequestDate: todayStr
-            };
-            
-            await withFirestoreRetry(
-              () => setDoc(userRef, newProfile),
-              OperationType.CREATE,
+        if (firebaseUser) {
+          setUser(firebaseUser);
+          try {
+            const isDefaultAdmin = firebaseUser.email === 'solenc2021@gmail.com';
+            const todayStr = new Date().toLocaleDateString('vi-VN');
+
+            if (isFirestoreSuspended()) {
+              console.warn("[FirebaseProvider] Firestore is suspended, initializing mock offline profile.");
+              const mockProfile: UserProfile = {
+                uid: firebaseUser.uid,
+                email: firebaseUser.email || '',
+                displayName: firebaseUser.displayName || (firebaseUser.isAnonymous ? 'Kỹ sư Khách' : 'Kỹ sư'),
+                photoURL: firebaseUser.photoURL || '',
+                createdAt: new Date().toISOString(),
+                role: 'user',
+                apiLimit: 50,
+                apiUsageCount: 0,
+                tokensUsed: 0,
+                lastRequestDate: todayStr,
+                isGuest: firebaseUser.isAnonymous
+              };
+              setProfile(mockProfile);
+              setLoading(false);
+              return;
+            }
+
+            // Sync user to Firestore
+            const userRef = doc(db, 'users', firebaseUser.uid);
+            const userSnap = await withFirestoreRetry(
+              () => getDoc(userRef),
+              OperationType.GET,
               `users/${firebaseUser.uid}`
             );
-            setProfile(newProfile);
-          } else {
-            // Self-healing migration checking and updating
-            const existingData = userSnap.data() as any;
-            let needsUpdate = false;
-            const updatedPayload: Partial<UserProfile> = {};
-
-            if (!existingData.role) {
-              updatedPayload.role = isDefaultAdmin ? 'admin' : 'user';
-              needsUpdate = true;
-            }
-            if (existingData.apiLimit === undefined) {
-              updatedPayload.apiLimit = isDefaultAdmin ? 999999 : 30;
-              needsUpdate = true;
-            }
-            if (existingData.apiUsageCount === undefined) {
-              updatedPayload.apiUsageCount = 0;
-              needsUpdate = true;
-            }
-            if (existingData.lastRequestDate === undefined) {
-              updatedPayload.lastRequestDate = todayStr;
-              needsUpdate = true;
-            }
-
-            if (needsUpdate) {
+            
+            if (!userSnap || !userSnap.exists()) {
+              const newProfile: UserProfile = {
+                uid: firebaseUser.uid,
+                email: firebaseUser.email || '',
+                displayName: firebaseUser.displayName || (firebaseUser.isAnonymous ? 'Kỹ sư Khách' : 'Kỹ sư'),
+                photoURL: firebaseUser.photoURL || '',
+                createdAt: new Date().toISOString(),
+                role: 'user',
+                apiLimit: 50,
+                apiUsageCount: 0,
+                tokensUsed: 0,
+                lastRequestDate: todayStr,
+                isGuest: firebaseUser.isAnonymous
+              };
+              
               await withFirestoreRetry(
-                () => updateDoc(userRef, updatedPayload),
-                OperationType.UPDATE,
+                () => setDoc(userRef, newProfile),
+                OperationType.CREATE,
                 `users/${firebaseUser.uid}`
               );
-              setProfile({ ...existingData, ...updatedPayload } as UserProfile);
+              setProfile(newProfile);
             } else {
-              setProfile(existingData as UserProfile);
-            }
-          }
+              const existingData = userSnap.data() as any;
+              let needsUpdate = false;
+              const updatedPayload: Partial<UserProfile> = {};
 
-          // 1. Load settings for dynamic backend API URL (For all users)
+              if (existingData.apiLimit === undefined) {
+                updatedPayload.apiLimit = 50;
+                needsUpdate = true;
+              }
+              if (existingData.apiUsageCount === undefined) {
+                updatedPayload.apiUsageCount = 0;
+                needsUpdate = true;
+              }
+              if (existingData.tokensUsed === undefined) {
+                updatedPayload.tokensUsed = 0;
+                needsUpdate = true;
+              }
+              if (existingData.lastRequestDate === undefined) {
+                updatedPayload.lastRequestDate = todayStr;
+                needsUpdate = true;
+              }
+
+              if (needsUpdate) {
+                await withFirestoreRetry(
+                  () => updateDoc(userRef, updatedPayload),
+                  OperationType.UPDATE,
+                  `users/${firebaseUser.uid}`
+                );
+                setProfile({ ...existingData, ...updatedPayload } as UserProfile);
+              } else {
+                setProfile(existingData as UserProfile);
+              }
+            }
+
+            // Load settings for dynamic backend API URL
+            try {
+              const apiRef = doc(db, 'settings', 'api');
+              const apiSnap = await getDoc(apiRef);
+              if (apiSnap.exists()) {
+                const apiData = apiSnap.data();
+                if (apiData.url) {
+                  const loadedUrl = apiData.url;
+                  if (
+                    loadedUrl && 
+                    (loadedUrl.startsWith("https://") || loadedUrl.startsWith("http://")) &&
+                    !loadedUrl.includes("localhost") && 
+                    !loadedUrl.includes("127.0.0.1")
+                  ) {
+                    const { setDynamicApiUrl } = await import('../lib/utils');
+                    setDynamicApiUrl(loadedUrl);
+                  }
+                }
+              }
+            } catch (apiErr) {
+              console.warn("[Dynamic API] Failed to fetch settings/api from Firestore:", apiErr);
+            }
+
+            // Auto-heal active public container backend URL
+            if (typeof window !== 'undefined') {
+              const hostname = window.location.hostname || "";
+              if (hostname.includes("run.app")) {
+                try {
+                  let cleanPublicOrigin = window.location.origin;
+                  if (cleanPublicOrigin.includes("-dev-")) {
+                    cleanPublicOrigin = cleanPublicOrigin.replace("-dev-", "-pre-");
+                  }
+                  const apiRef = doc(db, 'settings', 'api');
+                  await setDoc(apiRef, {
+                    url: cleanPublicOrigin,
+                    updatedAt: Date.now()
+                  }, { merge: true });
+                } catch (setApiErr) {
+                  // Non-blocking
+                }
+              }
+            }
+          } catch (syncError) {
+            console.warn("Gracefully bypassed non-blocking user sync to Firestore:", syncError);
+          }
+          setLoading(false);
+        } else {
+          // If not signed in: try anonymous sign in first to get a valid Firebase user
           try {
-            const apiRef = doc(db, 'settings', 'api');
-            const apiSnap = await getDoc(apiRef);
-            if (apiSnap.exists()) {
-              const apiData = apiSnap.data();
-              if (apiData.url) {
-                const loadedUrl = apiData.url;
-                // Only load and cache if the loaded URL is a valid public container URL
-                if (
-                  loadedUrl && 
-                  (loadedUrl.startsWith("https://") || loadedUrl.startsWith("http://")) &&
-                  !loadedUrl.includes("localhost") && 
-                  !loadedUrl.includes("127.0.0.1")
-                ) {
-                  const { setDynamicApiUrl } = await import('../lib/utils');
-                  setDynamicApiUrl(loadedUrl);
-                  console.log("[Dynamic API] Loaded active backend API URL from Firestore settings:", loadedUrl);
-                } else {
-                  console.warn("[Dynamic API] Ignored loaded api.url due to invalid structure:", loadedUrl);
-                }
-              }
-            }
-          } catch (apiErr) {
-            console.warn("[Dynamic API] Failed to fetch settings/api from Firestore:", apiErr);
-          }
+            await signInAnonymously(auth);
+          } catch (anonErr) {
+            console.warn("[FirebaseProvider] Anonymous sign-in unavailable, initializing guest profile:", anonErr);
+            const todayStr = new Date().toLocaleDateString('vi-VN');
+            const guestId = localStorage.getItem("solenc_guest_id") || `guest_${Math.random().toString(36).substring(2, 9)}`;
+            localStorage.setItem("solenc_guest_id", guestId);
+            
+            const savedCount = parseInt(localStorage.getItem(`solenc_usage_${todayStr}`) || "0", 10);
+            const savedTokens = parseInt(localStorage.getItem(`solenc_tokens_${todayStr}`) || "0", 10);
 
-          // 2. If Admin logs in from workspace, auto-heal and publish active PUBLIC container backend URL
-          const isAdminUser = isDefaultAdmin || (userSnap.exists() && (userSnap.data() as any).role === 'admin');
-          if (isAdminUser && typeof window !== 'undefined') {
-            const hostname = window.location.hostname || "";
-            const isPublishableOrigin = hostname.includes("run.app");
-              
-            if (isPublishableOrigin) {
-              try {
-                let cleanPublicOrigin = window.location.origin;
-                if (cleanPublicOrigin.includes("-dev-")) {
-                  cleanPublicOrigin = cleanPublicOrigin.replace("-dev-", "-pre-");
-                }
-                
-                const apiRef = doc(db, 'settings', 'api');
-                await setDoc(apiRef, {
-                  url: cleanPublicOrigin,
-                  updatedAt: Date.now()
-                }, { merge: true });
-                console.log("[Dynamic API] Auto-healed and updated active backend API URL in Firestore settings as:", cleanPublicOrigin);
-              } catch (setApiErr) {
-                console.warn("[Dynamic API] Failed to update backend URL in Firestore settings:", setApiErr);
-              }
-            }
+            const guestUser: any = {
+              uid: guestId,
+              displayName: "Kỹ sư Khách",
+              email: "",
+              photoURL: "",
+              isAnonymous: true
+            };
+            setUser(guestUser);
+            setProfile({
+              uid: guestId,
+              email: "",
+              displayName: "Kỹ sư Khách",
+              photoURL: "",
+              createdAt: new Date().toISOString(),
+              role: "user",
+              apiLimit: 50,
+              apiUsageCount: savedCount,
+              tokensUsed: savedTokens,
+              lastRequestDate: todayStr,
+              isGuest: true
+            });
+            setLoading(false);
           }
-        } catch (syncError) {
-          console.warn("Gracefully bypassed non-blocking user sync to Firestore due to transient database service unavailability:", syncError);
         }
-      } else {
-        setUser(null);
-        setProfile(null);
-      }
-      setLoading(false);
-    });
+      });
 
-    return () => unsubscribe();
+      return unsubscribe;
+    };
+
+    const unsubPromise = setupAuth();
+
+    return () => {
+      isMounted = false;
+      unsubPromise.then(unsub => unsub && unsub());
+    };
   }, []);
 
   const login = async () => {
@@ -223,9 +250,9 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
       let errorMsg = error.message || "Lỗi đăng nhập không xác định.";
       if (error.code === 'auth/unauthorized-domain') {
         const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'tên miền của bạn';
-        errorMsg = `Tên miền hiện tại (${currentHost}) chưa được thêm vào danh sách được phép đăng nhập (Authorized domains) trong Firebase Console. Hãy truy cập Firebase Console -> Authentication -> Settings -> Authorized domains và thêm "${currentHost}".`;
+        errorMsg = `Tên miền hiện tại (${currentHost}) chưa được thêm vào Authorized domains trong Firebase Console.`;
       } else if (error.code === 'auth/popup-blocked') {
-        errorMsg = "Trình duyệt đã chặn cửa sổ Popup. Vui lòng cho phép hiện Popup để tiếp tục đăng nhập.";
+        errorMsg = "Trình duyệt đã chặn cửa sổ Popup. Vui lòng cho phép hiện Popup để tiếp tục.";
       } else if (error.code === 'auth/popup-closed-by-user') {
         errorMsg = "Cửa sổ đăng nhập đã bị đóng trước khi hoàn tất.";
       }
@@ -237,6 +264,12 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
     try {
       setLoginError(null);
       await signOut(auth);
+      // Auto sign back in anonymously to keep open access for everyone
+      try {
+        await signInAnonymously(auth);
+      } catch (e) {
+        // Fallback handled in auth listener
+      }
     } catch (error) {
       console.error("Logout failed:", error);
     }
@@ -255,55 +288,90 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const incrementApiUsage = async (): Promise<boolean> => {
-    if (!user) return false;
-    
-    // Bypass immediately if Firestore database is suspended/running in offline mock fallback
-    if (isFirestoreSuspended()) {
-      console.log("[incrementApiUsage] Firestore is suspended or flagged, bypassing quota check & allowing query.");
-      return true;
+  const incrementApiUsage = async (estimatedTokens: number = 1200): Promise<boolean> => {
+    const todayStr = new Date().toLocaleDateString('vi-VN');
+    const currentLimit = profile?.apiLimit || 50;
+    let currentCount = profile?.apiUsageCount || 0;
+    let currentTokens = profile?.tokensUsed || 0;
+
+    // Daily reset if date changed
+    if (profile?.lastRequestDate !== todayStr) {
+      currentCount = 0;
+      currentTokens = 0;
     }
 
-    try {
-      const userRef = doc(db, 'users', user.uid);
-      const userSnap = await getDoc(userRef);
-      if (!userSnap.exists()) return false;
-      
-      const p = userSnap.data() as UserProfile;
-      const todayStr = new Date().toLocaleDateString('vi-VN');
-      
-      // Admin bypass checks (both role and actual default email for fail-safety)
-      const isAdminUser = p.role === 'admin' || user.email === 'solenc2021@gmail.com';
-      
-      if (p.lastRequestDate !== todayStr) {
-        // Daily reset: clear the counter to 1 and update request date to today
+    if (currentCount >= currentLimit) {
+      return false; // Reached limit
+    }
+
+    const newCount = currentCount + 1;
+    const newTokens = currentTokens + estimatedTokens;
+
+    setProfile(prev => prev ? ({
+      ...prev,
+      apiUsageCount: newCount,
+      tokensUsed: newTokens,
+      lastRequestDate: todayStr
+    }) : null);
+
+    localStorage.setItem(`solenc_usage_${todayStr}`, newCount.toString());
+    localStorage.setItem(`solenc_tokens_${todayStr}`, newTokens.toString());
+
+    if (user && !profile?.isGuest && !user.isAnonymous) {
+      try {
+        const userRef = doc(db, 'users', user.uid);
         await updateDoc(userRef, {
-          apiUsageCount: 1,
+          apiUsageCount: newCount,
+          tokensUsed: newTokens,
           lastRequestDate: todayStr
         });
-        setProfile((prev: any) => ({ ...prev, apiUsageCount: 1, lastRequestDate: todayStr }));
-        return true;
-      } else {
-        // Enforce quota limit only for normal users
-        if (!isAdminUser && p.apiUsageCount >= (p.apiLimit || 30)) {
-          return false; // Quota limit reached
-        }
-        
-        const newCount = (p.apiUsageCount || 0) + 1;
-        await updateDoc(userRef, {
-          apiUsageCount: newCount
-        });
-        setProfile((prev: any) => ({ ...prev, apiUsageCount: newCount }));
-        return true;
+      } catch (err) {
+        console.warn("Non-blocking Firestore quota sync:", err);
       }
-    } catch (error) {
-      console.warn("Non-blocking fallback enabled for incrementApiUsage during DB issue:", error);
-      return true; // Bypass to avoid fully breaking app experience if Db is briefly offline
+    }
+
+    return true;
+  };
+
+  const resetDailyQuota = async () => {
+    const todayStr = new Date().toLocaleDateString('vi-VN');
+    localStorage.setItem(`solenc_usage_${todayStr}`, "0");
+    localStorage.setItem(`solenc_tokens_${todayStr}`, "0");
+
+    setProfile(prev => prev ? ({
+      ...prev,
+      apiUsageCount: 0,
+      tokensUsed: 0,
+      lastRequestDate: todayStr
+    }) : null);
+
+    if (user && !profile?.isGuest && !user.isAnonymous) {
+      try {
+        const userRef = doc(db, 'users', user.uid);
+        await updateDoc(userRef, {
+          apiUsageCount: 0,
+          tokensUsed: 0,
+          lastRequestDate: todayStr
+        });
+      } catch (err) {
+        console.warn("Could not reset quota in Firestore:", err);
+      }
     }
   };
 
   return (
-    <AuthContext.Provider value={{ user, profile, loading, loginError, login, logout, refreshProfile, incrementApiUsage, setLoginError }}>
+    <AuthContext.Provider value={{ 
+      user, 
+      profile, 
+      loading, 
+      loginError, 
+      login, 
+      logout, 
+      refreshProfile, 
+      incrementApiUsage, 
+      resetDailyQuota,
+      setLoginError 
+    }}>
       {children}
     </AuthContext.Provider>
   );

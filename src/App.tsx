@@ -38,16 +38,13 @@ import { handleFirestoreError, withFirestoreRetry, isFirestoreSuspended } from "
 import { storage } from "./lib/firebase";
 import { DeleteConfirmModal } from "./components/DeleteConfirmModal";
 import { EditFileModal } from "./components/EditFileModal";
-import { AdminPanelModal } from "./components/AdminPanelModal";
 import { QuotaExceededModal } from "./components/QuotaExceededModal";
-import { ShieldCheck } from "lucide-react";
+import { QuotaTokenBadge } from "./components/QuotaTokenBadge";
 
 export default function App() {
   const { user, profile, loading, loginError, login, logout, incrementApiUsage, setLoginError } = useAuth();
-  const [viewMode, setViewMode] = useState<'admin' | 'member'>('member');
-  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isQuotaExceededModalOpen, setIsQuotaExceededModalOpen] = useState(false);
-  const [quotaLimitValue, setQuotaLimitValue] = useState(30);
+  const [quotaLimitValue, setQuotaLimitValue] = useState(50);
 
   const [isDbSuspended, setIsDbSuspended] = useState(() => isFirestoreSuspended());
   const [dbSuspendedReason, setDbSuspendedReason] = useState(() => {
@@ -123,14 +120,6 @@ export default function App() {
   // Tracking pages currently being processed to prevent duplicate concurrent network fetch operations
   const processingPagesRef = useRef<Set<string>>(new Set());
   const pageChangeTimeoutRef = useRef<any>(null);
-
-  // Set view mode when user / profile loads
-  useEffect(() => {
-    if (user) {
-      const isUserAdmin = profile?.role === 'admin' || user?.email === 'solenc2021@gmail.com';
-      setViewMode(isUserAdmin ? 'admin' : 'member');
-    }
-  }, [profile, user]);
 
   useEffect(() => {
     if (pageChangeTimeoutRef.current) {
@@ -218,12 +207,9 @@ export default function App() {
 
     const loadFiles = async () => {
       try {
-        const isAdminUser = profile?.role === "admin" || user?.email === "solenc2021@gmail.com";
-        const q = (isAdminUser && viewMode === "admin")
-          ? query(collection(db, "files"), where("ownerId", "==", user.uid))
-          : query(collection(db, "files"), where("isPublic", "==", true));
+        const q = query(collection(db, "files"));
 
-        console.log("[App] Querying Firestore 'files' list using getDocs ONE-TIME...");
+        console.log("[App] Querying Firestore 'files' list for all users...");
         const snapshot = await getDocs(q);
         const fetchedFiles = snapshot.docs.map(doc => ({
           ...doc.data(),
@@ -244,7 +230,7 @@ export default function App() {
     };
 
     loadFiles();
-  }, [user, profile, viewMode, isDbSuspended, filesTrigger]);
+  }, [user, profile, isDbSuspended, filesTrigger]);
 
   // Self-healing: Files already store isPublic flag on creation
   // Bypassed eager loop to avoid consuming quota read/write units
@@ -381,6 +367,12 @@ export default function App() {
         }
       }
 
+      const rawInfo = extractionData.info || {};
+      const author = rawInfo.Author || rawInfo.author || rawInfo.Creator || "";
+      const creationDate = rawInfo.CreationDate || rawInfo.creationDate || "";
+      const sampleText = extractionData.text || "";
+      const detectedLang = rawInfo.Language || rawInfo.language || (/[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(sampleText) ? "Tiếng Việt (vi)" : "Tiếng Anh (en)");
+
       await withFirestoreRetry(
         () => updateDoc(doc(db, "files", fileId), {
           text: (extractionData.text || "").substring(0, 100000), 
@@ -390,6 +382,10 @@ export default function App() {
           extractionMethod: extractionData.extractionMethod,
           geminiFileUri: extractionData.geminiFileUri || null,
           geminiFileName: extractionData.geminiFileName || null,
+          author: author || "Không xác định",
+          creationDate: creationDate || null,
+          language: detectedLang,
+          metadata: rawInfo,
           // Only mark all pages as processed if we got a good amount of text (at least 150 chars per page on average)
           processedPages: (extractionData.extractionMethod === "pdf-parse" && (extractionData.text?.length || 0) > extractionData.numpages * 150) 
             ? Array.from({length: extractionData.numpages}, (_, i) => i + 1) : []
@@ -616,7 +612,10 @@ export default function App() {
     referencedFileIds?: string[], 
     isThinking?: boolean, 
     isImageGeneration?: boolean,
-    attachedPdf?: { name: string; text: string; geminiFileUri?: string }
+    attachedPdf?: { name: string; text: string; geminiFileUri?: string },
+    model?: string,
+    chatbotRole?: string,
+    customSystemInstruction?: string
   ) => {
     const allowed = await incrementApiUsage();
     if (!allowed) {
@@ -671,6 +670,8 @@ export default function App() {
           role: "ai",
           content: "",
           timestamp: Date.now(),
+          modelUsed: model,
+          roleUsed: chatbotRole as any,
         };
         setGeneralMessages((prev) => [...prev, placeholderMsg]);
 
@@ -695,7 +696,10 @@ export default function App() {
             setGeneralMessages((prev) =>
               prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText } : m))
             );
-          }
+          },
+          model,
+          chatbotRole,
+          customSystemInstruction
         );
 
         if (result?.text) {
@@ -820,6 +824,8 @@ export default function App() {
         role: "ai",
         content: "",
         timestamp: Date.now(),
+        modelUsed: model,
+        roleUsed: chatbotRole as any,
       };
       setMessages((prev) => [...prev, placeholderMsg]);
 
@@ -844,7 +850,10 @@ export default function App() {
           setMessages((prev) =>
             prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText } : m))
           );
-        }
+        },
+        model,
+        chatbotRole,
+        customSystemInstruction
       );
 
       if (result?.text) {
@@ -919,12 +928,15 @@ export default function App() {
       return null;
     }
 
-    // On-demand registration if geminiFileUri is missing or expired (> 40h)
+    // Fast-path: If activeFile already has text, extract directly without blocking on file re-registration
+    const hasSufficientText = Boolean(activeFile.text && activeFile.text.trim().length > 100);
     const isExpired = activeFile.uploadDate && (Date.now() - activeFile.uploadDate > 40 * 60 * 60 * 1000);
     let fileUri = (activeFile.geminiFileUri && !isExpired) ? activeFile.geminiFileUri : null;
-    if (!fileUri && activeFile.url) {
+    
+    // Only perform on-demand heavy file registration if both valid URI and extracted text are missing
+    if (!fileUri && !hasSufficientText && activeFile.url) {
       try {
-        console.log("File is missing or expired Gemini File API representation during extraction. Registering/refreshing on-demand...");
+        console.log("File is missing both text and Gemini File URI. Registering on-demand...");
         const registration = await safeFetch("/api/register-gemini-file", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1152,82 +1164,12 @@ export default function App() {
     );
   }
 
-  if (!user) {
-    const isUnauthorizedDomain = loginError?.includes("unauthorized-domain") || loginError?.includes("Tên miền");
-
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-[#ebeff4] font-sans p-6 overflow-y-auto">
-        <div className="max-w-md w-full bg-white rounded-[32px] shadow-[0_25px_60px_-15px_rgba(0,0,0,0.08)] p-10 border border-gray-200/60 flex flex-col items-center text-center my-8">
-          <div className="w-20 h-20 bg-gray-900 rounded-[32px] flex items-center justify-center mb-8 shadow-xl">
-            <LayoutGrid className="w-10 h-10 text-white" />
-          </div>
-          <h1 className="text-2xl font-black text-gray-900 uppercase tracking-tight mb-4">
-            Library Engine <span className="text-indigo-600">v3</span>
-          </h1>
-          <p className="text-gray-400 text-sm font-bold uppercase tracking-widest leading-relaxed mb-8">
-            Hệ thống quản lý tài liệu kỹ thuật<br/>thế hệ mới của Kỹ sư trạm
-          </p>
-
-          <button 
-            onClick={login}
-            className="w-full py-5 bg-indigo-600 text-white rounded-[24px] font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-indigo-600/20 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-4 group cursor-pointer"
-          >
-            ĐĂNG NHẬP VỚI GOOGLE
-          </button>
-
-          {loginError && (
-            <div className="mt-6 w-full text-left bg-red-50 border border-red-200/60 rounded-[20px] p-5 shadow-inner">
-              <div className="flex items-center gap-2 text-red-600 font-black text-[10px] uppercase tracking-widest mb-2.5">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                LỖI ĐĂNG NHẬP FIREBASE
-              </div>
-              <p className="text-red-700 text-xs font-bold leading-relaxed mb-4">
-                {loginError}
-              </p>
-
-              {isUnauthorizedDomain && (
-                <div className="bg-white/60 p-4 rounded-xl border border-red-150/50 text-[11px] text-slate-600 leading-relaxed font-medium">
-                  <p className="font-extrabold text-slate-800 uppercase text-[10px] tracking-wider mb-2 text-indigo-600">
-                    Cách khắc phục nhanh (Chỉ Thêm 1 Lần):
-                  </p>
-                  <ol className="list-decimal pl-4.5 space-y-1.5 font-semibold text-slate-700">
-                    <li>Vào <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer" className="text-indigo-600 underline font-bold">Firebase Console</a> dứ án <code className="bg-slate-100 px-1 rounded">thuviennoibo</code>.</li>
-                    <li>Vào mục <span className="font-bold text-slate-800">Authentication</span> → Chọn tab <span className="font-bold text-slate-800">Settings</span>.</li>
-                    <li>Chọn dòng <span className="font-bold text-slate-800">Authorized domains (Miền được ủy quyền)</span>.</li>
-                    <li>Nhấn <span className="font-bold text-slate-800">Add domain</span> và thêm miền sau:</li>
-                  </ol>
-                  <div className="mt-2.5 flex flex-col gap-1">
-                    <code className="block bg-indigo-50 text-indigo-600 px-3 py-1 rounded-lg text-[10px] font-bold font-mono border border-indigo-100 select-all">
-                      solenc2021.github.io
-                    </code>
-                    {window.location.hostname && window.location.hostname !== "solenc2021.github.io" && (
-                      <code className="block bg-amber-50 text-amber-600 px-3 py-1 rounded-lg text-[10px] font-bold font-mono border border-amber-100 select-all">
-                        {window.location.hostname}
-                      </code>
-                    )}
-                  </div>
-                  <p className="text-[10px] font-bold text-slate-400 mt-2.5 italic">
-                    * Sau khi Thêm xong, hãy tải lại trang này và thử Đăng nhập lại!
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          <p className="mt-8 text-[10px] text-gray-300 font-bold uppercase tracking-widest">
-            BẢO MẬT BỞI GOOGLE CLOUD PLATFORM
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col h-screen w-full bg-[#ebeff4] overflow-hidden">
       {/* Top Header */}
       <header className="h-20 bg-white border-b border-gray-200/60 flex items-center justify-between px-8 shrink-0 z-30 shadow-[0_2px_12px_rgba(0,0,0,0.02)]">
         <div className="flex items-center gap-4">
-          <div className="w-10 h-10 bg-gray-900 rounded-xl flex items-center justify-center">
+          <div className="w-10 h-10 bg-gray-900 rounded-xl flex items-center justify-center shadow-md">
             <LayoutGrid className="w-6 h-6 text-white" />
           </div>
           <div>
@@ -1238,70 +1180,17 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-6">
-          {/* Segmented Mode Picker for Admin previewing */}
-          {(profile?.role === 'admin' || user?.email === 'solenc2021@gmail.com') ? (
-            <div className="flex bg-[#f1f4f8] p-1.5 rounded-2xl border border-gray-200/50 gap-1 select-none shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.03)] mr-2">
-              <button
-                onClick={() => {
-                  setViewMode('admin');
-                  setActiveFileId(null);
-                  setMessages([]);
-                }}
-                className={cn(
-                  "px-3.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all duration-200 flex items-center gap-1.5 cursor-pointer",
-                  viewMode === 'admin'
-                    ? "bg-white text-gray-900 border border-gray-200/60 shadow-xs"
-                    : "text-gray-400 hover:text-gray-650"
-                )}
-                title="Xem giao diện và thao tác Quản trị viên"
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
-                Quản trị viên
-              </button>
-              <button
-                onClick={() => {
-                  setViewMode('member');
-                  setActiveFileId(null);
-                  setMessages([]);
-                }}
-                className={cn(
-                  "px-3.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all duration-200 flex items-center gap-1.5 cursor-pointer",
-                  viewMode === 'member'
-                    ? "bg-white text-emerald-700 border border-emerald-100 shadow-xs"
-                    : "text-gray-400 hover:text-gray-650"
-                )}
-                title="Xem giao diện cổng Thành viên"
-              >
-                <FileText className="w-3.5 h-3.5 text-emerald-500" />
-                Thành viên
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-50/70 border border-emerald-150/40 rounded-2xl text-[10px] font-black uppercase tracking-widest text-[#009688] mr-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-              CỔNG THÀNH VIÊN
-            </div>
-          )}
-
-          {viewMode === 'admin' && (profile?.role === 'admin' || user?.email === 'solenc2021@gmail.com') && (
-            <button
-              onClick={() => setIsAdminModalOpen(true)}
-              className="bg-amber-500 hover:bg-amber-600 text-white px-4 py-2 rounded-xl font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-2 transition-all duration-300 border border-amber-600 shadow-sm cursor-pointer"
-              title="Mở bảng điều khiển kiểm soát nội bộ"
-            >
-              <ShieldCheck className="w-4 h-4" />
-              QUẢN TRỊ VIÊN ✦
-            </button>
-          )}
+        <div className="flex items-center gap-4">
+          {/* Remaining Questions & Token Quota Badge */}
+          <QuotaTokenBadge />
 
           <button 
             onClick={() => setIsAiPanelOpen(!isAiPanelOpen)}
             className={cn(
-              "px-4 py-2 rounded-xl font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-2 transition-all duration-300 border shadow-sm cursor-pointer",
+              "px-4 py-2 rounded-2xl font-extrabold text-[11px] uppercase tracking-wider flex items-center gap-2 transition-all duration-300 border shadow-xs cursor-pointer select-none",
               isAiPanelOpen 
                 ? "bg-indigo-600 border-indigo-600 text-white shadow-[0_4px_12px_rgba(79,70,229,0.18)] hover:bg-indigo-700 hover:border-indigo-700" 
-                : "bg-white border-gray-200 text-indigo-600 hover:bg-indigo-50/40"
+                : "bg-white border-gray-200 text-indigo-600 hover:bg-indigo-50/50"
             )}
             title="Bật/Tắt khung phân tích AI"
           >
@@ -1309,19 +1198,34 @@ export default function App() {
             {isAiPanelOpen ? "ẨN PHÂN TÍCH AI ✦" : "HIỂN THỊ TRUY VẤN AI ✦"}
           </button>
 
-          <div className="flex flex-col items-end mr-4">
+          <div className="flex flex-col items-end">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-bold text-gray-700">{user.displayName}</span>
-              <div className="w-10 h-10 rounded-full bg-gray-200 border-2 border-white shadow-sm overflow-hidden">
-                <img src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}&background=4f46e5&color=fff`} alt="Avatar" className="w-full h-full object-cover" />
+              <span className="text-xs font-black text-gray-700">
+                {user?.displayName || "Kỹ sư Khách"}
+              </span>
+              <div className="w-9 h-9 rounded-full bg-gray-200 border-2 border-white shadow-xs overflow-hidden shrink-0">
+                <img 
+                  src={user?.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.displayName || "Ky su")}&background=4f46e5&color=fff`} 
+                  alt="Avatar" 
+                  className="w-full h-full object-cover" 
+                />
               </div>
             </div>
-            <button 
-              onClick={logout}
-              className="text-[10px] font-black text-red-500 uppercase tracking-widest mt-1 flex items-center gap-1 hover:text-red-700 transition-colors"
-            >
-              <LogOut className="w-3 h-3" /> ĐĂNG XUẤT
-            </button>
+            {user && !user.isAnonymous && user.email ? (
+              <button 
+                onClick={logout}
+                className="text-[9.5px] font-black text-red-500 hover:text-red-700 uppercase tracking-widest mt-0.5 flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <LogOut className="w-2.5 h-2.5" /> ĐĂNG XUẤT
+              </button>
+            ) : (
+              <button 
+                onClick={login}
+                className="text-[9.5px] font-black text-indigo-600 hover:text-indigo-800 uppercase tracking-widest mt-0.5 transition-colors cursor-pointer"
+              >
+                Đăng nhập Google
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -1469,7 +1373,6 @@ export default function App() {
                     isPdfViewerOpen={isPdfViewerOpen}
                     onTogglePdfViewer={() => setIsPdfViewerOpen(!isPdfViewerOpen)}
                     onCheckQuota={handleCheckQuota}
-                    viewMode={viewMode}
                     compareMode={compareMode}
                     setCompareMode={setCompareMode}
                     compareWithFileId={compareWithFileId}
@@ -1490,6 +1393,8 @@ export default function App() {
                     setViewLayer={setViewLayer}
                     markerOpacity={markerOpacity}
                     setMarkerOpacity={setMarkerOpacity}
+                    onClearGeneralMessages={() => setGeneralMessages([])}
+                    onClearMessages={() => setMessages([])}
                   />
                 </motion.div>
               )}
@@ -1597,15 +1502,8 @@ export default function App() {
           onDeleteFile={(file) => setFileToDelete(file)}
           onEditFile={(file) => setFileToEdit(file)}
           isUploading={isUploading}
-          viewMode={viewMode}
         />
       </div>
-
-      <AdminPanelModal
-        isOpen={isAdminModalOpen}
-        onClose={() => setIsAdminModalOpen(false)}
-        currentAdminEmail={user?.email || ""}
-      />
 
       <QuotaExceededModal
         isOpen={isQuotaExceededModalOpen}

@@ -4,7 +4,7 @@ import {
   ChevronRight, ChevronDown, Folder, 
   FolderOpen, Building2, Hammer, Zap,
   Compass, CheckCircle2, Share2, Trash2, Edit3,
-  Scale, Info, Package, Search, X, BookOpen
+  Scale, Info, Package, Search, X, BookOpen, Clock
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PDFFile } from "@/types";
@@ -74,7 +74,6 @@ interface SidebarProps {
   onDeleteFile: (file: PDFFile) => void;
   onEditFile: (file: PDFFile) => void;
   isUploading: boolean;
-  viewMode?: "admin" | "member";
 }
 
 const NAV_STRUCTURE = [
@@ -109,13 +108,7 @@ export function Sidebar({
   onDeleteFile,
   onEditFile,
   isUploading,
-  viewMode = "admin"
 }: SidebarProps) {
-  const { profile, user: authUser } = useAuth();
-  const isAdmin = profile?.role === "admin" || authUser?.email === "solenc2021@gmail.com";
-  const isMemberMode = viewMode === "member";
-  const isEffectiveAdmin = isAdmin && !isMemberMode;
-  
   const [dragActive, setDragActive] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState<string[]>(["tckt"]);
   const [selectedCategory, setSelectedCategory] = useState<string>("banve");
@@ -176,7 +169,6 @@ export function Sidebar({
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!isEffectiveAdmin) return;
     if (e.type === "dragenter" || e.type === "dragover") {
       setDragActive(true);
     } else if (e.type === "dragleave") {
@@ -188,7 +180,6 @@ export function Sidebar({
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-    if (!isEffectiveAdmin) return;
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const selectedFiles = Array.from(e.dataTransfer.files).filter(file => file.name.toLowerCase().endsWith('.pdf'));
       if (selectedFiles.length > 0) {
@@ -269,31 +260,29 @@ export function Sidebar({
         </div>
 
         {/* Upload Button */}
-        {isEffectiveAdmin ? (
-          <label
-            className={cn(
-              "relative group flex items-center justify-center gap-3 w-full py-4.5 bg-indigo-600 rounded-2xl transition-all duration-300 cursor-pointer shadow-md hover:shadow-[0_12px_24px_-4px_rgba(79,70,229,0.25)] hover:bg-indigo-700 hover:scale-[1.01] active:translate-y-[1px]",
-              isUploading && "opacity-50 cursor-wait"
-            )}
-          >
-            {isUploading ? (
-              <Loader2 className="w-5 h-5 text-white animate-spin" />
-            ) : (
-              <>
-                <Plus className="w-5 h-5 text-white" />
-                <span className="text-sm font-black text-white uppercase tracking-wider">Tải tệp PDF mới</span>
-              </>
-            )}
-            <input
-              type="file"
-              className="hidden"
-              accept=".pdf"
-              multiple
-              onChange={handleFileInput}
-              disabled={isUploading}
-            />
-          </label>
-        ) : null}
+        <label
+          className={cn(
+            "relative group flex items-center justify-center gap-3 w-full py-4.5 bg-indigo-600 rounded-2xl transition-all duration-300 cursor-pointer shadow-md hover:shadow-[0_12px_24px_-4px_rgba(79,70,229,0.25)] hover:bg-indigo-700 hover:scale-[1.01] active:translate-y-[1px]",
+            isUploading && "opacity-50 cursor-wait"
+          )}
+        >
+          {isUploading ? (
+            <Loader2 className="w-5 h-5 text-white animate-spin" />
+          ) : (
+            <>
+              <Plus className="w-5 h-5 text-white" />
+              <span className="text-sm font-black text-white uppercase tracking-wider">Tải tệp PDF mới</span>
+            </>
+          )}
+          <input
+            type="file"
+            className="hidden"
+            accept=".pdf"
+            multiple
+            onChange={handleFileInput}
+            disabled={isUploading}
+          />
+        </label>
       </div>
 
       <div className="p-6 flex-1 overflow-y-auto no-scrollbar">
@@ -359,11 +348,29 @@ export function Sidebar({
                       )}
                     >
                       <div className="flex items-start gap-2">
-                        <div className={cn(
-                          "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors mt-0.5",
-                          activeFileId === file.id ? "bg-indigo-600 text-white" : "bg-indigo-50 text-indigo-600"
-                        )}>
-                          <FileText className="w-4 h-4" />
+                        <div className="relative shrink-0 mt-0.5">
+                          <div className={cn(
+                            "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
+                            activeFileId === file.id ? "bg-indigo-600 text-white" : "bg-indigo-50 text-indigo-600"
+                          )}>
+                            <FileText className="w-4 h-4" />
+                          </div>
+                          {/* Status Icon directly on file item */}
+                          {file.isAIReady ? (
+                            <div 
+                              className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center text-white shadow-xs"
+                              title="Đã phân tích AI thành công"
+                            >
+                              <CheckCircle2 className="w-2.5 h-2.5 stroke-[2.5]" />
+                            </div>
+                          ) : (
+                            <div 
+                              className="absolute -bottom-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center text-white shadow-xs"
+                              title="Chưa phân tích AI"
+                            >
+                              <Clock className="w-2.5 h-2.5 stroke-[2.5] animate-pulse" />
+                            </div>
+                          )}
                         </div>
                         <div className="flex-1 min-w-0">
                           <p className="text-[11.5px] font-extrabold text-gray-850 leading-normal break-words line-clamp-3 pr-4 group-hover:text-indigo-650 transition-colors">
@@ -383,15 +390,20 @@ export function Sidebar({
                                 <BookOpen className="w-2.5 h-2.5" /> Khớp nội dung
                               </span>
                             )}
-                            {file.isAIReady !== false && (
+                            {file.isAIReady ? (
                               <span className={cn(
-                                "inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide",
+                                "inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide",
                                 file.extractionMethod === "gemini-ocr" 
-                                  ? "bg-amber-500/10 text-amber-700 border border-amber-500/10" 
-                                  : "bg-[#00BFA5]/10 text-[#009688] border border-[#00BFA5]/10"
-                              )}>
-                                <Zap className={cn("w-2 h-2 fill-current", file.extractionMethod === "gemini-ocr" && "animate-pulse")} />
-                                {file.extractionMethod === "gemini-ocr" ? "AI OCR READY" : "AI READY"}
+                                  ? "bg-amber-500/10 text-amber-700 border border-amber-500/20" 
+                                  : "bg-emerald-500/10 text-emerald-700 border border-emerald-500/20"
+                              )} title="Đã phân tích AI thành công">
+                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                                {file.extractionMethod === "gemini-ocr" ? "AI OCR READY" : "ĐÃ PHÂN TÍCH AI"}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide bg-amber-500/10 text-amber-700 border border-amber-500/20" title="Chưa phân tích AI">
+                                <Clock className="w-2.5 h-2.5 text-amber-600 animate-pulse shrink-0" />
+                                CHƯA PHÂN TÍCH AI
                               </span>
                             )}
                           </div>
@@ -408,32 +420,30 @@ export function Sidebar({
                       </div>
 
                       {/* File Actions */}
-                      {isEffectiveAdmin && (
-                        <div className="absolute right-2 bottom-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity translate-y-1 group-hover:translate-y-0 duration-300">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onEditFile(file);
-                            }}
-                            className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all shadow-xs"
-                            title="Chỉnh sửa tên"
-                          >
-                            <Edit3 className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onDeleteFile(file);
-                            }}
-                            className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-xs"
-                            title="Xóa tệp"
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
-                      )}
+                      <div className="absolute right-2 bottom-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity translate-y-1 group-hover:translate-y-0 duration-300">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onEditFile(file);
+                          }}
+                          className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all shadow-xs"
+                          title="Chỉnh sửa tên"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDeleteFile(file);
+                          }}
+                          className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-xs"
+                          title="Xóa tệp"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
                     </div>
                   );
                 })}
@@ -572,11 +582,29 @@ export function Sidebar({
                 )}
               >
                 <div className="flex items-start gap-2">
-                  <div className={cn(
-                    "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors mt-0.5",
-                    activeFileId === file.id ? "bg-indigo-600 text-white" : "bg-indigo-50 text-indigo-600"
-                  )}>
-                    <FileText className="w-4 h-4" />
+                  <div className="relative shrink-0 mt-0.5">
+                    <div className={cn(
+                      "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
+                      activeFileId === file.id ? "bg-indigo-600 text-white" : "bg-indigo-50 text-indigo-600"
+                    )}>
+                      <FileText className="w-4 h-4" />
+                    </div>
+                    {/* Status Icon directly on file item */}
+                    {file.isAIReady ? (
+                      <div 
+                        className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center text-white shadow-xs"
+                        title="Đã phân tích AI thành công"
+                      >
+                        <CheckCircle2 className="w-2.5 h-2.5 stroke-[2.5]" />
+                      </div>
+                    ) : (
+                      <div 
+                        className="absolute -bottom-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center text-white shadow-xs"
+                        title="Chưa phân tích AI"
+                      >
+                        <Clock className="w-2.5 h-2.5 stroke-[2.5] animate-pulse" />
+                      </div>
+                    )}
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-[11.5px] font-extrabold text-gray-850 leading-normal break-words line-clamp-3 pr-4 group-hover:text-indigo-650 transition-colors">
@@ -586,15 +614,20 @@ export function Sidebar({
                       <span className="text-[9px] text-gray-400 font-bold tracking-wider">
                         {file.size || "0 MB"}
                       </span>
-                      {file.isAIReady !== false && (
+                      {file.isAIReady ? (
                         <span className={cn(
-                          "inline-flex items-center gap-0.5 px-1 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide",
+                          "inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide",
                           file.extractionMethod === "gemini-ocr" 
-                            ? "bg-amber-500/10 text-amber-700 border border-amber-500/10" 
-                            : "bg-[#00BFA5]/10 text-[#009688] border border-[#00BFA5]/10"
-                        )}>
-                          <Zap className={cn("w-2 h-2 fill-current", file.extractionMethod === "gemini-ocr" && "animate-pulse")} />
-                          {file.extractionMethod === "gemini-ocr" ? "AI OCR READY" : "AI READY"}
+                            ? "bg-amber-500/10 text-amber-700 border border-amber-500/20" 
+                            : "bg-emerald-500/10 text-emerald-700 border border-emerald-500/20"
+                        )} title="Đã phân tích AI thành công">
+                          <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                          {file.extractionMethod === "gemini-ocr" ? "AI OCR READY" : "ĐÃ PHÂN TÍCH AI"}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide bg-amber-500/10 text-amber-700 border border-amber-500/20" title="Chưa phân tích AI">
+                          <Clock className="w-2.5 h-2.5 text-amber-600 animate-pulse shrink-0" />
+                          CHƯA PHÂN TÍCH AI
                         </span>
                       )}
                     </div>
@@ -602,30 +635,28 @@ export function Sidebar({
                 </div>
 
                 {/* File Actions */}
-                {isEffectiveAdmin && (
-                  <div className="absolute right-2 bottom-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity translate-y-1 group-hover:translate-y-0 duration-300">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onEditFile(file);
-                      }}
-                      className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all shadow-xs"
-                      title="Chỉnh sửa tên"
-                    >
-                      <Edit3 className="w-3 h-3" />
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteFile(file);
-                      }}
-                      className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-xs"
-                      title="Xóa tệp"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
+                <div className="absolute right-2 bottom-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity translate-y-1 group-hover:translate-y-0 duration-300">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditFile(file);
+                    }}
+                    className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all shadow-xs"
+                    title="Chỉnh sửa tên"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteFile(file);
+                    }}
+                    className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-xs"
+                    title="Xóa tệp"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>

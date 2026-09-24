@@ -86,7 +86,10 @@ export async function chatWithDocumentStream(
   isThinking?: boolean,
   isImageGeneration?: boolean,
   attachedPdf?: { name: string; text: string; geminiFileUri?: string },
-  onChunk?: (chunk: string) => void
+  onChunk?: (chunk: string) => void,
+  model?: string,
+  chatbotRole?: string,
+  customSystemInstruction?: string
 ) {
   try {
     const response = await fetch(getApiUrl("/api/chat-stream"), {
@@ -110,7 +113,10 @@ export async function chatWithDocumentStream(
         isImageGeneration,
         attachedPdfText: attachedPdf?.text,
         attachedPdfName: attachedPdf?.name,
-        attachedPdfUri: attachedPdf?.geminiFileUri
+        attachedPdfUri: attachedPdf?.geminiFileUri,
+        model,
+        chatbotRole,
+        customSystemInstruction
       }),
     });
 
