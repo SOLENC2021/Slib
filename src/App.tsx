@@ -615,7 +615,8 @@ export default function App() {
     attachedPdf?: { name: string; text: string; geminiFileUri?: string },
     model?: string,
     chatbotRole?: string,
-    customSystemInstruction?: string
+    customSystemInstruction?: string,
+    isSearchGrounding?: boolean
   ) => {
     const allowed = await incrementApiUsage();
     if (!allowed) {
@@ -670,8 +671,9 @@ export default function App() {
           role: "ai",
           content: "",
           timestamp: Date.now(),
-          modelUsed: model,
+          modelUsed: isSearchGrounding ? "gemini-3.5-flash" : model,
           roleUsed: chatbotRole as any,
+          isSearchGrounding,
         };
         setGeneralMessages((prev) => [...prev, placeholderMsg]);
 
@@ -697,13 +699,20 @@ export default function App() {
               prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText } : m))
             );
           },
-          model,
+          isSearchGrounding ? "gemini-3.5-flash" : model,
           chatbotRole,
-          customSystemInstruction
+          customSystemInstruction,
+          isSearchGrounding
         );
 
         if (result?.text) {
           accumulatedText = result.text;
+        }
+
+        if (result?.groundingSources && result.groundingSources.length > 0) {
+          setGeneralMessages((prev) =>
+            prev.map((m) => (m.id === aiMsgId ? { ...m, groundingSources: result.groundingSources } : m))
+          );
         }
 
         // Just in case the fallback response had upgraded referenced files (though stream endpoint does not generate them by default)
@@ -824,8 +833,9 @@ export default function App() {
         role: "ai",
         content: "",
         timestamp: Date.now(),
-        modelUsed: model,
+        modelUsed: isSearchGrounding ? "gemini-3.5-flash" : model,
         roleUsed: chatbotRole as any,
+        isSearchGrounding,
       };
       setMessages((prev) => [...prev, placeholderMsg]);
 
@@ -851,13 +861,20 @@ export default function App() {
             prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText } : m))
           );
         },
-        model,
+        isSearchGrounding ? "gemini-3.5-flash" : model,
         chatbotRole,
-        customSystemInstruction
+        customSystemInstruction,
+        isSearchGrounding
       );
 
       if (result?.text) {
         accumulatedText = result.text;
+      }
+
+      if (result?.groundingSources && result.groundingSources.length > 0) {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === aiMsgId ? { ...m, groundingSources: result.groundingSources } : m))
+        );
       }
       
       if (result && (result as any).upgradedFile) {

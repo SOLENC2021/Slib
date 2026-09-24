@@ -90,7 +90,19 @@ async function callAIWithRetry(
                                   errorMsg.includes("billing details") || 
                                   errorMsg.includes("check your plan") || 
                                   errorMsg.includes("quota exceeded for metric");
-      if (isHardQuotaExceeded) {
+      
+      // If quota is exhausted on gemini-3.8-flash or gemini-3.5-flash, dynamically try fallback to gemini-2.5-flash or gemini-3.1-flash-lite
+      if (isHardQuotaExceeded && (currentModel === "gemini-3.8-flash" || currentModel === "gemini-3.5-flash")) {
+        console.warn(`[Quota Exceeded on ${currentModel}] Attempting fallback to gemini-2.5-flash...`);
+        currentModel = "gemini-2.5-flash";
+        delay = 300;
+        continue;
+      } else if (isHardQuotaExceeded && currentModel === "gemini-2.5-flash") {
+        console.warn(`[Quota Exceeded on ${currentModel}] Attempting fallback to gemini-3.1-flash-lite...`);
+        currentModel = "gemini-3.1-flash-lite";
+        delay = 300;
+        continue;
+      } else if (isHardQuotaExceeded) {
         throw new Error("Tài khoản của bạn đã HẾT HẠN MỨC (Quota) miễn phí của Gemini hoặc chưa cài đặt thông tin thẻ thanh toán/gia hạn gói cước bên Google AI Studio. Vui lòng kiểm tra tab 'Billing/Quota' trên AI Studio.");
       }
 
@@ -111,10 +123,13 @@ async function callAIWithRetry(
                              errorMsg.includes("abort");
 
       if (isRateLimit || isHighDemand || isInternalError || isTimeout || isNetworkError) {
-        // High-speed Model Fallback: If gemini-3.8-flash is failing or busy, switch immediately to ultra-fast gemini-3.1-flash-lite
+        // High-speed Model Fallback: If gemini-3.8-flash is failing or busy, switch immediately to gemini-2.5-flash then gemini-3.1-flash-lite
         if (i >= 1 && (currentModel === "gemini-3.8-flash" || currentModel === "gemini-3.5-flash")) {
-          currentModel = "gemini-3.1-flash-lite";
+          currentModel = "gemini-2.5-flash";
           console.log(`[Auto Model Fallback] Model ${primaryModel} transient issue. Fast fallback switching to: ${currentModel}`);
+        } else if (i >= 1 && currentModel === "gemini-2.5-flash") {
+          currentModel = "gemini-3.1-flash-lite";
+          console.log(`[Auto Model Fallback] Model 'gemini-2.5-flash' is busy. Dynamic fallback switching to: ${currentModel}`);
         } else if (i >= 1 && currentModel === "gemini-3.1-flash-lite") {
           currentModel = "gemini-flash-latest";
           console.log(`[Auto Model Fallback] Model 'gemini-3.1-flash-lite' is busy. Dynamic fallback switching to: ${currentModel}`);
@@ -674,6 +689,7 @@ async function startServer() {
   app.post("/api/chat-stream", async (req, res) => {
     const { 
       text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration,
+      isSearchGrounding,
       attachedPdfText, attachedPdfName, attachedPdfUri,
       model, chatbotRole, customSystemInstruction
     } = req.body;
@@ -700,14 +716,17 @@ async function startServer() {
 
     try {
       if (isImageGeneration) {
-        console.log("Generating image using gemini-3.1-flash-image-preview (Streaming wrapper)...");
+        console.log("Creating or editing image using gemini-3.1-flash-image-preview (Streaming wrapper)...");
         const parts: any[] = [];
+        const isEditing = Boolean(image);
         if (image) {
+          const mimeMatch = image.match(/data:([^;]+);/);
+          const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
           const base64Data = image.split(",")[1] || image;
           parts.push({
             inlineData: {
               data: base64Data,
-              mimeType: "image/jpeg"
+              mimeType
             }
           });
         }
@@ -726,7 +745,9 @@ async function startServer() {
           });
         }, "gemini-3.1-flash-image-preview");
 
-        let replyText = "🎨 **StandardCloud AI đã tạo thành công ảnh theo yêu cầu của bạn:**\n\n";
+        let replyText = isEditing
+          ? "🎨 **StandardCloud AI đã chỉnh sửa thành công ảnh theo yêu cầu (gemini-3.1-flash-image-preview):**\n\n"
+          : "🎨 **StandardCloud AI đã tạo thành công ảnh kỹ thuật theo yêu cầu (gemini-3.1-flash-image-preview):**\n\n";
         let foundImage = false;
         for (const part of response.candidates?.[0]?.content?.parts || []) {
           if (part.inlineData?.data) {
@@ -930,13 +951,18 @@ async function startServer() {
         };
 
         const runStreamGeneral = async (contentsArr: any[]) => {
-          const selectedModel = model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash");
+          const selectedModel = isSearchGrounding 
+            ? "gemini-3.5-flash" 
+            : (model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash"));
           const effectiveSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
           const configObj: any = {
             systemInstruction: effectiveSystemInstruction,
             temperature: (selectedModel === "gemini-3.1-pro-preview" || isThinking) ? 0.1 : 0.15,
             topP: 0.95,
           };
+          if (isSearchGrounding) {
+            configObj.tools = [{ googleSearch: {} }];
+          }
           if (isThinking || selectedModel === "gemini-3.1-pro-preview") {
             configObj.thinkingConfig = {
               thinkingLevel: ThinkingLevel.HIGH
@@ -1031,9 +1057,30 @@ async function startServer() {
           writeStreamChunk({ upgradedReferencedFiles });
         }
 
+        let lastGroundingMetadata: any = null;
         for await (const chunk of streamResponse) {
+          if (chunk.candidates?.[0]?.groundingMetadata) {
+            lastGroundingMetadata = chunk.candidates[0].groundingMetadata;
+          }
           if (chunk.text) {
             writeStreamChunk({ text: chunk.text });
+          }
+        }
+
+        if (lastGroundingMetadata) {
+          const webChunks = (lastGroundingMetadata.groundingChunks || [])
+            .map((c: any) => c.web)
+            .filter((w: any) => w && w.uri);
+          if (webChunks.length > 0) {
+            let citationBlock = "\n\n---\n**🌐 Nguồn xác thực từ Google Search:**\n";
+            const seenUris = new Set<string>();
+            webChunks.forEach((w: any) => {
+              if (!seenUris.has(w.uri)) {
+                seenUris.add(w.uri);
+                citationBlock += `- [${w.title || w.uri}](${w.uri})\n`;
+              }
+            });
+            writeStreamChunk({ text: citationBlock, groundingSources: webChunks });
           }
         }
         res.write("data: [DONE]\n\n");
@@ -1136,13 +1183,18 @@ async function startServer() {
             }
           ];
 
-          const selectedModel = model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash");
+          const selectedModel = isSearchGrounding
+            ? "gemini-3.5-flash"
+            : (model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash"));
           const effectiveSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
           const configObj: any = {
             systemInstruction: effectiveSystemInstruction,
             temperature: (selectedModel === "gemini-3.1-pro-preview" || isThinking) ? 0.1 : 0.15,
             topP: 0.95,
           };
+          if (isSearchGrounding) {
+            configObj.tools = [{ googleSearch: {} }];
+          }
           if (isThinking || selectedModel === "gemini-3.1-pro-preview") {
             configObj.thinkingConfig = {
               thinkingLevel: ThinkingLevel.HIGH
@@ -1211,9 +1263,30 @@ async function startServer() {
           writeStreamChunk({ upgradedFile });
         }
 
+        let lastGroundingMetadata: any = null;
         for await (const chunk of streamResponse) {
+          if (chunk.candidates?.[0]?.groundingMetadata) {
+            lastGroundingMetadata = chunk.candidates[0].groundingMetadata;
+          }
           if (chunk.text) {
             writeStreamChunk({ text: chunk.text });
+          }
+        }
+
+        if (lastGroundingMetadata) {
+          const webChunks = (lastGroundingMetadata.groundingChunks || [])
+            .map((c: any) => c.web)
+            .filter((w: any) => w && w.uri);
+          if (webChunks.length > 0) {
+            let citationBlock = "\n\n---\n**🌐 Nguồn xác thực từ Google Search:**\n";
+            const seenUris = new Set<string>();
+            webChunks.forEach((w: any) => {
+              if (!seenUris.has(w.uri)) {
+                seenUris.add(w.uri);
+                citationBlock += `- [${w.title || w.uri}](${w.uri})\n`;
+              }
+            });
+            writeStreamChunk({ text: citationBlock, groundingSources: webChunks });
           }
         }
         res.write("data: [DONE]\n\n");
@@ -1231,6 +1304,7 @@ async function startServer() {
   app.post("/api/chat", async (req, res) => {
     const { 
       text, prompt, history, image, geminiFileUri, isGeneral, referencedFiles, fileUrl, fileName, fileId, textUrl, isThinking, isImageGeneration,
+      isSearchGrounding,
       attachedPdfText, attachedPdfName, attachedPdfUri,
       model, chatbotRole, customSystemInstruction
     } = req.body;
@@ -1241,14 +1315,17 @@ async function startServer() {
 
     try {
       if (isImageGeneration) {
-        console.log("Generating image using gemini-3.1-flash-image-preview...");
+        console.log("Creating or editing image using gemini-3.1-flash-image-preview (/api/chat)...");
         const parts: any[] = [];
+        const isEditing = Boolean(image);
         if (image) {
+          const mimeMatch = image.match(/data:([^;]+);/);
+          const mimeType = mimeMatch ? mimeMatch[1] : "image/jpeg";
           const base64Data = image.split(",")[1] || image;
           parts.push({
             inlineData: {
               data: base64Data,
-              mimeType: "image/jpeg"
+              mimeType
             }
           });
         }
@@ -1267,7 +1344,9 @@ async function startServer() {
           });
         }, "gemini-3.1-flash-image-preview");
 
-        let replyText = "🎨 **StandardCloud AI đã tạo thành công ảnh theo yêu cầu của bạn:**\n\n";
+        let replyText = isEditing
+          ? "🎨 **StandardCloud AI đã chỉnh sửa thành công ảnh theo yêu cầu (gemini-3.1-flash-image-preview):**\n\n"
+          : "🎨 **StandardCloud AI đã tạo thành công ảnh kỹ thuật theo yêu cầu (gemini-3.1-flash-image-preview):**\n\n";
         let foundImage = false;
         for (const part of response.candidates?.[0]?.content?.parts || []) {
           if (part.inlineData?.data) {
@@ -1376,12 +1455,17 @@ async function startServer() {
 
           const chatSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
 
-          const selectedModel = model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash");
+          const selectedModel = isSearchGrounding
+            ? "gemini-3.5-flash"
+            : (model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash"));
           const configObj: any = {
             systemInstruction: chatSystemInstruction,
             temperature: (selectedModel === "gemini-3.1-pro-preview" || isThinking) ? 0.1 : 0.15,
             topP: 0.95,
           };
+          if (isSearchGrounding) {
+            configObj.tools = [{ googleSearch: {} }];
+          }
           if (isThinking || selectedModel === "gemini-3.1-pro-preview") {
             configObj.thinkingConfig = {
               thinkingLevel: ThinkingLevel.HIGH
@@ -1532,8 +1616,25 @@ async function startServer() {
           }
         }
 
+        let generalReplyText = response.text || "";
+        const webChunks = (response.candidates?.[0]?.groundingMetadata?.groundingChunks || [])
+          .map((c: any) => c.web)
+          .filter((w: any) => w && w.uri);
+        if (webChunks.length > 0) {
+          let citationBlock = "\n\n---\n**🌐 Nguồn xác thực từ Google Search:**\n";
+          const seenUris = new Set<string>();
+          webChunks.forEach((w: any) => {
+            if (!seenUris.has(w.uri)) {
+              seenUris.add(w.uri);
+              citationBlock += `- [${w.title || w.uri}](${w.uri})\n`;
+            }
+          });
+          generalReplyText += citationBlock;
+        }
+
         return res.json({ 
-          text: response.text,
+          text: generalReplyText,
+          groundingSources: webChunks.length > 0 ? webChunks : undefined,
           upgradedReferencedFiles: undefined
         });
       }
@@ -1648,13 +1749,18 @@ async function startServer() {
           }
         ];
 
-        const selectedModel = model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash");
+        const selectedModel = isSearchGrounding
+          ? "gemini-3.5-flash"
+          : (model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash"));
         const chatSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
         const configObj: any = {
           systemInstruction: chatSystemInstruction,
           temperature: (selectedModel === "gemini-3.1-pro-preview" || isThinking) ? 0.1 : 0.15,
           topP: 0.95,
         };
+        if (isSearchGrounding) {
+          configObj.tools = [{ googleSearch: {} }];
+        }
         if (isThinking || selectedModel === "gemini-3.1-pro-preview") {
           configObj.thinkingConfig = {
             thinkingLevel: ThinkingLevel.HIGH
@@ -1717,8 +1823,25 @@ async function startServer() {
         }
       }
 
+      let specificReplyText = response.text || "";
+      const webChunks = (response.candidates?.[0]?.groundingMetadata?.groundingChunks || [])
+        .map((c: any) => c.web)
+        .filter((w: any) => w && w.uri);
+      if (webChunks.length > 0) {
+        let citationBlock = "\n\n---\n**🌐 Nguồn xác thực từ Google Search:**\n";
+        const seenUris = new Set<string>();
+        webChunks.forEach((w: any) => {
+          if (!seenUris.has(w.uri)) {
+            seenUris.add(w.uri);
+            citationBlock += `- [${w.title || w.uri}](${w.uri})\n`;
+          }
+        });
+        specificReplyText += citationBlock;
+      }
+
       res.json({ 
-        text: response.text,
+        text: specificReplyText,
+        groundingSources: webChunks.length > 0 ? webChunks : undefined,
         upgradedFile: dynamicNewRegistration || undefined
       });
     } catch (error: any) {
@@ -2400,7 +2523,7 @@ Yêu cầu xuất ra JSON theo đúng schema:
             responseSchema,
             temperature: 0.15,
           },
-        }), "gemini-3.8-flash", 2);
+        }), "gemini-2.5-flash", 2);
       };
 
       let aiResponse;
@@ -2421,10 +2544,48 @@ Yêu cầu xuất ra JSON theo đúng schema:
         aiResponse = await runDrawingCompareAI(textOnlyFiles);
       }
 
-      const responseJson = JSON.parse(aiResponse.text || "{}");
+      let responseJson: any = {};
+      try {
+        let cleanText = (aiResponse.text || "{}").trim();
+        if (cleanText.startsWith("```json")) {
+          cleanText = cleanText.substring(7);
+        } else if (cleanText.startsWith("```")) {
+          cleanText = cleanText.substring(3);
+        }
+        if (cleanText.endsWith("```")) {
+          cleanText = cleanText.substring(0, cleanText.length - 3);
+        }
+        responseJson = JSON.parse(cleanText.trim());
+      } catch (parseErr) {
+        console.warn("[Drawing Compare AI] Failed to parse JSON response directly, raw:", aiResponse?.text);
+      }
+
+      const rawMarkers = Array.isArray(responseJson.diffMarkers) ? responseJson.diffMarkers : [];
+      const normalizedMarkers = rawMarkers.map((m: any, idx: number) => ({
+        id: m.id || `diff-${Date.now()}-${idx + 1}`,
+        page: typeof m.page === "number" && m.page > 0 ? m.page : 1,
+        type: ["addition", "modification", "deletion"].includes(m.type) ? m.type : "modification",
+        title: m.title || `Sai khác điểm #${idx + 1}`,
+        description: m.description || "",
+        originalValue: m.originalValue || "",
+        revisedValue: m.revisedValue || "",
+        ruleReference: m.ruleReference || "",
+        boundingBox: (m.boundingBox && typeof m.boundingBox.x === "number") ? {
+          x: Math.max(0, Math.min(95, m.boundingBox.x)),
+          y: Math.max(0, Math.min(95, m.boundingBox.y)),
+          width: Math.max(5, Math.min(90, m.boundingBox.width || 30)),
+          height: Math.max(4, Math.min(80, m.boundingBox.height || 12))
+        } : {
+          x: 10 + (idx % 3) * 26,
+          y: 15 + Math.floor(idx / 3) * 16,
+          width: 28,
+          height: 12
+        }
+      }));
+
       res.json({
-        summary: responseJson.summary || "",
-        diffMarkers: responseJson.diffMarkers || [],
+        summary: responseJson.summary || (normalizedMarkers.length > 0 ? `Đã phát hiện ${normalizedMarkers.length} điểm thay đổi giữa hai hồ sơ bản vẽ.` : "Không phát hiện sai khác đáng kể giữa hai tài liệu."),
+        diffMarkers: normalizedMarkers,
         newlyRegistered
       });
 

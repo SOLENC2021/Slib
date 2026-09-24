@@ -20,7 +20,11 @@ export async function chatWithDocument(
   textUrl?: string,
   isThinking?: boolean,
   isImageGeneration?: boolean,
-  attachedPdf?: { name: string; text: string; geminiFileUri?: string }
+  attachedPdf?: { name: string; text: string; geminiFileUri?: string },
+  model?: string,
+  chatbotRole?: string,
+  customSystemInstruction?: string,
+  isSearchGrounding?: boolean
 ) {
   try {
     const response = await fetch(getApiUrl("/api/chat"), {
@@ -42,9 +46,13 @@ export async function chatWithDocument(
         textUrl, 
         isThinking, 
         isImageGeneration,
+        isSearchGrounding,
         attachedPdfText: attachedPdf?.text,
         attachedPdfName: attachedPdf?.name,
-        attachedPdfUri: attachedPdf?.geminiFileUri
+        attachedPdfUri: attachedPdf?.geminiFileUri,
+        model,
+        chatbotRole,
+        customSystemInstruction
       }),
     });
 
@@ -61,7 +69,7 @@ export async function chatWithDocument(
 
     if (contentType && contentType.includes("application/json")) {
       const data = await response.json();
-      return data; // Returns { text, upgradedFile, upgradedReferencedFiles }
+      return data; // Returns { text, upgradedFile, upgradedReferencedFiles, groundingSources }
     }
     const plainText = await response.text();
     return { text: plainText };
@@ -89,7 +97,8 @@ export async function chatWithDocumentStream(
   onChunk?: (chunk: string) => void,
   model?: string,
   chatbotRole?: string,
-  customSystemInstruction?: string
+  customSystemInstruction?: string,
+  isSearchGrounding?: boolean
 ) {
   try {
     const response = await fetch(getApiUrl("/api/chat-stream"), {
@@ -111,6 +120,7 @@ export async function chatWithDocumentStream(
         textUrl,
         isThinking,
         isImageGeneration,
+        isSearchGrounding,
         attachedPdfText: attachedPdf?.text,
         attachedPdfName: attachedPdf?.name,
         attachedPdfUri: attachedPdf?.geminiFileUri,
@@ -142,6 +152,7 @@ export async function chatWithDocumentStream(
     let fullText = "";
     let upgradedFile: any = undefined;
     let upgradedReferencedFiles: any = undefined;
+    let groundingSources: any[] = [];
 
     while (true) {
       const { value, done } = await reader.read();
@@ -167,7 +178,11 @@ export async function chatWithDocumentStream(
               if (onChunk) {
                 onChunk(parsed.text);
               }
-            } else if (parsed.upgradedFile) {
+            }
+            if (parsed.groundingSources) {
+              groundingSources = parsed.groundingSources;
+            }
+            if (parsed.upgradedFile) {
               upgradedFile = parsed.upgradedFile;
             } else if (parsed.upgradedReferencedFiles) {
               upgradedReferencedFiles = parsed.upgradedReferencedFiles;
@@ -193,7 +208,11 @@ export async function chatWithDocumentStream(
             if (onChunk) {
               onChunk(parsed.text);
             }
-          } else if (parsed.upgradedFile) {
+          }
+          if (parsed.groundingSources) {
+            groundingSources = parsed.groundingSources;
+          }
+          if (parsed.upgradedFile) {
             upgradedFile = parsed.upgradedFile;
           } else if (parsed.upgradedReferencedFiles) {
             upgradedReferencedFiles = parsed.upgradedReferencedFiles;
@@ -202,7 +221,7 @@ export async function chatWithDocumentStream(
       }
     }
 
-    return { text: fullText, upgradedFile, upgradedReferencedFiles };
+    return { text: fullText, upgradedFile, upgradedReferencedFiles, groundingSources };
   } catch (error: any) {
     console.warn("Chat with document stream failed, attempting graceful fallback to standard endpoint /api/chat:", error);
     
@@ -232,7 +251,11 @@ export async function chatWithDocumentStream(
         textUrl,
         isThinking,
         isImageGeneration,
-        attachedPdf
+        attachedPdf,
+        model,
+        chatbotRole,
+        customSystemInstruction,
+        isSearchGrounding
       );
 
       const fallbackText = typeof fallbackResult === "string" 
@@ -246,7 +269,8 @@ export async function chatWithDocumentStream(
       return {
         text: fallbackText,
         upgradedFile: (fallbackResult as any)?.upgradedFile,
-        upgradedReferencedFiles: (fallbackResult as any)?.upgradedReferencedFiles
+        upgradedReferencedFiles: (fallbackResult as any)?.upgradedReferencedFiles,
+        groundingSources: (fallbackResult as any)?.groundingSources
       };
     } catch (fallbackError: any) {
       console.error("Chat with document stream and fallback both failed:", fallbackError);

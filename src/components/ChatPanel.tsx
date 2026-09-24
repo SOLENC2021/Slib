@@ -5,7 +5,7 @@ import {
   AlertCircle, Loader2, Copy, Maximize2, Download,
   Plus, Trash2, Settings, Sparkles, X, LayoutGrid,
   Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, Minimize2, BookOpen, FileText, Languages, Paperclip,
-  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen, List, Brain, Info, Bot
+  Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen, List, Brain, Info, Bot, Globe
 } from "lucide-react";
 import pptxgen from "pptxgenjs";
 import ReactMarkdown from "react-markdown";
@@ -36,7 +36,8 @@ interface ChatPanelProps {
     attachedPdf?: { name: string; text: string; geminiFileUri?: string },
     model?: string,
     chatbotRole?: string,
-    customSystemInstruction?: string
+    customSystemInstruction?: string,
+    isSearchGrounding?: boolean
   ) => void;
   onClearGeneralMessages?: () => void;
   onClearMessages?: () => void;
@@ -454,7 +455,7 @@ export function ChatPanel({
     return (localStorage.getItem("preferred_chatbot_role") as ChatbotRoleId) || "compliance_expert";
   });
   const [selectedModel, setSelectedModel] = useState<GeminiModelId>(() => {
-    return (localStorage.getItem("preferred_gemini_model") as GeminiModelId) || "gemini-3.5-flash";
+    return (localStorage.getItem("preferred_gemini_model") as GeminiModelId) || "gemini-3.8-flash";
   });
   const [customSystemInstruction, setCustomSystemInstruction] = useState<string>(() => {
     return localStorage.getItem("custom_chatbot_instruction") || "";
@@ -494,10 +495,10 @@ export function ChatPanel({
 
   // Scrolling detection for input area fading effect
   const [isScrolled, setIsScrolled] = useState(false);
-  const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const [isComposerCollapsed, setIsComposerCollapsed] = useState(true);
   const [aiMode, setAiMode] = useState<"standard" | "thinking" | "image">("standard");
+  const [isSearchGrounding, setIsSearchGrounding] = useState<boolean>(false);
 
   const composerContainerRef = useRef<HTMLDivElement>(null);
 
@@ -1484,12 +1485,32 @@ export function ChatPanel({
         throw new Error("Không tìm thấy tệp bản vẽ tham chiếu.");
       }
 
+      const parsePages = (rawText: string) => {
+        if (!rawText) return null;
+        const pageRegex = /--- TRANG (\d+) ---/g;
+        let match;
+        const pageIndices: { page: number; index: number }[] = [];
+        while ((match = pageRegex.exec(rawText)) !== null) {
+          pageIndices.push({ page: parseInt(match[1], 10), index: match.index });
+        }
+        if (pageIndices.length === 0) return null;
+        const result: { [page: number]: string } = {};
+        for (let i = 0; i < pageIndices.length; i++) {
+          const currentPageNum = pageIndices[i].page;
+          const startIndex = pageIndices[i].index;
+          const endIndex = i + 1 < pageIndices.length ? pageIndices[i + 1].index : rawText.length;
+          result[currentPageNum] = rawText.slice(startIndex, endIndex).replace(/--- TRANG \d+ ---/g, "").trim();
+        }
+        return result;
+      };
+
       // We will prepare the payload
       const file1Payload = {
         id: activeFile.id,
         name: activeFile.name,
         url: activeFile.url,
         text: activeFile.text || "",
+        pageTexts: parsePages(activeFile.text || ""),
         geminiFileUri: activeFile.geminiFileUri,
         geminiFileName: activeFile.geminiFileName,
         uploadDate: activeFile.uploadDate
@@ -1500,6 +1521,7 @@ export function ChatPanel({
         name: refFile.name,
         url: refFile.url,
         text: refFile.text || "",
+        pageTexts: parsePages(refFile.text || ""),
         geminiFileUri: refFile.geminiFileUri,
         geminiFileName: refFile.geminiFileName,
         uploadDate: refFile.uploadDate
@@ -1540,6 +1562,10 @@ export function ChatPanel({
 
       setCompareDrawingSummary(data.summary || "");
       setDiffMarkers?.(data.diffMarkers || []);
+      setCompareMode?.(true);
+      if (!isPdfViewerOpen && onTogglePdfViewer) {
+        onTogglePdfViewer();
+      }
 
     } catch (err: any) {
       console.error("Lỗi khi đối chiếu bản vẽ:", err);
@@ -1944,7 +1970,8 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
       attachedPdf || undefined,
       selectedModel,
       selectedChatbotRole,
-      customSystemInstruction || undefined
+      customSystemInstruction || undefined,
+      isSearchGrounding
     );
     setInput("");
     setSelectedImage(null);
@@ -1969,7 +1996,8 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
         attachedPdf || undefined,
         selectedModel,
         selectedChatbotRole,
-        customSystemInstruction || undefined
+        customSystemInstruction || undefined,
+        isSearchGrounding
       );
       setInput("");
       setSelectedImage(null);
@@ -2355,8 +2383,6 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
         onScroll={(e) => {
           const target = e.currentTarget;
           setIsScrolled(target.scrollTop > 25);
-          const isFarFromBottom = target.scrollHeight - target.scrollTop - target.clientHeight > 150;
-          setShowScrollBottom(target.scrollTop > 150 && isFarFromBottom);
         }}
         className="flex-1 overflow-y-auto px-6 pt-6 pb-40 space-y-6 no-scrollbar"
       >
@@ -4745,8 +4771,14 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 </span>
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-white text-gray-600 border border-gray-200/60 shadow-3xs">
                                   <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
-                                  <span>{modelConfig.name}</span>
+                                  <span>{msg.isSearchGrounding ? "Gemini 3.5 Flash" : modelConfig.name}</span>
                                 </span>
+                                {(msg.isSearchGrounding || (msg.groundingSources && msg.groundingSources.length > 0)) && (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider bg-blue-50 text-blue-700 border border-blue-200/80 shadow-3xs" title="Được hỗ trợ tra cứu trực tuyến với Google Search Grounding (gemini-3.5-flash)">
+                                    <Globe className="w-2.5 h-2.5 text-blue-600" />
+                                    <span>Google Search Grounding</span>
+                                  </span>
+                                )}
                               </div>
                               <span className="text-gray-400 font-semibold">{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                             </div>
@@ -4835,6 +4867,31 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         >
                           {convertCitationsToLinks(msg.content)}
                         </ReactMarkdown>
+                      </div>
+                    )}
+
+                    {/* Google Search Grounding Sources Cards */}
+                    {msg.groundingSources && msg.groundingSources.length > 0 && (
+                      <div className="mt-4 pt-3 border-t border-gray-200/70 text-left">
+                        <div className="flex items-center gap-1.5 text-[10.5px] font-black uppercase tracking-wider text-blue-700 mb-2">
+                          <Globe className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                          <span>Nguồn tham chiếu Google Search ({msg.groundingSources.length}):</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {msg.groundingSources.map((source, sIdx) => (
+                            <a
+                              key={sIdx}
+                              href={source.uri}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-blue-50/80 border border-blue-200 hover:border-blue-400 rounded-xl text-[11px] font-bold text-gray-700 hover:text-blue-900 transition-all shadow-3xs group max-w-sm truncate"
+                              title={source.title || source.uri}
+                            >
+                              <ExternalLink className="w-3 h-3 text-blue-500 shrink-0 group-hover:scale-110 transition-transform" />
+                              <span className="truncate">{source.title || source.uri.replace(/^https?:\/\//, '')}</span>
+                            </a>
+                          ))}
+                        </div>
                       </div>
                     )}
                     </div>
@@ -5245,6 +5302,28 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     <button onClick={() => setUploadPdfError(null)} className="ml-1 text-red-400 hover:text-red-600 font-extrabold cursor-pointer">✕</button>
                   </div>
                 )}
+                {aiMode === "image" && (
+                  <div className="px-3 py-1.5 bg-gradient-to-r from-pink-50 via-rose-50 to-pink-50 border-b border-pink-100 flex items-center justify-between text-[10.5px] text-pink-700 font-bold">
+                    <div className="flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5 text-pink-600 shrink-0" />
+                      <span>
+                        {selectedImage 
+                          ? "🎨 Chế độ Sửa ảnh (gemini-3.1-flash-image-preview): AI sẽ chỉnh sửa hình ảnh đính kèm theo prompt." 
+                          : "🎨 Chế độ Tạo ảnh (gemini-3.1-flash-image-preview): Nhập mô tả để tạo phối cảnh hoặc bản vẽ kỹ thuật."}
+                      </span>
+                    </div>
+                    <button type="button" onClick={() => setAiMode("standard")} className="text-pink-400 hover:text-pink-700 font-extrabold cursor-pointer">✕</button>
+                  </div>
+                )}
+                {isSearchGrounding && (
+                  <div className="px-3 py-1.5 bg-blue-50 border-b border-blue-100 flex items-center justify-between text-[10.5px] text-blue-700 font-bold">
+                    <div className="flex items-center gap-1.5">
+                      <Globe className="w-3.5 h-3.5 text-blue-600 animate-pulse shrink-0" />
+                      <span>🌐 Google Search Grounding (gemini-3.5-flash): Đang kích hoạt tra cứu web trực tuyến theo thời gian thực kèm nguồn trích dẫn.</span>
+                    </div>
+                    <button type="button" onClick={() => setIsSearchGrounding(false)} className="text-blue-400 hover:text-blue-700 font-extrabold cursor-pointer">✕</button>
+                  </div>
+                )}
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -5255,11 +5334,19 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     }
                   }}
                   onPaste={handlePaste}
-                  placeholder="Đặt câu hỏi tra cứu, tìm thông số chuẩn..."
+                  placeholder={
+                    aiMode === "image"
+                      ? (selectedImage 
+                          ? "Đang chỉnh sửa ảnh đính kèm (gemini-3.1-flash-image-preview). Nhập yêu cầu chỉnh sửa..."
+                          : "Tạo phối cảnh & bản vẽ kỹ thuật (gemini-3.1-flash-image-preview). Nhập mô tả ảnh cần tạo...")
+                      : isSearchGrounding
+                      ? "Google Search Grounding (gemini-3.5-flash): Nhập câu hỏi để tra cứu dữ liệu web cập nhật nhất..."
+                      : "Đặt câu hỏi tra cứu, tìm thông số chuẩn..."
+                  }
                   className="w-full bg-transparent border-none py-1.5 px-3 text-xs sm:text-sm font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-10 text-gray-800 placeholder:text-gray-400 no-scrollbar overflow-y-auto leading-normal"
                 />
                 <div className="flex items-center justify-between px-2 pt-1 border-t border-gray-100">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
@@ -5290,7 +5377,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       </button>
                       <button
                         type="button"
-                        onClick={() => setAiMode("thinking")}
+                        onClick={() => setAiMode(aiMode === "thinking" ? "standard" : "thinking")}
                         className={cn(
                           "px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1",
                           aiMode === "thinking"
@@ -5300,9 +5387,39 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                         title="Bật Gemini 3.1 Pro (High Thinking) - Phân tích & Suy nghĩ sâu"
                       >
                         <Brain className={cn("w-3 h-3", aiMode === "thinking" ? "text-purple-200 animate-pulse" : "text-purple-500")} />
-                        <span>Suy nghĩ sâu (High Thinking)</span>
+                        <span>Suy nghĩ sâu</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAiMode(aiMode === "image" ? "standard" : "image")}
+                        className={cn(
+                          "px-2 py-0.5 rounded text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1",
+                          aiMode === "image"
+                            ? "bg-gradient-to-r from-pink-600 to-rose-600 text-white shadow-sm font-black"
+                            : "text-gray-500 hover:text-gray-800"
+                        )}
+                        title="Tạo ảnh & Chỉnh sửa ảnh kỹ thuật bằng Gemini 3.1 Flash Image Preview"
+                      >
+                        <Sparkles className={cn("w-3 h-3", aiMode === "image" ? "text-pink-200 animate-spin" : "text-pink-500")} />
+                        <span>Tạo/Sửa ảnh</span>
                       </button>
                     </div>
+
+                    {/* Google Search Grounding Toggle */}
+                    <button
+                      type="button"
+                      onClick={() => setIsSearchGrounding(prev => !prev)}
+                      className={cn(
+                        "px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer flex items-center gap-1 border",
+                        isSearchGrounding
+                          ? "bg-blue-50 text-blue-700 border-blue-300 shadow-sm font-black"
+                          : "bg-white text-gray-500 border-gray-200/80 hover:text-gray-800 hover:border-gray-300"
+                      )}
+                      title="Google Search Grounding (gemini-3.5-flash) - Tra cứu dữ liệu trực tuyến thời gian thực"
+                    >
+                      <Globe className={cn("w-3 h-3", isSearchGrounding ? "text-blue-600 animate-pulse" : "text-gray-400")} />
+                      <span>Search Grounding</span>
+                    </button>
                   </div>
                   <div className="flex items-center gap-2">
                     <div className="hidden sm:flex items-center gap-1.5 text-[10px] font-bold text-gray-400 mr-1 select-none">
@@ -5823,18 +5940,6 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           </div>
         </div>,
         document.body
-      )}
-
-      {/* Floating Scroll to Bottom Chat Bubble */}
-      {showScrollBottom && (
-        <button
-          onClick={handleScrollToBottom}
-          className="absolute bottom-32 right-8 z-[40] flex items-center gap-1.5 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full shadow-[0_8px_30px_rgb(79,70,229,0.35)] hover:scale-105 active:scale-95 transition-all duration-300 animate-bounce cursor-pointer border border-indigo-500/20"
-          title="Cuộn xuống tin nhắn mới nhất"
-        >
-          <ChevronDown className="w-4 h-4 text-white animate-pulse" />
-          <span className="text-[10px] font-black uppercase tracking-wider">Tin mới ở dưới</span>
-        </button>
       )}
     </div>
   );

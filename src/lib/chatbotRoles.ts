@@ -9,36 +9,36 @@ export const GEMINI_MODELS: {
   icon: string;
 }[] = [
   {
+    id: "gemini-3.8-flash",
+    name: "Gemini 3.8 Flash",
+    tag: "Mặc định & Đa phương thức",
+    description: "Mô hình thế hệ mới với hiệu năng tối ưu, tư duy nhạy bén và khả năng xử lý tài liệu đa trang nhanh chóng.",
+    badgeColor: "bg-blue-100 text-blue-700 border-blue-200",
+    icon: "Sparkles"
+  },
+  {
     id: "gemini-3.1-pro-preview",
     name: "Gemini 3.1 Pro",
     tag: "Tác vụ phức tạp & Suy luận sâu",
-    description: "Tối ưu cho tính toán kết cấu, toán học vi phân, kiểm toán tiêu chuẩn nhiều biến và xử lý tác vụ kỹ thuật chuyên sâu.",
+    description: "Tối ưu cho các tác vụ đặc biệt phức tạp, tính toán kết cấu, toán học vi phân, kiểm toán tiêu chuẩn nhiều biến và xử lý tác vụ kỹ thuật chuyên sâu.",
     badgeColor: "bg-purple-100 text-purple-700 border-purple-200",
     icon: "Brain"
   },
   {
     id: "gemini-3.5-flash",
     name: "Gemini 3.5 Flash",
-    tag: "Tác vụ đa năng & Hội thoại",
-    description: "Mô hình cân bằng hoàn hảo cho tra cứu tiêu chuẩn, đối chiếu văn bản pháp lý và hội thoại đa lượt liên tục.",
+    tag: "Tác vụ tổng quát & Hội thoại",
+    description: "Mô hình toàn năng cho tác vụ tổng quát, tra cứu tiêu chuẩn, đối chiếu văn bản pháp lý và hội thoại đa lượt liên tục.",
     badgeColor: "bg-indigo-100 text-indigo-700 border-indigo-200",
     icon: "Zap"
   },
   {
     id: "gemini-3.1-flash-lite",
     name: "Gemini 3.1 Flash Lite",
-    tag: "Siêu tốc & Tác vụ nhanh",
-    description: "Tốc độ phản hồi cực nhanh, độ trễ tối thiểu, lý tưởng cho tra cứu định nghĩa, tóm tắt ý chính và tra nhanh thông số.",
+    tag: "Siêu tốc & Phản hồi nhanh",
+    description: "Tối ưu cho tác vụ cần diễn ra nhanh, tốc độ phản hồi cực nhanh, độ trễ tối thiểu, lý tưởng cho tra cứu định nghĩa, tóm tắt ý chính và tra nhanh thông số.",
     badgeColor: "bg-emerald-100 text-emerald-700 border-emerald-200",
     icon: "Gauge"
-  },
-  {
-    id: "gemini-3.8-flash",
-    name: "Gemini 3.8 Flash",
-    tag: "Cân bằng & Đa phương thức",
-    description: "Mô hình thế hệ mới với hiệu năng tối ưu, tư duy sắc bén và khả năng xử lý tài liệu đa trang nhanh chóng.",
-    badgeColor: "bg-blue-100 text-blue-700 border-blue-200",
-    icon: "Sparkles"
   }
 ];
 
@@ -186,5 +186,5 @@ export function getChatbotRole(roleId: ChatbotRoleId): ChatbotRoleConfig {
 
 export function getGeminiModel(modelId: GeminiModelId) {
   const found = GEMINI_MODELS.find(m => m.id === modelId);
-  return found || GEMINI_MODELS[1]; // default to gemini-3.5-flash
+  return found || GEMINI_MODELS[0]; // default to gemini-3.8-flash
 }

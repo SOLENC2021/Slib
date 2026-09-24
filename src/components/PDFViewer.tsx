@@ -7,7 +7,8 @@ import {
   PlusCircle, MinusCircle, Info, HelpCircle, 
   CheckCircle2, SlidersHorizontal, Sliders, Eye, EyeOff,
   RefreshCw, ListFilter, ArrowRight, UploadCloud, BookOpen,
-  Columns2, Link2, Unlink2, ArrowLeftRight
+  Columns2, Link2, Unlink2, ArrowLeftRight, Check, Copy,
+  ChevronDown, ChevronUp, FileDiff
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PDFFile } from "@/types";
@@ -636,6 +637,40 @@ export function PDFViewer({
     }
   }, [pdfDoc]);
 
+  // Page text extraction for Document B
+  const [pageTextsB, setPageTextsB] = useState<{ [page: number]: string }>({});
+
+  useEffect(() => {
+    if (pdfDocB) {
+      setPageTextsB({});
+      const extractAllB = async () => {
+        for (let i = 1; i <= pdfDocB.numPages; i++) {
+          try {
+            const page = await pdfDocB.getPage(i);
+            const txtContent = await page.getTextContent();
+            const pageText = txtContent.items
+              .map((item: any) => (item && typeof item.str === "string") ? item.str : "")
+              .join(" ");
+            setPageTextsB(prev => ({ ...prev, [i]: pageText }));
+          } catch (err) {
+            console.error("Lỗi trích xuất chữ trang B " + i, err);
+          }
+        }
+      };
+      extractAllB();
+    } else {
+      setPageTextsB({});
+    }
+  }, [pdfDocB]);
+
+  // Local AI Highlight Diff states
+  const [isLocalComparing, setIsLocalComparing] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [compareSuccessMsg, setCompareSuccessMsg] = useState<string | null>(null);
+  const [isDiffListOpen, setIsDiffListOpen] = useState(false);
+  const [diffSearchQuery, setDiffSearchQuery] = useState("");
+  const [copiedDiffSummary, setCopiedDiffSummary] = useState(false);
+
   // Reactive Search Effect
   useEffect(() => {
     if (!searchQuery.trim()) {
@@ -976,22 +1011,134 @@ export function PDFViewer({
 
 
 
-  // Handle marker selection with scroll to page
+  // Handle marker selection with scroll to page on both Left (A) and Right (B) containers
   const selectMarker = (markerId: string) => {
     setActiveMarkerId?.(markerId);
     const marker = diffMarkers.find(m => m.id === markerId);
     if (marker) {
-      const el = document.querySelector(`[data-page="${marker.page}"]`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        // Trigger a temporary visual outline ripple on the page
-        el.classList.add("ring-8", "ring-indigo-500/50", "transition-all", "duration-500");
-        setTimeout(() => {
-          el.classList.remove("ring-8", "ring-indigo-500/50");
-        }, 1500);
+      // Scroll in Left container
+      const elA = containerRef.current?.querySelector(`[data-page="${marker.page}"]`);
+      if (elA) {
+        elA.scrollIntoView({ behavior: "smooth", block: "center" });
+        elA.classList.add("ring-8", "ring-indigo-500/50", "transition-all", "duration-500");
+        setTimeout(() => elA.classList.remove("ring-8", "ring-indigo-500/50"), 1500);
+      }
+      // Scroll in Right container (side-by-side)
+      const elB = containerBRef.current?.querySelector(`[data-page="${marker.page}"]`);
+      if (elB) {
+        elB.scrollIntoView({ behavior: "smooth", block: "center" });
+        elB.classList.add("ring-8", "ring-emerald-500/50", "transition-all", "duration-500");
+        setTimeout(() => elB.classList.remove("ring-8", "ring-emerald-500/50"), 1500);
       }
     }
   };
+
+  // Run Highlight Diff AI comparison
+  const handleRunHighlightDiff = async () => {
+    if (!file || !activeCompareWithFile) return;
+    setIsLocalComparing(true);
+    setCompareError(null);
+    setCompareSuccessMsg(null);
+    setIsComparingAI?.(true);
+    setCompareStage?.("Đang trích xuất văn bản hai tài liệu...");
+
+    try {
+      const docATexts: { [page: number]: string } = { ...parentPageTexts, ...pageTexts };
+      const docBTexts: { [page: number]: string } = { ...pageTextsB };
+      if (activeCompareWithFile.text) {
+        const parsedB = parsePagesFromText(activeCompareWithFile.text);
+        Object.assign(docBTexts, parsedB);
+      }
+
+      setCompareStage?.("Đang gửi văn bản tới Gemini để rà soát thay đổi...");
+
+      const payload = {
+        file1: {
+          id: file.id,
+          name: file.name,
+          url: file.url,
+          text: file.text || "",
+          pageTexts: Object.keys(docATexts).length > 0 ? docATexts : undefined,
+          geminiFileUri: file.geminiFileUri,
+          geminiFileName: file.geminiFileName,
+          uploadDate: file.uploadDate
+        },
+        file2: {
+          id: activeCompareWithFile.id,
+          name: activeCompareWithFile.name,
+          url: activeCompareWithFile.url,
+          text: activeCompareWithFile.text || "",
+          pageTexts: Object.keys(docBTexts).length > 0 ? docBTexts : undefined,
+          geminiFileUri: activeCompareWithFile.geminiFileUri,
+          geminiFileName: activeCompareWithFile.geminiFileName,
+          uploadDate: activeCompareWithFile.uploadDate
+        }
+      };
+
+      const resp = await fetch("/api/compare-drawings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (!resp.ok) {
+        const errJson = await resp.json().catch(() => ({}));
+        throw new Error(errJson.error || `Lỗi từ AI Server (${resp.status})`);
+      }
+
+      const data = await resp.json();
+      const markers: DiffMarker[] = Array.isArray(data.diffMarkers) ? data.diffMarkers : [];
+      if (setDiffMarkers) {
+        setDiffMarkers(markers);
+      }
+      setCompareSuccessMsg(`Hoàn tất! Đã phát hiện ${markers.length} điểm thay đổi.`);
+      if (markers.length > 0) {
+        setIsDiffListOpen(true);
+        selectMarker(markers[0].id);
+      }
+    } catch (err: any) {
+      console.error("[PDFViewer] Compare AI Error:", err);
+      setCompareError(err.message || "Không thể thực hiện đối chiếu sai khác AI.");
+    } finally {
+      setIsLocalComparing(false);
+      setIsComparingAI?.(false);
+      setCompareStage?.("");
+    }
+  };
+
+  // Filtered Diff Markers
+  const filteredDiffMarkers = diffMarkers.filter(m => {
+    if (selectedDiffType !== "all" && m.type !== selectedDiffType) return false;
+    if (diffSearchQuery.trim()) {
+      const q = diffSearchQuery.toLowerCase();
+      return (
+        m.title.toLowerCase().includes(q) ||
+        m.description.toLowerCase().includes(q) ||
+        (m.originalValue && m.originalValue.toLowerCase().includes(q)) ||
+        (m.revisedValue && m.revisedValue.toLowerCase().includes(q)) ||
+        (m.ruleReference && m.ruleReference.toLowerCase().includes(q))
+      );
+    }
+    return true;
+  });
+
+  const currentMarkerIndex = filteredDiffMarkers.findIndex(m => m.id === activeMarkerId);
+
+  const goToPrevMarker = () => {
+    if (filteredDiffMarkers.length === 0) return;
+    const prevIdx = currentMarkerIndex > 0 ? currentMarkerIndex - 1 : filteredDiffMarkers.length - 1;
+    selectMarker(filteredDiffMarkers[prevIdx].id);
+  };
+
+  const goToNextMarker = () => {
+    if (filteredDiffMarkers.length === 0) return;
+    const nextIdx = currentMarkerIndex >= 0 && currentMarkerIndex < filteredDiffMarkers.length - 1 ? currentMarkerIndex + 1 : 0;
+    selectMarker(filteredDiffMarkers[nextIdx].id);
+  };
+
+  const additionsCount = diffMarkers.filter(m => m.type === "addition").length;
+  const modificationsCount = diffMarkers.filter(m => m.type === "modification").length;
+  const deletionsCount = diffMarkers.filter(m => m.type === "deletion").length;
 
   if (!file) {
     return (
@@ -1227,6 +1374,151 @@ export function PDFViewer({
         </div>
       )}
 
+      {/* Highlight Diff Action & Control Bar */}
+      {compareMode && (
+        <div className="bg-[#151821] border-b border-white/10 px-5 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs z-20 shrink-0">
+          {/* Left: AI Diff Trigger & Status */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={handleRunHighlightDiff}
+              disabled={isLocalComparing || isComparingAI}
+              className={cn(
+                "px-3.5 py-1.5 rounded-xl font-black text-[11px] uppercase tracking-wider flex items-center gap-2 transition-all cursor-pointer shadow-md active:scale-95",
+                diffMarkers.length > 0 
+                  ? "bg-gradient-to-r from-amber-500 to-indigo-600 hover:from-amber-400 hover:to-indigo-500 text-white" 
+                  : "bg-indigo-600 hover:bg-indigo-500 text-white animate-pulse"
+              )}
+              title="Gửi văn bản hai tài liệu đến Gemini để tự động phát hiện và đánh dấu các đoạn thay đổi"
+            >
+              {(isLocalComparing || isComparingAI) ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>{compareStage || "AI đang quét sai khác..."}</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-3.5 h-3.5 text-amber-300" />
+                  <span>{diffMarkers.length > 0 ? "Quét lại Diff AI ✦" : "Tự động phát hiện sai khác (Highlight Diff) ✦"}</span>
+                </>
+              )}
+            </button>
+
+            {compareError && (
+              <span className="text-rose-400 text-[10px] font-bold bg-rose-500/10 px-2.5 py-1 rounded-lg border border-rose-500/20 flex items-center gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{compareError}</span>
+              </span>
+            )}
+
+            {compareSuccessMsg && !compareError && (
+              <span className="text-emerald-400 text-[10px] font-bold bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                <span>{compareSuccessMsg}</span>
+              </span>
+            )}
+
+            {/* Filter Tabs when Diff Markers exist */}
+            {diffMarkers.length > 0 && (
+              <div className="flex items-center bg-black/40 p-0.5 rounded-xl border border-white/5 gap-1">
+                <button
+                  onClick={() => setSelectedDiffType?.("all")}
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg text-[9.5px] font-black uppercase tracking-wider transition-all",
+                    selectedDiffType === "all" ? "bg-white/20 text-white" : "text-gray-400 hover:text-white"
+                  )}
+                >
+                  Tất cả ({diffMarkers.length})
+                </button>
+                <button
+                  onClick={() => setSelectedDiffType?.("addition")}
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg text-[9.5px] font-black uppercase tracking-wider transition-all flex items-center gap-1",
+                    selectedDiffType === "addition" ? "bg-emerald-500/30 text-emerald-300 border border-emerald-500/40" : "text-gray-400 hover:text-emerald-300"
+                  )}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  Thêm mới ({additionsCount})
+                </button>
+                <button
+                  onClick={() => setSelectedDiffType?.("modification")}
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg text-[9.5px] font-black uppercase tracking-wider transition-all flex items-center gap-1",
+                    selectedDiffType === "modification" ? "bg-amber-500/30 text-amber-300 border border-amber-500/40" : "text-gray-400 hover:text-amber-300"
+                  )}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                  Sửa đổi ({modificationsCount})
+                </button>
+                <button
+                  onClick={() => setSelectedDiffType?.("deletion")}
+                  className={cn(
+                    "px-2.5 py-1 rounded-lg text-[9.5px] font-black uppercase tracking-wider transition-all flex items-center gap-1",
+                    selectedDiffType === "deletion" ? "bg-rose-500/30 text-rose-300 border border-rose-500/40" : "text-gray-400 hover:text-rose-300"
+                  )}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+                  Đã xóa ({deletionsCount})
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Right: Stepper Navigation & Diff Drawer Toggle */}
+          {diffMarkers.length > 0 && (
+            <div className="flex items-center gap-2">
+              {/* Stepper */}
+              <div className="flex items-center bg-black/40 px-2 py-1 rounded-xl border border-white/5 gap-1.5 text-[10px] text-gray-300 font-bold">
+                <button
+                  onClick={goToPrevMarker}
+                  className="hover:text-white p-0.5 text-gray-400"
+                  title="Điểm thay đổi trước"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-amber-300 font-mono text-[9px] min-w-[50px] text-center">
+                  {currentMarkerIndex >= 0 ? `${currentMarkerIndex + 1} / ${filteredDiffMarkers.length}` : `- / ${filteredDiffMarkers.length}`}
+                </span>
+                <button
+                  onClick={goToNextMarker}
+                  className="hover:text-white p-0.5 text-gray-400"
+                  title="Điểm thay đổi kế tiếp"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {/* Toggle Diff List Drawer */}
+              <button
+                onClick={() => setIsDiffListOpen(prev => !prev)}
+                className={cn(
+                  "px-3 py-1.5 rounded-xl font-black text-[10px] uppercase tracking-wider flex items-center gap-1.5 transition-all cursor-pointer border",
+                  isDiffListOpen 
+                    ? "bg-indigo-600 text-white border-indigo-400 shadow-md shadow-indigo-600/30" 
+                    : "bg-white/5 hover:bg-white/10 text-gray-300 border-white/10"
+                )}
+              >
+                <FileDiff className="w-3.5 h-3.5 text-amber-300" />
+                <span>Bảng sai khác ({diffMarkers.length})</span>
+              </button>
+
+              {/* Clear Diffs button */}
+              <button
+                onClick={() => {
+                  setDiffMarkers?.([]);
+                  setActiveMarkerId?.(null);
+                  setIsDiffListOpen(false);
+                  setCompareSuccessMsg(null);
+                }}
+                className="text-gray-500 hover:text-rose-400 text-[10px] p-1.5"
+                title="Xóa kết quả so sánh"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Main work area */}
       <div className="flex-1 flex overflow-hidden relative">
         {compareMode && compareLayout === "side_by_side" ? (
@@ -1402,10 +1694,12 @@ export function PDFViewer({
                       pdfDoc={pdfDocB} 
                       pageNo={pageNo} 
                       scale={scaleB}
-                      diffMarkers={[]}
-                      onSelectMarker={() => {}}
-                      onHoverMarker={() => {}}
-                      opacity={100}
+                      diffMarkers={diffMarkers.filter(m => m.page === pageNo && (selectedDiffType === "all" || m.type === selectedDiffType))}
+                      activeMarkerId={activeMarkerId}
+                      hoveredMarkerId={hoveredMarkerId}
+                      onSelectMarker={selectMarker}
+                      onHoverMarker={setHoveredMarkerId}
+                      opacity={markerOpacity}
                       documentTitle={activeCompareWithFile.name}
                     />
                   ))
@@ -1547,6 +1841,158 @@ export function PDFViewer({
               className="text-white hover:text-indigo-400 disabled:opacity-30 p-1 cursor-pointer transition-colors"
             >
               <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Slide-out Diff Drawer */}
+      {compareMode && isDiffListOpen && (
+        <div className="absolute top-0 right-0 bottom-0 w-80 sm:w-96 bg-[#13151c]/95 backdrop-blur-xl border-l border-white/10 z-40 shadow-2xl flex flex-col animate-in slide-in-from-right-10 duration-200">
+          {/* Drawer Header */}
+          <div className="p-4 border-b border-white/10 flex items-center justify-between bg-black/20">
+            <div className="flex items-center gap-2">
+              <FileDiff className="w-4 h-4 text-amber-400" />
+              <div>
+                <h3 className="text-xs font-black text-white uppercase tracking-wider">
+                  Bảng sai khác ({filteredDiffMarkers.length})
+                </h3>
+                <p className="text-[9px] text-gray-400 font-bold uppercase">
+                  Đối chiếu Document A & Document B
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setIsDiffListOpen(false)}
+              className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/10"
+              title="Đóng bảng sai khác"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Search within Diffs */}
+          <div className="p-3 border-b border-white/5 bg-black/10">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                type="text"
+                value={diffSearchQuery}
+                onChange={(e) => setDiffSearchQuery(e.target.value)}
+                placeholder="Tìm kiếm theo tiêu đề, chi tiết..."
+                className="w-full pl-8 pr-3 py-1.5 bg-black/30 border border-white/10 rounded-xl text-[11px] text-white placeholder-gray-500 focus:outline-none focus:border-indigo-400 transition-all"
+              />
+            </div>
+          </div>
+
+          {/* List of Diff Marker Cards */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-2.5 no-scrollbar">
+            {filteredDiffMarkers.length === 0 ? (
+              <div className="text-center py-12 text-gray-400 space-y-2">
+                <FileDiff className="w-8 h-8 mx-auto opacity-40 text-indigo-400" />
+                <p className="text-xs font-bold">Không tìm thấy điểm sai khác phù hợp.</p>
+              </div>
+            ) : (
+              filteredDiffMarkers.map((marker) => {
+                const isSelected = activeMarkerId === marker.id;
+                return (
+                  <div
+                    key={marker.id}
+                    onClick={() => selectMarker(marker.id)}
+                    className={cn(
+                      "p-3 rounded-2xl border transition-all cursor-pointer text-left space-y-2 group",
+                      isSelected
+                        ? "bg-indigo-600/20 border-indigo-500 ring-2 ring-indigo-500/40 shadow-lg"
+                        : "bg-white/[0.03] hover:bg-white/[0.07] border-white/5 hover:border-white/15"
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className={cn(
+                          "w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white shrink-0",
+                          marker.type === "addition" ? "bg-emerald-600" :
+                          marker.type === "deletion" ? "bg-rose-600" : "bg-amber-600"
+                        )}>
+                          {marker.type === "addition" ? "+" : marker.type === "deletion" ? "-" : "Δ"}
+                        </span>
+                        <span className="text-[9px] font-black text-gray-400 uppercase tracking-wider">
+                          Trang {marker.page}
+                        </span>
+                      </div>
+                      {marker.impactLevel && (
+                        <span className={cn(
+                          "text-[8px] font-black uppercase px-1.5 py-0.5 rounded border",
+                          marker.impactLevel === "high" ? "bg-rose-500/20 text-rose-300 border-rose-500/30" :
+                          marker.impactLevel === "medium" ? "bg-amber-500/20 text-amber-300 border-amber-500/30" :
+                          "bg-emerald-500/20 text-emerald-300 border-emerald-500/30"
+                        )}>
+                          {marker.impactLevel === "high" ? "Risk Cao" : marker.impactLevel === "medium" ? "Risk Vừa" : "Risk Thấp"}
+                        </span>
+                      )}
+                    </div>
+
+                    <div>
+                      <h4 className="text-xs font-black text-white leading-snug group-hover:text-amber-300 transition-colors">
+                        {marker.title}
+                      </h4>
+                      <p className="text-[10px] text-gray-400 line-clamp-2 mt-1 leading-relaxed font-medium">
+                        {marker.description}
+                      </p>
+                    </div>
+
+                    {/* Original vs Revised comparison pill */}
+                    {(marker.originalValue || marker.revisedValue) && (
+                      <div className="bg-black/30 rounded-xl p-2 border border-white/5 space-y-1 text-[9px] font-mono">
+                        {marker.originalValue && (
+                          <div className="text-rose-300/90 truncate flex items-start gap-1">
+                            <span className="text-gray-500 shrink-0 font-sans">Gốc:</span>
+                            <span className="truncate">{marker.originalValue}</span>
+                          </div>
+                        )}
+                        {marker.revisedValue && (
+                          <div className="text-emerald-300/90 truncate flex items-start gap-1">
+                            <span className="text-gray-500 shrink-0 font-sans">Mới:</span>
+                            <span className="truncate">{marker.revisedValue}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {marker.ruleReference && (
+                      <div className="text-[8.5px] font-bold text-indigo-400 uppercase tracking-wider truncate">
+                        📖 {marker.ruleReference}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Drawer Footer Actions */}
+          <div className="p-3 border-t border-white/10 bg-black/20 flex items-center justify-between gap-2">
+            <button
+              onClick={() => {
+                const diffText = filteredDiffMarkers.map((m, i) => 
+                  `${i + 1}. [Trang ${m.page}] [${m.type.toUpperCase()}] ${m.title}\n   - Gốc: ${m.originalValue || "N/A"}\n   - Mới: ${m.revisedValue || "N/A"}\n   - Chi tiết: ${m.description}`
+                ).join("\n\n");
+                navigator.clipboard.writeText(diffText);
+                setCopiedDiffSummary(true);
+                setTimeout(() => setCopiedDiffSummary(false), 2000);
+              }}
+              className="flex-1 py-1.5 px-3 bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white rounded-xl text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all border border-white/10 cursor-pointer"
+            >
+              {copiedDiffSummary ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copiedDiffSummary ? "Đã sao chép" : "Sao chép báo cáo"}</span>
+            </button>
+            <button
+              onClick={handleRunHighlightDiff}
+              disabled={isLocalComparing || isComparingAI}
+              className="py-1.5 px-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all shadow-sm cursor-pointer"
+              title="Quét lại sai khác"
+            >
+              <RefreshCw className={cn("w-3.5 h-3.5", (isLocalComparing || isComparingAI) && "animate-spin")} />
+              <span>Quét lại</span>
             </button>
           </div>
         </div>
@@ -1835,7 +2281,7 @@ function PDFPage({
         )}
 
         {/* Render overlay markers absolutely positioned on top of drawing canvas */}
-        {rendered && diffMarkers.map(marker => {
+        {(rendered || isDigitalMode) && diffMarkers.map(marker => {
           const isActive = activeMarkerId === marker.id;
           const isHovered = hoveredMarkerId === marker.id;
           
@@ -1878,7 +2324,7 @@ function PDFPage({
               </div>
 
               {/* Floating Tooltip displaying on Hover */}
-              <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-950/95 backdrop-blur-md px-3.5 py-2.5 rounded-2xl border border-white/10 text-white font-sans text-[10px] leading-relaxed max-w-[220px] w-56 text-left opacity-0 pointer-events-none group-hover/marker:opacity-100 transition-all duration-350 shadow-2xl z-30 space-y-1">
+              <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-950/95 backdrop-blur-md px-3.5 py-2.5 rounded-2xl border border-white/10 text-white font-sans text-[10px] leading-relaxed max-w-[240px] w-60 text-left opacity-0 pointer-events-none group-hover/marker:opacity-100 transition-all duration-350 shadow-2xl z-30 space-y-1.5">
                 <div className="flex items-center justify-between gap-1">
                   <span className={cn(
                     "font-black uppercase text-[8px] tracking-widest block",
@@ -1903,6 +2349,24 @@ function PDFPage({
                 <p className="text-[9px] text-gray-300 line-clamp-3 font-medium">
                   {marker.description}
                 </p>
+
+                {(marker.originalValue || marker.revisedValue) && (
+                  <div className="pt-1 border-t border-white/10 space-y-1 text-[8.5px] font-mono">
+                    {marker.originalValue && (
+                      <div className="text-rose-300/90 truncate flex items-start gap-1">
+                        <span className="text-gray-500 shrink-0 font-sans">Gốc:</span>
+                        <span className="truncate">{marker.originalValue}</span>
+                      </div>
+                    )}
+                    {marker.revisedValue && (
+                      <div className="text-emerald-300/90 truncate flex items-start gap-1">
+                        <span className="text-gray-500 shrink-0 font-sans">Mới:</span>
+                        <span className="truncate">{marker.revisedValue}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {marker.boqDelta && (
                   <div className="pt-1 border-t border-white/10 flex justify-between text-[8px] font-mono">
                     <span className="text-indigo-300">📦 BoQ: {marker.boqDelta}</span>

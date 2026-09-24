@@ -45,6 +45,11 @@ export interface ChatbotRoleConfig {
   samplePrompts: string[];
 }
 
+export interface GroundingSource {
+  title?: string;
+  uri?: string;
+}
+
 export interface Message {
   id: string;
   role: "user" | "ai";
@@ -52,6 +57,8 @@ export interface Message {
   timestamp: number;
   image?: string;
   isThinking?: boolean;
+  isSearchGrounding?: boolean;
+  groundingSources?: GroundingSource[];
   modelUsed?: string;
   roleUsed?: ChatbotRoleId;
 }
