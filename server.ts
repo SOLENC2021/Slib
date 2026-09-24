@@ -2266,6 +2266,7 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
           id: file.id,
           name: file.name,
           text: file.text || "",
+          pageTexts: file.pageTexts || null,
           geminiFileUri: uri,
           geminiFileName: name
         });
@@ -2274,18 +2275,31 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
       const activeFile = resolvedFiles[0];
       const compareWithFile = resolvedFiles[1];
 
-      const drawingCompareSystemInstruction = `Bạn là một CHUYÊN GIA PHÂN TÍCH, THẨM ĐỊNH VÀ ĐỐI CHIẾU BẢN VẼ XÂY DỰNG CAO CẤP.
-Nhiệm vụ của bạn là quét qua hai hồ sơ bản vẽ/tài liệu thiết kế và tìm ra sự khác nhau sơ bộ, định hướng để kỹ sư có thể nhanh chóng nắm bắt thông tin thiết kế và sự thay đổi giữa hai phiên bản.
+      const drawingCompareSystemInstruction = `Bạn là một CHUYÊN GIA PHÂN TÍCH, THẨM ĐỊNH VÀ ĐỐI CHIẾU TÀI LIỆU & BẢN VẼ KỸ THUẬT CAO CẤP.
+Nhiệm vụ của bạn là quét sâu qua hai hồ sơ/tài liệu và tìm ra TẤT CẢ các điểm khác biệt (Highlight Diff) giữa hai tài liệu song song, phân loại chi tiết theo từng trang để kỹ sư và người dùng theo dõi và đối chiếu chính xác các thay đổi.
 
-Bạn phải so sánh hai tài liệu:
-Tập hồ sơ 1 (Bản vẽ mới/hiệu chỉnh): "${activeFile.name}"
-Tập hồ sơ 2 (Bản vẽ gốc/tham chiếu): "${compareWithFile.name}"
+Bạn so sánh hai tài liệu:
+Tài liệu 1 (Bản hiệu chỉnh/Mới - Document A): "${activeFile.name}"
+Tài liệu 2 (Bản gốc/Tham chiếu - Document B): "${compareWithFile.name}"
 
-Hãy kiểm tra kỹ từng cấu kiện, thông số hình học, tiết diện cột, dầm, sàn, ghi chú kỹ thuật, bố trí mặt bằng, khoảng lùi, chỉ giới, cốt thép, kết nối MEP, quy chuẩn PCCC, hoặc các chỉ số quan trọng khác có trong văn bản và nội dung hình ảnh/file của cả hai tài liệu.
+Hãy kiểm tra kỹ lưỡng từng câu chữ, điều khoản, thông số kỹ thuật, kích thước, quy cách vật liệu, ghi chú, cốt thép, cấu kiện hoặc sơ đồ bố trí.
+Phân loại chính xác từng điểm khác biệt thành 3 loại:
+- "modification": Thay đổi thông số, điều chỉnh kích thước, câu chữ, tiêu chuẩn tham chiếu giữa 2 bản.
+- "addition": Nội dung, điều khoản, thông số hoặc chi tiết mới được bổ sung vào (có trong bản mới nhưng chưa có trong bản gốc).
+- "deletion": Nội dung, yêu cầu, hoặc cấu kiện bị lược bỏ (có trong bản gốc nhưng đã bị xóa trong bản mới).
 
-Yêu cầu trả về đầu ra có cấu trúc chính xác theo JSON Schema được cấu hình.
-Trường "summary" chứa một báo cáo chi tiết bằng tiếng Việt dạng Markdown dồi dào thông tin kỹ thuật chuyên sâu, phân tích rõ sự sai khác tổng thể và sơ bộ giữa hai tài liệu và đưa ra các định hướng thiết kế/thi công hữu ích cho kỹ sư.
-Trường "diffMarkers" là danh sách các sự sai khác cụ thể, định hướng rõ ràng từng sự thay đổi. Tránh các thay đổi chung chung, hãy liệt kê tối thiểu 3-5 điểm sai khác cụ thể nếu có. Mỗi điểm khác biệt có tọa độ x, y, width, height ngẫu nhiên từ 10 đến 90 (ví dụ x: 25, y: 35, width: 20, height: 15) đại diện cho vị trí ước lượng trên bản vẽ để hệ thống vẽ khung đánh dấu trực quan. ID của marker phải có tiền tố 'diff-ai-' kèm mã ngẫu nhiên hoặc số thứ tự.`;
+Yêu cầu xuất ra JSON theo đúng schema:
+- "summary": Báo cáo tổng hợp đối chiếu ngắn gọn, súc tích bằng tiếng Việt (Markdown), tóm lược các thay đổi trọng tâm.
+- "diffMarkers": Danh sách các điểm khác biệt chi tiết phát hiện được (tối thiểu 3-8 điểm nếu có khác biệt).
+  * "id": định danh duy nhất ví dụ "diff-ai-1", "diff-ai-2"...
+  * "page": số trang xảy ra điểm khác biệt (1-based, ví dụ 1, 2, 3...). Hãy ghi chính xác số trang tương ứng dựa vào dấu phân tách '--- TRANG X ---' trong văn bản.
+  * "type": "addition" | "modification" | "deletion"
+  * "title": Tiêu đề ngắn gọn, rõ ràng (ví dụ: "Thay đổi tiết diện dầm D4", "Bổ sung điều khoản kiểm định PCCC", "Điều chỉnh chiều dày lớp bê tông bảo vệ")
+  * "description": Diễn giải chi tiết, rõ ràng sự thay đổi giữa 2 tài liệu.
+  * "originalValue": Nội dung/giá trị trong Bản gốc (Document B)
+  * "revisedValue": Nội dung/giá trị trong Bản mới (Document A)
+  * "ruleReference": Tiêu chuẩn quy chuẩn áp dụng hoặc vị trí trích dẫn liên quan (nếu có, ví dụ: TCVN, QCVN, Mục 3.2, Ghi chú bản vẽ)
+  * "boundingBox": Tọa độ khung đánh dấu trên trang { x, y, width, height } (tính theo phần trăm 0-100%). Hãy ước lượng vị trí hợp lý trên trang (ví dụ x: 12-70, y: 15-80, width: 25-50, height: 8-16) để nhãn DiffMarker hiển thị nổi bật, đẹp mắt và trực quan.`;
 
       const responseSchema = {
         type: "OBJECT",
@@ -2301,7 +2315,7 @@ Trường "diffMarkers" là danh sách các sự sai khác cụ thể, định h
               type: "OBJECT",
               properties: {
                 id: { type: "STRING" },
-                page: { type: "INTEGER", description: "Trang phát hiện sai khác (mặc định là 1 nếu không rõ)" },
+                page: { type: "INTEGER", description: "Trang phát hiện sai khác (1-based, mặc định là 1 nếu không rõ)" },
                 type: { 
                   type: "STRING", 
                   enum: ["addition", "modification", "deletion"],
@@ -2330,10 +2344,22 @@ Trường "diffMarkers" là danh sách các sự sai khác cụ thể, định h
         required: ["summary", "diffMarkers"]
       };
 
+      const formatDocText = (fileObj: any) => {
+        if (fileObj.pageTexts && typeof fileObj.pageTexts === "object" && Object.keys(fileObj.pageTexts).length > 0) {
+          return Object.entries(fileObj.pageTexts)
+            .sort(([a], [b]) => Number(a) - Number(b))
+            .map(([pageNum, pText]) => `--- TRANG ${pageNum} ---\n${pText}`)
+            .join("\n\n");
+        }
+        return fileObj.text || "";
+      };
+
       const runDrawingCompareAI = async (filesToUse: any[]) => {
         const parts: any[] = [];
+        const doc1Text = formatDocText(filesToUse[0]);
+        const doc2Text = formatDocText(filesToUse[1]);
         
-        parts.push({ text: `=== BẢN VẼ HIỆN TẠI (MỚI/HIỆU CHỈNH): ${filesToUse[0].name} ===` });
+        parts.push({ text: `=== TÀI LIỆU 1 (BẢN HIỆU CHỈNH / MỚI - DOCUMENT A): ${filesToUse[0].name} ===` });
         if (filesToUse[0].geminiFileUri) {
           parts.push({
             fileData: {
@@ -2341,12 +2367,13 @@ Trường "diffMarkers" là danh sách các sự sai khác cụ thể, định h
               mimeType: getMimeType(filesToUse[0].name)
             }
           });
-        } else if (filesToUse[0].text) {
-          parts.push({ text: `[VĂN BẢN TRÍCH XUẤT]:\n${filesToUse[0].text}` });
         }
-        parts.push({ text: `=== KẾT THÚC BẢN VẼ HIỆN TẠI ===\n` });
+        if (doc1Text) {
+          parts.push({ text: `[NỘI DUNG VĂN BẢN TÀI LIỆU 1 THEO TỪNG TRANG]:\n${doc1Text}` });
+        }
+        parts.push({ text: `=== KẾT THÚC TÀI LIỆU 1 ===\n` });
 
-        parts.push({ text: `=== BẢN VẼ GỐC (THAM CHIẾU/GỐC): ${filesToUse[1].name} ===` });
+        parts.push({ text: `=== TÀI LIỆU 2 (BẢN GỐC / THAM CHIẾU - DOCUMENT B): ${filesToUse[1].name} ===` });
         if (filesToUse[1].geminiFileUri) {
           parts.push({
             fileData: {
@@ -2354,12 +2381,13 @@ Trường "diffMarkers" là danh sách các sự sai khác cụ thể, định h
               mimeType: getMimeType(filesToUse[1].name)
             }
           });
-        } else if (filesToUse[1].text) {
-          parts.push({ text: `[VĂN BẢN TRÍCH XUẤT]:\n${filesToUse[1].text}` });
         }
-        parts.push({ text: `=== KẾT THÚC BẢN VẼ GỐC ===\n` });
+        if (doc2Text) {
+          parts.push({ text: `[NỘI DUNG VĂN BẢN TÀI LIỆU 2 THEO TỪNG TRANG]:\n${doc2Text}` });
+        }
+        parts.push({ text: `=== KẾT THÚC TÀI LIỆU 2 ===\n` });
 
-        parts.push({ text: "Hãy thực hiện quét qua cả hai hồ sơ bản vẽ/tài liệu thiết kế trên để so sánh và tìm tất cả sự khác biệt kỹ thuật sơ bộ định hướng nhằm giúp kỹ sư nắm bắt thông tin nhanh chóng." });
+        parts.push({ text: "Hãy thực hiện quét qua cả hai hồ sơ tài liệu/bản vẽ trên để so sánh và tìm tất cả sự khác biệt kỹ thuật và nội dung (Highlight Diff), phân bổ DiffMarker vào đúng số trang tương ứng." });
 
         const contents = [{ role: "user", parts }];
 
@@ -2372,7 +2400,7 @@ Trường "diffMarkers" là danh sách các sự sai khác cụ thể, định h
             responseSchema,
             temperature: 0.15,
           },
-        }), "gemini-3.5-flash", 2);
+        }), "gemini-3.8-flash", 2);
       };
 
       let aiResponse;

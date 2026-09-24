@@ -6,7 +6,8 @@ import {
   ZoomIn, ZoomOut, Loader2, Sparkles, Layers,
   PlusCircle, MinusCircle, Info, HelpCircle, 
   CheckCircle2, SlidersHorizontal, Sliders, Eye, EyeOff,
-  RefreshCw, ListFilter, ArrowRight, UploadCloud, BookOpen
+  RefreshCw, ListFilter, ArrowRight, UploadCloud, BookOpen,
+  Columns2, Link2, Unlink2, ArrowLeftRight
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PDFFile } from "@/types";
@@ -476,6 +477,7 @@ interface PDFViewerProps {
   setSplitSliderPos?: (val: number) => void;
   isHeatmapActive?: boolean;
   setIsHeatmapActive?: (val: boolean) => void;
+  onSelectFile?: (fileId: string) => void;
 }
 
 export function PDFViewer({ 
@@ -487,6 +489,7 @@ export function PDFViewer({
   isMaximized = false,
   onToggleMaximize,
   onClose,
+  onSelectFile,
 
   compareMode = false,
   setCompareMode,
@@ -538,6 +541,22 @@ export function PDFViewer({
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const pdfDocRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Document B (Comparison document) states for Side-by-Side mode
+  const [pdfDocB, setPdfDocB] = useState<any>(null);
+  const pdfDocBRef = useRef<any>(null);
+  const [numPagesB, setNumPagesB] = useState<number>(0);
+  const [currentPageB, setCurrentPageB] = useState<number>(1);
+  const [renderedPagesB, setRenderedPagesB] = useState<number[]>([]);
+  const [loadingB, setLoadingB] = useState<boolean>(false);
+  const [loadErrorB, setLoadErrorB] = useState<string | null>(null);
+  const [scaleB, setScaleB] = useState<number>(1.2);
+  const containerBRef = useRef<HTMLDivElement>(null);
+
+  // Side-by-side mode layout state & synchronized scrolling
+  const [compareLayout, setCompareLayout] = useState<"side_by_side" | "overlay">("side_by_side");
+  const [syncScroll, setSyncScroll] = useState<boolean>(true);
+  const isSyncingScrollRef = useRef<boolean>(false);
 
   // Sync typed input with current observer page
   useEffect(() => {
@@ -779,7 +798,17 @@ export function PDFViewer({
 
   const activeCompareWithFile = getCompareWithFile();
 
-  const currentLoadedFileUrl = (compareMode && viewLayer === "original" && activeCompareWithFile)
+  // If compareMode is enabled but no compareWithFileId is selected, auto-select another file
+  useEffect(() => {
+    if (compareMode && (!compareWithFileId || compareWithFileId === file?.id)) {
+      const candidate = allFiles.find(f => f.id !== file?.id);
+      if (candidate && setCompareWithFileId) {
+        setCompareWithFileId(candidate.id);
+      }
+    }
+  }, [compareMode, compareWithFileId, file?.id, allFiles, setCompareWithFileId]);
+
+  const currentLoadedFileUrl = (compareMode && compareLayout === "overlay" && viewLayer === "original" && activeCompareWithFile)
     ? activeCompareWithFile.url
     : file?.url;
 
@@ -791,6 +820,118 @@ export function PDFViewer({
       pdfDocRef.current = null;
     }
   }, [currentLoadedFileUrl, file?.id]);
+
+  // Load Document B for Side-by-side mode
+  useEffect(() => {
+    if (compareMode && compareLayout === "side_by_side" && activeCompareWithFile?.url) {
+      loadPDFB(activeCompareWithFile.url);
+    } else {
+      setPdfDocB(null);
+      pdfDocBRef.current = null;
+      setRenderedPagesB([]);
+      setNumPagesB(0);
+    }
+  }, [compareMode, compareLayout, activeCompareWithFile?.id, activeCompareWithFile?.url]);
+
+  const loadPDFB = async (url: string) => {
+    setLoadingB(true);
+    setLoadErrorB(null);
+    setRenderedPagesB([]);
+    try {
+      const loadingTask = pdfjs.getDocument(url);
+      const pdf = await loadingTask.promise;
+      pdfDocBRef.current = pdf;
+      setPdfDocB(pdf);
+      setNumPagesB(pdf.numPages);
+      const pages = Array.from({ length: pdf.numPages }, (_, i) => i + 1);
+      setRenderedPagesB(pages);
+    } catch (err: any) {
+      console.warn("PDF.js loading error Document B:", err);
+      if (activeCompareWithFile?.text) {
+        const parsed = parsePagesFromText(activeCompareWithFile.text);
+        const pageKeys = Object.keys(parsed).map(Number);
+        const total = pageKeys.length > 0 ? Math.max(...pageKeys) : (activeCompareWithFile.numpages || 1);
+        setNumPagesB(total);
+        setRenderedPagesB(Array.from({ length: total }, (_, i) => i + 1));
+      } else {
+        setLoadErrorB(err.message || "Không thể tải tài liệu đối chiếu");
+      }
+    } finally {
+      setLoadingB(false);
+    }
+  };
+
+  // Synchronized scroll handlers between Left (A) and Right (B) containers
+  const handleScrollA = () => {
+    if (!syncScroll || isSyncingScrollRef.current) return;
+    const elA = containerRef.current;
+    const elB = containerBRef.current;
+    if (!elA || !elB) return;
+    isSyncingScrollRef.current = true;
+    const scrollMaxA = elA.scrollHeight - elA.clientHeight;
+    if (scrollMaxA > 0) {
+      const ratio = elA.scrollTop / scrollMaxA;
+      const scrollMaxB = elB.scrollHeight - elB.clientHeight;
+      elB.scrollTop = ratio * scrollMaxB;
+    }
+    setTimeout(() => {
+      isSyncingScrollRef.current = false;
+    }, 40);
+  };
+
+  const handleScrollB = () => {
+    if (!syncScroll || isSyncingScrollRef.current) return;
+    const elA = containerRef.current;
+    const elB = containerBRef.current;
+    if (!elA || !elB) return;
+    isSyncingScrollRef.current = true;
+    const scrollMaxB = elB.scrollHeight - elB.clientHeight;
+    if (scrollMaxB > 0) {
+      const ratio = elB.scrollTop / scrollMaxB;
+      const scrollMaxA = elA.scrollHeight - elA.clientHeight;
+      elA.scrollTop = ratio * scrollMaxA;
+    }
+    setTimeout(() => {
+      isSyncingScrollRef.current = false;
+    }, 40);
+  };
+
+  // Swap Left and Right files
+  const handleSwapFiles = () => {
+    if (!file || !activeCompareWithFile) return;
+    const currentAId = file.id;
+    const currentBId = activeCompareWithFile.id;
+    onSelectFile?.(currentBId);
+    setCompareWithFileId?.(currentAId);
+  };
+
+  // Track Document B intersection for currentPageB
+  useEffect(() => {
+    if (!containerBRef.current || renderedPagesB.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const pageNo = Number(entry.target.getAttribute("data-page"));
+            if (pageNo) {
+              setCurrentPageB(pageNo);
+            }
+          }
+        });
+      },
+      {
+        root: containerBRef.current,
+        threshold: 0.5,
+      }
+    );
+
+    const elements = containerBRef.current.querySelectorAll("[data-page]");
+    elements.forEach((el) => observer.observe(el));
+    return () => {
+      elements.forEach((el) => observer.unobserve(el));
+      observer.disconnect();
+    };
+  }, [renderedPagesB]);
 
   const loadPDF = async (url: string) => {
     setLoading(true);
@@ -874,30 +1015,89 @@ export function PDFViewer({
   return (
     <div className="flex-1 h-full flex flex-col bg-[#111318] rounded-[28px] overflow-hidden border border-slate-800/80 shadow-[0_30px_70px_rgba(0,0,0,0.22)] relative">
       {/* Top Toolbar */}
-      <div className="h-16 bg-[#1a1d26] border-b border-white/5 flex items-center justify-between px-6 shrink-0 z-20">
+      <div className="h-16 bg-[#1a1d26] border-b border-white/5 flex items-center justify-between px-6 shrink-0 z-20 gap-3">
         <div 
           onClick={onToggleMaximize}
-          className="flex items-center gap-4 cursor-pointer hover:bg-white/5 px-3 py-1.5 rounded-2xl transition-all min-w-0 flex-1 mr-4"
+          className="flex items-center gap-4 cursor-pointer hover:bg-white/5 px-3 py-1.5 rounded-2xl transition-all min-w-0 flex-1 mr-2"
           title="Click để Phóng to / Thu nhỏ khu vực đọc PDF"
         >
           <div className="w-10 h-10 bg-indigo-600/20 rounded-xl flex items-center justify-center border border-indigo-500/30 shrink-0">
-            <FileText className="w-5 h-5 text-indigo-400" />
+            {compareMode ? <Columns2 className="w-5 h-5 text-amber-400" /> : <FileText className="w-5 h-5 text-indigo-400" />}
           </div>
           <div className="min-w-0">
             <h2 className="text-[13px] font-black text-white uppercase tracking-widest truncate max-w-[280px]">
-              {file.name}
+              {compareMode 
+                ? (compareLayout === "side_by_side" ? "SO SÁNH SONG SONG (2 BẢN VẼ)" : "SO SÁNH CHỒNG NÉT BẢN VẼ") 
+                : file.name}
             </h2>
             <p className="text-[9px] text-gray-400 font-bold uppercase tracking-wider mt-0.5 truncate opacity-75">
-              {compareMode ? "CHẾ ĐỘ KIỂM TRA ĐỐI CHIẾU SAI KHÁC BẢN VẼ" : "TRÌNH XEM BẢN VẼ KỸ THUẬT PDF"}
+              {compareMode 
+                ? (compareLayout === "side_by_side" ? "MÀN HÌNH CHIA ĐÔI • ĐỒNG BỘ CUỘN TRANG TRỰC TIẾP" : "CHẾ ĐỘ XẾP CHỒNG SAI KHÁC AI") 
+                : "TRÌNH XEM BẢN VẼ KỸ THUẬT PDF"}
             </p>
           </div>
         </div>
 
         {/* Action Controls */}
-        <div className="flex items-center gap-4 shrink-0">
+        <div className="flex items-center gap-3 shrink-0">
+          {compareMode ? (
+            <div className="flex items-center bg-black/40 p-1 rounded-2xl border border-white/10 gap-1">
+              <button
+                onClick={() => setCompareLayout("side_by_side")}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
+                  compareLayout === "side_by_side"
+                    ? "bg-amber-500 text-white shadow-md shadow-amber-500/25 ring-1 ring-amber-400"
+                    : "text-gray-400 hover:text-white"
+                )}
+                title="Chế độ Song song: Chia đôi màn hình 50% Trái - 50% Phải"
+              >
+                <Columns2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Song song</span>
+              </button>
+              <button
+                onClick={() => setCompareLayout("overlay")}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer",
+                  compareLayout === "overlay"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/25 ring-1 ring-indigo-400"
+                    : "text-gray-400 hover:text-white"
+                )}
+                title="Chế độ Chồng nét: Xem xếp chồng sai khác"
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Chồng nét</span>
+              </button>
+              <button
+                onClick={() => setCompareMode?.(false)}
+                className="flex items-center gap-1 px-2.5 py-1.5 text-gray-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ml-1"
+                title="Thoát chế độ so sánh về xem đơn"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Xem đơn</span>
+              </button>
+            </div>
+          ) : (
+            allFiles.length > 1 && (
+              <button
+                onClick={() => {
+                  setCompareMode?.(true);
+                  if (!compareWithFileId) {
+                    const candidate = allFiles.find(f => f.id !== file.id);
+                    if (candidate && setCompareWithFileId) setCompareWithFileId(candidate.id);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/30 hover:bg-indigo-600 border border-indigo-500/40 text-indigo-300 hover:text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer shadow-sm"
+                title="Mở màn hình chia đôi để so sánh song song hai bản vẽ"
+              >
+                <Columns2 className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">So sánh song song</span>
+              </button>
+            )
+          )}
 
           {/* Search Button */}
-          <div className="flex items-center gap-4 px-3 py-1.5 bg-black/20 rounded-xl border border-white/5">
+          <div className="flex items-center gap-3 px-3 py-1.5 bg-black/20 rounded-xl border border-white/5">
             {isSearchOpen ? (
               <div className="flex items-center gap-2 animate-in fade-in zoom-in-95 duration-200">
                 <Search className="w-4 h-4 text-indigo-400 shrink-0" />
@@ -941,15 +1141,18 @@ export function PDFViewer({
               </button>
             )}
 
-            <div className="h-4 w-[1px] bg-white/10" />
-            
-            <div className="flex items-center gap-2">
-              <button onClick={() => setScale(s => Math.max(0.4, s - 0.1))} className="text-gray-400 hover:text-white" title="Thu nhỏ"><ZoomOut className="w-4 h-4" /></button>
-              <div className="text-[10px] font-black text-indigo-400 min-w-[40px] text-center">
-                {Math.round(scale * 100)}%
-              </div>
-              <button onClick={() => setScale(s => s + 0.1)} className="text-gray-400 hover:text-white" title="Phóng to"><ZoomIn className="w-4 h-4" /></button>
-            </div>
+            {(!compareMode || compareLayout !== "side_by_side") && (
+              <>
+                <div className="h-4 w-[1px] bg-white/10" />
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setScale(s => Math.max(0.4, s - 0.1))} className="text-gray-400 hover:text-white" title="Thu nhỏ"><ZoomOut className="w-4 h-4" /></button>
+                  <div className="text-[10px] font-black text-indigo-400 min-w-[40px] text-center">
+                    {Math.round(scale * 100)}%
+                  </div>
+                  <button onClick={() => setScale(s => s + 0.1)} className="text-gray-400 hover:text-white" title="Phóng to"><ZoomIn className="w-4 h-4" /></button>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="h-5 w-[1px] bg-white/10 hidden lg:block" />
@@ -1024,142 +1227,330 @@ export function PDFViewer({
         </div>
       )}
 
-      {/* Main split work area */}
+      {/* Main work area */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Left View: Document Scroll Area with dynamic PDF pages rendering */}
-        <div className="flex-1 relative bg-[#1e222d] overflow-y-auto no-scrollbar scroll-smooth p-12 flex flex-col items-center gap-16" ref={containerRef}>
-          {loading && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1e222d] z-50">
-              <Loader2 className="w-12 h-12 text-indigo-500 animate-spin mb-4" />
-              <p className="text-white font-black text-xs uppercase tracking-widest">Đang kết xuất tài liệu...</p>
-            </div>
-          )}
-
-          {isComparingAI && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 backdrop-blur-md z-45">
-              <div className="bg-[#1e222d] border border-white/5 rounded-[32px] p-8 max-w-sm text-center shadow-2xl relative">
-                <div className="w-16 h-16 bg-emerald-600/20 rounded-full flex items-center justify-center border border-emerald-500/30 mx-auto mb-6">
-                  <Sparkles className="w-8 h-8 text-emerald-400 animate-pulse" />
+        {compareMode && compareLayout === "side_by_side" ? (
+          /* SIDE-BY-SIDE SPLIT VIEW */
+          <div className="flex-1 flex flex-row overflow-hidden relative w-full h-full">
+            {/* Left Panel: File A */}
+            <div className="flex-1 flex flex-col min-w-0 bg-[#151720] border-r border-white/10 relative">
+              {/* File A Header Bar */}
+              <div className="h-10 px-4 bg-[#1a1d26] border-b border-white/5 flex items-center justify-between shrink-0 z-10">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] font-black uppercase tracking-wider shrink-0">
+                    BẢN VẼ A
+                  </span>
+                  <select
+                    value={file.id}
+                    onChange={(e) => onSelectFile?.(e.target.value)}
+                    className="bg-black/40 text-white text-[11px] font-bold py-1 px-2 rounded-lg border border-white/10 focus:outline-none focus:border-indigo-400 truncate max-w-[160px] sm:max-w-[220px] cursor-pointer"
+                    title="Chọn bản vẽ hiển thị bên trái"
+                  >
+                    {allFiles.map(f => (
+                      <option key={f.id} value={f.id} className="bg-slate-900 text-white">
+                        {f.name}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-                <h3 className="text-sm font-black text-white uppercase tracking-widest mb-3">
-                  AI ĐANG KIỂM TRA ĐỐI CHIẾU BẢN VẼ
-                </h3>
-                <div className="flex items-center justify-center gap-2 text-xs text-gray-400 font-medium px-4 h-12">
-                  <div className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
-                  <div className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
-                  <div className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }} />
-                  <span className="ml-1 text-left line-clamp-2 leading-relaxed">{compareStage}</span>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] font-bold text-gray-400">
+                    Trang {currentPage} / {numPages || file.numpages || 1}
+                  </span>
+                  <div className="flex items-center gap-1 bg-black/30 px-1.5 py-0.5 rounded-lg border border-white/5">
+                    <button onClick={() => setScale(s => Math.max(0.4, s - 0.1))} className="text-gray-400 hover:text-white p-0.5" title="Thu nhỏ"><ZoomOut className="w-3 h-3" /></button>
+                    <span className="text-[9px] font-black text-indigo-300 min-w-[30px] text-center">{Math.round(scale * 100)}%</span>
+                    <button onClick={() => setScale(s => s + 0.1)} className="text-gray-400 hover:text-white p-0.5" title="Phóng to"><ZoomIn className="w-3 h-3" /></button>
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
 
-          {loadError ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-white p-6 sm:p-12 text-center h-full w-full max-w-2xl mx-auto">
-              <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center text-red-500 mb-6 border border-red-500/20">
-                <AlertCircle className="w-8 h-8" />
+              {/* Left Document Canvas Scroll Area */}
+              <div 
+                ref={containerRef}
+                onScroll={handleScrollA}
+                className="flex-1 relative bg-[#1e222d] overflow-y-auto no-scrollbar scroll-smooth p-6 flex flex-col items-center gap-8"
+              >
+                {loading && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1e222d] z-50">
+                    <Loader2 className="w-10 h-10 text-indigo-500 animate-spin mb-3" />
+                    <p className="text-white font-black text-[11px] uppercase tracking-widest">Đang tải bản vẽ A...</p>
+                  </div>
+                )}
+                {loadError ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-white p-6 text-center">
+                    <AlertCircle className="w-8 h-8 text-rose-500 mb-2" />
+                    <p className="text-xs text-rose-400 font-bold">{loadError}</p>
+                  </div>
+                ) : (
+                  renderedPages.map(pageNo => {
+                    const pageMarkers = diffMarkers.filter(m => m.page === pageNo && (selectedDiffType === "all" || m.type === selectedDiffType));
+                    return (
+                      <PDFPage 
+                        key={`left-${file.id}-page-${pageNo}`} 
+                        pdfDoc={pdfDoc} 
+                        pageNo={pageNo} 
+                        scale={scale}
+                        diffMarkers={pageMarkers}
+                        activeMarkerId={activeMarkerId}
+                        hoveredMarkerId={hoveredMarkerId}
+                        onSelectMarker={selectMarker}
+                        onHoverMarker={setHoveredMarkerId}
+                        opacity={markerOpacity}
+                        documentTitle={file.name}
+                        searchQuery={searchQuery}
+                      />
+                    );
+                  })
+                )}
               </div>
-              <h3 className="text-lg font-black uppercase tracking-widest text-red-400 mb-2">
-                Lỗi tải tài liệu PDF
-              </h3>
-              <p className="text-gray-400 text-sm max-w-sm mb-8">{loadError}</p>
-              <div className="flex gap-3 w-full justify-center">
-                <button 
-                  onClick={() => loadPDF(file.url)} 
-                  className="px-6 py-3 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-all cursor-pointer"
-                >
-                  Thử tải lại
-                </button>
+            </div>
+
+            {/* Center Split Divider Bar */}
+            <div className="w-9 bg-[#12141c] border-x border-white/5 flex flex-col items-center justify-center shrink-0 z-20 gap-3 py-4 select-none">
+              <button
+                onClick={handleSwapFiles}
+                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-indigo-600 text-gray-300 hover:text-white flex items-center justify-center transition-all cursor-pointer shadow-md hover:scale-110 active:scale-95"
+                title="Đổi vị trí hai bản vẽ A ⇄ B"
+              >
+                <ArrowLeftRight className="w-3.5 h-3.5" />
+              </button>
+              <div className="w-[1px] h-8 bg-white/10" />
+              <button
+                onClick={() => setSyncScroll(!syncScroll)}
+                className={cn(
+                  "w-7 h-7 rounded-lg flex items-center justify-center transition-all cursor-pointer shadow-md hover:scale-110 active:scale-95",
+                  syncScroll 
+                    ? "bg-emerald-600 text-white ring-2 ring-emerald-500/30" 
+                    : "bg-white/5 text-gray-500 hover:bg-white/10 hover:text-gray-300"
+                )}
+                title={syncScroll ? "Đang BẬT đồng bộ cuộn trang hai bản vẽ" : "Đang TẮT đồng bộ cuộn trang"}
+              >
+                {syncScroll ? <Link2 className="w-3.5 h-3.5" /> : <Unlink2 className="w-3.5 h-3.5" />}
+              </button>
+              <div className="w-[1px] h-8 bg-white/10" />
+              <div className="text-[7.5px] font-black text-gray-500 uppercase tracking-widest [writing-mode:vertical-rl] rotate-180 select-none">
+                CHIA ĐÔI
               </div>
             </div>
-          ) : (
-            renderedPages.map(pageNo => {
-              // Get markers only for this page
-              const pageMarkers = viewLayer === "overlay" 
-                ? diffMarkers.filter(m => m.page === pageNo && (selectedDiffType === "all" || m.type === selectedDiffType))
-                : [];
 
-              return (
-                <PDFPage 
-                  key={`${file.id}-page-${pageNo}`} 
-                  pdfDoc={pdfDocRef.current} 
-                  pageNo={pageNo} 
-                  scale={scale * (1 + (scaleOffset || 0) / 100)}
-                  diffMarkers={pageMarkers}
-                  activeMarkerId={activeMarkerId}
-                  hoveredMarkerId={hoveredMarkerId}
-                  onSelectMarker={selectMarker}
-                  onHoverMarker={setHoveredMarkerId}
-                  opacity={markerOpacity}
-                  rotationOffset={rotationOffset}
-                  alignOffsetX={alignOffsetX}
-                  alignOffsetY={alignOffsetY}
-                  isSplitSliderActive={isSplitSliderActive}
-                  splitSliderPos={splitSliderPos}
-                  isHeatmapActive={isHeatmapActive}
-                  isDigitalMode={isDigitalMode}
-                  pageText={parentPageTexts[pageNo] || pageTexts[pageNo] || ""}
-                  documentTitle={file.name}
-                  searchQuery={searchQuery}
-                />
-              );
-            })
-          )}
-        </div>
-      </div>
+            {/* Right Panel: File B */}
+            <div className="flex-1 flex flex-col min-w-0 bg-[#151720] relative">
+              {/* File B Header Bar */}
+              <div className="h-10 px-4 bg-[#1a1d26] border-b border-white/5 flex items-center justify-between shrink-0 z-10">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] font-black uppercase tracking-wider shrink-0">
+                    BẢN VẼ B
+                  </span>
+                  {allFiles.length > 1 ? (
+                    <select
+                      value={activeCompareWithFile?.id || ""}
+                      onChange={(e) => setCompareWithFileId?.(e.target.value)}
+                      className="bg-black/40 text-white text-[11px] font-bold py-1 px-2 rounded-lg border border-white/10 focus:outline-none focus:border-emerald-400 truncate max-w-[160px] sm:max-w-[220px] cursor-pointer"
+                      title="Chọn bản vẽ đối chiếu bên phải"
+                    >
+                      {allFiles.map(f => (
+                        <option key={f.id} value={f.id} className="bg-slate-900 text-white">
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="text-[10px] text-gray-400 italic">Chưa có bản vẽ thứ 2</span>
+                  )}
+                </div>
 
-      {/* Floating Page Indicator */}
-      <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
-        <div className="bg-slate-900/40 hover:bg-slate-900/80 backdrop-blur-md px-5 py-2.5 rounded-full border border-white/5 hover:border-white/15 shadow-2xl flex items-center gap-3.5 pointer-events-auto transform transition-all duration-300 hover:scale-[1.02]">
-          <button 
-            onClick={() => {
-              const el = document.querySelector(`[data-page="${currentPage - 1}"]`);
-              el?.scrollIntoView({ behavior: "smooth" });
-            }}
-            disabled={currentPage <= 1}
-            className="text-white hover:text-indigo-400 disabled:opacity-30 p-1 cursor-pointer transition-colors"
-          >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          
-          <div className="text-[12px] font-black text-white uppercase tracking-widest flex items-center gap-1.5 min-w-[130px] justify-center select-none">
-            <span className="opacity-80">TRANG</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              value={pageInput}
-              onChange={(e) => {
-                const val = e.target.value.replace(/[^0-9]/g, "");
-                setPageInput(val);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  handleJumpToPage(pageInput);
-                  e.currentTarget.blur();
-                }
-              }}
-              onBlur={() => {
-                handleJumpToPage(pageInput);
-              }}
-              className="w-12 h-6.5 text-center font-black bg-white/10 hover:bg-white/20 focus:bg-white/25 text-white border border-white/10 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-450/40 rounded-lg transition-all text-xs outline-none focus:outline-none p-0"
-            />
-            <span className="opacity-30">/</span>
-            <span className="opacity-80">{numPages || file.numpages}</span>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] font-bold text-gray-400">
+                    Trang {currentPageB} / {numPagesB || activeCompareWithFile?.numpages || 1}
+                  </span>
+                  <div className="flex items-center gap-1 bg-black/30 px-1.5 py-0.5 rounded-lg border border-white/5">
+                    <button onClick={() => setScaleB(s => Math.max(0.4, s - 0.1))} className="text-gray-400 hover:text-white p-0.5" title="Thu nhỏ"><ZoomOut className="w-3 h-3" /></button>
+                    <span className="text-[9px] font-black text-emerald-300 min-w-[30px] text-center">{Math.round(scaleB * 100)}%</span>
+                    <button onClick={() => setScaleB(s => s + 0.1)} className="text-gray-400 hover:text-white p-0.5" title="Phóng to"><ZoomIn className="w-3 h-3" /></button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Document Canvas Scroll Area */}
+              <div 
+                ref={containerBRef}
+                onScroll={handleScrollB}
+                className="flex-1 relative bg-[#1e222d] overflow-y-auto no-scrollbar scroll-smooth p-6 flex flex-col items-center gap-8"
+              >
+                {!activeCompareWithFile ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-gray-400 p-8 text-center max-w-sm m-auto">
+                    <ArrowLeftRight className="w-10 h-10 text-indigo-400 mb-3 opacity-60" />
+                    <h4 className="text-xs font-black uppercase text-white tracking-wider mb-1">Chọn bản vẽ đối chiếu</h4>
+                    <p className="text-[11px] text-gray-400 font-medium">Vui lòng chọn bản vẽ thứ 2 từ danh sách góc trên để hiển thị song song đối chiếu.</p>
+                  </div>
+                ) : loadingB ? (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1e222d] z-50">
+                    <Loader2 className="w-10 h-10 text-emerald-500 animate-spin mb-3" />
+                    <p className="text-white font-black text-[11px] uppercase tracking-widest">Đang tải bản vẽ B ({activeCompareWithFile.name})...</p>
+                  </div>
+                ) : loadErrorB ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-white p-6 text-center">
+                    <AlertCircle className="w-8 h-8 text-rose-500 mb-2" />
+                    <p className="text-xs text-rose-400 font-bold">{loadErrorB}</p>
+                  </div>
+                ) : (
+                  renderedPagesB.map(pageNo => (
+                    <PDFPage 
+                      key={`right-${activeCompareWithFile.id}-page-${pageNo}`} 
+                      pdfDoc={pdfDocB} 
+                      pageNo={pageNo} 
+                      scale={scaleB}
+                      diffMarkers={[]}
+                      onSelectMarker={() => {}}
+                      onHoverMarker={() => {}}
+                      opacity={100}
+                      documentTitle={activeCompareWithFile.name}
+                    />
+                  ))
+                )}
+              </div>
+            </div>
           </div>
+        ) : (
+          /* SINGLE / OVERLAY VIEW */
+          <div className="flex-1 relative bg-[#1e222d] overflow-y-auto no-scrollbar scroll-smooth p-12 flex flex-col items-center gap-16" ref={containerRef}>
+            {loading && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1e222d] z-50">
+                <Loader2 className="w-12 h-12 text-indigo-500 animate-spin mb-4" />
+                <p className="text-white font-black text-xs uppercase tracking-widest">Đang kết xuất tài liệu...</p>
+              </div>
+            )}
 
-          <button 
-            onClick={() => {
-              const el = document.querySelector(`[data-page="${currentPage + 1}"]`);
-              el?.scrollIntoView({ behavior: "smooth" });
-            }}
-            disabled={currentPage >= (numPages || Infinity)}
-            className="text-white hover:text-indigo-400 disabled:opacity-30 p-1 cursor-pointer transition-colors"
-          >
-            <ChevronRight className="w-5 h-5" />
-          </button>
-        </div>
+            {isComparingAI && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/80 backdrop-blur-md z-45">
+                <div className="bg-[#1e222d] border border-white/5 rounded-[32px] p-8 max-w-sm text-center shadow-2xl relative">
+                  <div className="w-16 h-16 bg-emerald-600/20 rounded-full flex items-center justify-center border border-emerald-500/30 mx-auto mb-6">
+                    <Sparkles className="w-8 h-8 text-emerald-400 animate-pulse" />
+                  </div>
+                  <h3 className="text-sm font-black text-white uppercase tracking-widest mb-3">
+                    AI ĐANG KIỂM TRA ĐỐI CHIẾU BẢN VẼ
+                  </h3>
+                  <div className="flex items-center justify-center gap-2 text-xs text-gray-400 font-medium px-4 h-12">
+                    <div className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0s' }} />
+                    <div className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }} />
+                    <div className="w-2.5 h-2.5 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }} />
+                    <span className="ml-1 text-left line-clamp-2 leading-relaxed">{compareStage}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {loadError ? (
+              <div className="flex-1 flex flex-col items-center justify-center text-white p-6 sm:p-12 text-center h-full w-full max-w-2xl mx-auto">
+                <div className="w-16 h-16 bg-red-500/10 rounded-2xl flex items-center justify-center text-red-500 mb-6 border border-red-500/20">
+                  <AlertCircle className="w-8 h-8" />
+                </div>
+                <h3 className="text-lg font-black uppercase tracking-widest text-red-400 mb-2">
+                  Lỗi tải tài liệu PDF
+                </h3>
+                <p className="text-gray-400 text-sm max-w-sm mb-8">{loadError}</p>
+                <div className="flex gap-3 w-full justify-center">
+                  <button 
+                    onClick={() => loadPDF(file.url)} 
+                    className="px-6 py-3 bg-indigo-650 hover:bg-indigo-700 text-white rounded-xl font-bold text-xs uppercase tracking-widest transition-all cursor-pointer"
+                  >
+                    Thử tải lại
+                  </button>
+                </div>
+              </div>
+            ) : (
+              renderedPages.map(pageNo => {
+                // Get markers only for this page
+                const pageMarkers = viewLayer === "overlay" 
+                  ? diffMarkers.filter(m => m.page === pageNo && (selectedDiffType === "all" || m.type === selectedDiffType))
+                  : [];
+
+                return (
+                  <PDFPage 
+                    key={`${file.id}-page-${pageNo}`} 
+                    pdfDoc={pdfDoc} 
+                    pageNo={pageNo} 
+                    scale={scale * (1 + (scaleOffset || 0) / 100)}
+                    diffMarkers={pageMarkers}
+                    activeMarkerId={activeMarkerId}
+                    hoveredMarkerId={hoveredMarkerId}
+                    onSelectMarker={selectMarker}
+                    onHoverMarker={setHoveredMarkerId}
+                    opacity={markerOpacity}
+                    rotationOffset={rotationOffset}
+                    alignOffsetX={alignOffsetX}
+                    alignOffsetY={alignOffsetY}
+                    isSplitSliderActive={isSplitSliderActive}
+                    splitSliderPos={splitSliderPos}
+                    isHeatmapActive={isHeatmapActive}
+                    isDigitalMode={isDigitalMode}
+                    pageText={parentPageTexts[pageNo] || pageTexts[pageNo] || ""}
+                    documentTitle={file.name}
+                    searchQuery={searchQuery}
+                  />
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Floating Page Indicator - visible only in Single / Overlay view */}
+      {(!compareMode || compareLayout !== "side_by_side") && (
+        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+          <div className="bg-slate-900/40 hover:bg-slate-900/80 backdrop-blur-md px-5 py-2.5 rounded-full border border-white/5 hover:border-white/15 shadow-2xl flex items-center gap-3.5 pointer-events-auto transform transition-all duration-300 hover:scale-[1.02]">
+            <button 
+              onClick={() => {
+                const el = document.querySelector(`[data-page="${currentPage - 1}"]`);
+                el?.scrollIntoView({ behavior: "smooth" });
+              }}
+              disabled={currentPage <= 1}
+              className="text-white hover:text-indigo-400 disabled:opacity-30 p-1 cursor-pointer transition-colors"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            
+            <div className="text-[12px] font-black text-white uppercase tracking-widest flex items-center gap-1.5 min-w-[130px] justify-center select-none">
+              <span className="opacity-80">TRANG</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={pageInput}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/[^0-9]/g, "");
+                  setPageInput(val);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    handleJumpToPage(pageInput);
+                    e.currentTarget.blur();
+                  }
+                }}
+                onBlur={() => {
+                  handleJumpToPage(pageInput);
+                }}
+                className="w-12 h-6.5 text-center font-black bg-white/10 hover:bg-white/20 focus:bg-white/25 text-white border border-white/10 focus:border-indigo-400 focus:ring-1 focus:ring-indigo-450/40 rounded-lg transition-all text-xs outline-none focus:outline-none p-0"
+              />
+              <span className="opacity-30">/</span>
+              <span className="opacity-80">{numPages || file.numpages}</span>
+            </div>
+
+            <button 
+              onClick={() => {
+                const el = document.querySelector(`[data-page="${currentPage + 1}"]`);
+                el?.scrollIntoView({ behavior: "smooth" });
+              }}
+              disabled={currentPage >= (numPages || Infinity)}
+              className="text-white hover:text-indigo-400 disabled:opacity-30 p-1 cursor-pointer transition-colors"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

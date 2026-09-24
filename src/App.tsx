@@ -10,7 +10,7 @@ import { ChatPanel } from "./components/ChatPanel";
 import { UploadModal } from "./components/UploadModal";
 import { PDFFile, Message, ExtractionField, OperationType, PageData, Note, DiffMarker } from "./types";
 import { chatWithDocument, chatWithDocumentStream, extractDataFromText } from "./lib/gemini";
-import { LayoutGrid, Sparkles, LogOut, Loader2, X, FileText, ShieldAlert } from "lucide-react";
+import { LayoutGrid, Sparkles, LogOut, Loader2, X, FileText, ShieldAlert, Columns2 } from "lucide-react";
 import { useAuth } from "./components/FirebaseProvider";
 import { db } from "./lib/firebase";
 import { cn, getApiUrl } from "./lib/utils";
@@ -1306,54 +1306,86 @@ export default function App() {
         <main className="flex-1 flex flex-col overflow-hidden p-6 gap-4">
           {/* Opened Document Tabs Bar on top of main workspace */}
           {openedFileIds.length > 0 && (
-            <div className="flex items-center gap-3 overflow-x-auto no-scrollbar pb-1 shrink-0 select-none animate-in fade-in duration-300">
-              {openedFileIds.map((fileId) => {
-                const tabFile = files.find((f) => f.id === fileId);
-                if (!tabFile) return null;
-                const isActive = activeFileId === fileId;
-                return (
-                  <div
-                    key={fileId}
-                    onClick={() => {
-                      setActiveFileId(fileId);
-                      setMessages([]);
-                      setIsPdfViewerOpen(true); // Click selects and pops open PDF
-                    }}
-                    className={cn(
-                      "flex items-center gap-2.5 px-5 py-2.5 rounded-2xl border transition-all duration-250 cursor-pointer text-xs font-bold shrink-0 shadow-sm",
-                      isActive
-                        ? "bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-600/15"
-                        : "bg-white text-gray-500 hover:text-gray-950 hover:bg-gray-50 border-gray-150"
-                    )}
-                  >
-                    <FileText className={cn("w-4 h-4 shrink-0", isActive ? "text-indigo-200" : "text-gray-400")} />
-                    <span className="max-w-[200px] truncate">{tabFile.name}</span>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const index = openedFileIds.indexOf(fileId);
-                        const newOpened = openedFileIds.filter((id) => id !== fileId);
-                        setOpenedFileIds(newOpened);
-                        if (isActive) {
-                          if (newOpened.length > 0) {
-                            const nextActiveIndex = Math.min(index, newOpened.length - 1);
-                            setActiveFileId(newOpened[nextActiveIndex]);
-                          } else {
-                            setActiveFileId(null);
-                          }
-                          setMessages([]);
-                        }
+            <div className="flex items-center justify-between gap-3 overflow-x-auto no-scrollbar pb-1 shrink-0 select-none animate-in fade-in duration-300">
+              <div className="flex items-center gap-3 overflow-x-auto no-scrollbar">
+                {openedFileIds.map((fileId) => {
+                  const tabFile = files.find((f) => f.id === fileId);
+                  if (!tabFile) return null;
+                  const isActive = activeFileId === fileId;
+                  return (
+                    <div
+                      key={fileId}
+                      onClick={() => {
+                        setActiveFileId(fileId);
+                        setMessages([]);
+                        setIsPdfViewerOpen(true); // Click selects and pops open PDF
                       }}
                       className={cn(
-                        "p-0.5 rounded-md hover:bg-black/10 transition-colors shrink-0 ml-1",
-                        isActive ? "text-indigo-200 hover:text-white" : "text-gray-400 hover:text-gray-700"
+                        "flex items-center gap-2.5 px-5 py-2.5 rounded-2xl border transition-all duration-250 cursor-pointer text-xs font-bold shrink-0 shadow-sm",
+                        isActive
+                          ? "bg-indigo-600 text-white border-indigo-600 shadow-lg shadow-indigo-600/15"
+                          : "bg-white text-gray-500 hover:text-gray-950 hover:bg-gray-50 border-gray-150"
                       )}
                     >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                );
-              })}
+                      <FileText className={cn("w-4 h-4 shrink-0", isActive ? "text-indigo-200" : "text-gray-400")} />
+                      <span className="max-w-[200px] truncate">{tabFile.name}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const index = openedFileIds.indexOf(fileId);
+                          const newOpened = openedFileIds.filter((id) => id !== fileId);
+                          setOpenedFileIds(newOpened);
+                          if (isActive) {
+                            if (newOpened.length > 0) {
+                              const nextActiveIndex = Math.min(index, newOpened.length - 1);
+                              setActiveFileId(newOpened[nextActiveIndex]);
+                            } else {
+                              setActiveFileId(null);
+                            }
+                            setMessages([]);
+                          }
+                        }}
+                        className={cn(
+                          "p-0.5 rounded-md hover:bg-black/10 transition-colors shrink-0 ml-1",
+                          isActive ? "text-indigo-200 hover:text-white" : "text-gray-400 hover:text-gray-700"
+                        )}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {files.length >= 2 && (
+                <button
+                  onClick={() => {
+                    if (!compareMode) {
+                      setCompareMode(true);
+                      setIsPdfViewerOpen(true);
+                      if (chatWidthPercent > 32) {
+                        setChatWidthPercent(28);
+                      }
+                      if (!compareWithFileId) {
+                        const other = files.find(f => f.id !== activeFileId);
+                        if (other) setCompareWithFileId(other.id);
+                      }
+                    } else {
+                      setCompareMode(false);
+                    }
+                  }}
+                  className={cn(
+                    "flex items-center gap-2 px-3.5 py-2 rounded-2xl border text-xs font-black uppercase tracking-wider transition-all cursor-pointer shrink-0 select-none shadow-xs",
+                    compareMode 
+                      ? "bg-amber-500 border-amber-400 text-white shadow-md shadow-amber-500/25 ring-2 ring-amber-400/40"
+                      : "bg-white hover:bg-indigo-50/80 border-indigo-200 text-indigo-600 hover:border-indigo-300"
+                  )}
+                  title="Bật/Tắt chế độ So sánh song song hai tài liệu PDF trên màn hình chia đôi"
+                >
+                  <Columns2 className="w-4 h-4" />
+                  <span>{compareMode ? "ĐANG SO SÁNH SONG SONG" : "SO SÁNH SONG SONG (2 FILE)"}</span>
+                </button>
+              )}
             </div>
           )}
 
@@ -1489,6 +1521,7 @@ export default function App() {
                     setCompareMode={setCompareMode}
                     compareWithFileId={compareWithFileId}
                     setCompareWithFileId={setCompareWithFileId}
+                    onSelectFile={(id) => setActiveFileId(id)}
                     isComparingAI={isComparingAI}
                     setIsComparingAI={setIsComparingAI}
                     compareStage={compareStage}
