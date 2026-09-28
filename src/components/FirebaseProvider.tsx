@@ -2,7 +2,6 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
-  signInAnonymously,
   GoogleAuthProvider, 
   signOut, 
   User 
@@ -191,41 +190,36 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
           }
           setLoading(false);
         } else {
-          // If not signed in: try anonymous sign in first to get a valid Firebase user
-          try {
-            await signInAnonymously(auth);
-          } catch (anonErr) {
-            console.warn("[FirebaseProvider] Anonymous sign-in unavailable, initializing guest profile:", anonErr);
-            const todayStr = new Date().toLocaleDateString('vi-VN');
-            const guestId = localStorage.getItem("solenc_guest_id") || `guest_${Math.random().toString(36).substring(2, 9)}`;
-            localStorage.setItem("solenc_guest_id", guestId);
-            
-            const savedCount = parseInt(localStorage.getItem(`solenc_usage_${todayStr}`) || "0", 10);
-            const savedTokens = parseInt(localStorage.getItem(`solenc_tokens_${todayStr}`) || "0", 10);
+          // If not signed in: directly initialize guest profile without attempting anonymous sign-in
+          const todayStr = new Date().toLocaleDateString('vi-VN');
+          const guestId = localStorage.getItem("solenc_guest_id") || `guest_${Math.random().toString(36).substring(2, 9)}`;
+          localStorage.setItem("solenc_guest_id", guestId);
+          
+          const savedCount = parseInt(localStorage.getItem(`solenc_usage_${todayStr}`) || "0", 10);
+          const savedTokens = parseInt(localStorage.getItem(`solenc_tokens_${todayStr}`) || "0", 10);
 
-            const guestUser: any = {
-              uid: guestId,
-              displayName: "Guest",
-              email: "",
-              photoURL: "",
-              isAnonymous: true
-            };
-            setUser(guestUser);
-            setProfile({
-              uid: guestId,
-              email: "",
-              displayName: "Guest",
-              photoURL: "",
-              createdAt: new Date().toISOString(),
-              role: "user",
-              apiLimit: 50,
-              apiUsageCount: savedCount,
-              tokensUsed: savedTokens,
-              lastRequestDate: todayStr,
-              isGuest: true
-            });
-            setLoading(false);
-          }
+          const guestUser: any = {
+            uid: guestId,
+            displayName: "Khách (Guest)",
+            email: "",
+            photoURL: "",
+            isAnonymous: true
+          };
+          setUser(guestUser);
+          setProfile({
+            uid: guestId,
+            email: "",
+            displayName: "Khách (Guest)",
+            photoURL: "",
+            createdAt: new Date().toISOString(),
+            role: "user",
+            apiLimit: 50,
+            apiUsageCount: savedCount,
+            tokensUsed: savedTokens,
+            lastRequestDate: todayStr,
+            isGuest: true
+          });
+          setLoading(false);
         }
       });
 
@@ -264,12 +258,6 @@ export function FirebaseProvider({ children }: { children: React.ReactNode }) {
     try {
       setLoginError(null);
       await signOut(auth);
-      // Auto sign back in anonymously to keep open access for everyone
-      try {
-        await signInAnonymously(auth);
-      } catch (e) {
-        // Fallback handled in auth listener
-      }
     } catch (error) {
       console.error("Logout failed:", error);
     }
