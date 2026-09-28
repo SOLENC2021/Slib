@@ -1640,7 +1640,7 @@ export function PDFViewer({
                       value={activeCompareWithFile?.id || ""}
                       onChange={(e) => setCompareWithFileId?.(e.target.value)}
                       className="bg-black/40 text-white text-[11px] font-bold py-1 px-2 rounded-lg border border-white/10 focus:outline-none focus:border-emerald-400 truncate max-w-[160px] sm:max-w-[220px] cursor-pointer"
-                      title="Chọn bản vẽ đối chiếu bên phải"
+                      title="Chọn tài liệu so sánh bên phải"
                     >
                       {allFiles.map(f => (
                         <option key={f.id} value={f.id} className="bg-slate-900 text-white">
@@ -1649,7 +1649,7 @@ export function PDFViewer({
                       ))}
                     </select>
                   ) : (
-                    <span className="text-[10px] text-gray-400 italic">Chưa có bản vẽ thứ 2</span>
+                    <span className="text-[10px] text-gray-400 italic">Chưa có tài liệu thứ 2</span>
                   )}
                 </div>
 
@@ -1674,8 +1674,8 @@ export function PDFViewer({
                 {!activeCompareWithFile ? (
                   <div className="flex-1 flex flex-col items-center justify-center text-gray-400 p-8 text-center max-w-sm m-auto">
                     <ArrowLeftRight className="w-10 h-10 text-indigo-400 mb-3 opacity-60" />
-                    <h4 className="text-xs font-black uppercase text-white tracking-wider mb-1">Chọn bản vẽ đối chiếu</h4>
-                    <p className="text-[11px] text-gray-400 font-medium">Vui lòng chọn bản vẽ thứ 2 từ danh sách góc trên để hiển thị song song đối chiếu.</p>
+                    <h4 className="text-xs font-black uppercase text-white tracking-wider mb-1">Chọn tài liệu thứ hai</h4>
+                    <p className="text-[11px] text-gray-400 font-medium">Vui lòng chọn tài liệu thứ 2 từ danh sách góc trên để hiển thị song song.</p>
                   </div>
                 ) : loadingB ? (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1e222d] z-50">

@@ -187,3 +187,67 @@ export function getApiUrl(path: string): string {
 
   return cleanPath;
 }
+
+/**
+ * Executes a fetch request with automatic retries if the server is starting up,
+ * warming up, or returning transient gateway 502/503/504 or HTML error responses
+ * (such as Cloud Run's "<title>Starting Server...</title>").
+ */
+export async function fetchWithServerRetry(
+  urlOrPath: string,
+  options?: RequestInit,
+  maxRetries: number = 3,
+  initialDelayMs: number = 1500
+): Promise<Response> {
+  const targetUrl = getApiUrl(urlOrPath);
+  let delayMs = initialDelayMs;
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(targetUrl, options);
+      const status = response.status;
+      const contentType = response.headers.get("content-type") || "";
+      const isGatewayError = status === 502 || status === 503 || status === 504;
+
+      // Check for HTML response from an API endpoint
+      if (isGatewayError || (contentType.includes("text/html") && targetUrl.includes("/api/"))) {
+        const cloned = response.clone();
+        const bodyText = await cloned.text().catch(() => "");
+        const isStartingServer = 
+          bodyText.includes("Starting Server") || 
+          bodyText.includes("<title>Starting Server...</title>") || 
+          bodyText.includes("502 Bad Gateway") ||
+          bodyText.includes("503 Service Temporarily Unavailable") ||
+          bodyText.includes("504 Gateway Time-out");
+
+        if (attempt < maxRetries && (isStartingServer || isGatewayError)) {
+          console.warn(`[fetchWithServerRetry] Server starting up / warming up (Attempt ${attempt + 1}/${maxRetries + 1}). Retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          delayMs = Math.floor(delayMs * 1.5);
+          continue;
+        }
+      }
+
+      return response;
+    } catch (err: any) {
+      lastError = err;
+      const errMsg = err?.message || String(err);
+      const isNetworkTransient = 
+        errMsg.includes("Failed to fetch") || 
+        errMsg.includes("NetworkError") || 
+        errMsg.includes("Load failed") ||
+        errMsg.includes("Network request failed");
+
+      if (attempt < maxRetries && isNetworkTransient) {
+        console.warn(`[fetchWithServerRetry] Network transient failure (Attempt ${attempt + 1}/${maxRetries + 1}). Retrying in ${delayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        delayMs = Math.floor(delayMs * 1.5);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new Error("Không thể kết nối đến máy chủ AI sau nhiều lần thử.");
+}

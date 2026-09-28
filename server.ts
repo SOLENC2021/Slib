@@ -952,7 +952,7 @@ async function startServer() {
 
         const runStreamGeneral = async (contentsArr: any[]) => {
           const selectedModel = isSearchGrounding 
-            ? "gemini-3.5-flash" 
+            ? "gemini-3.8-flash" 
             : (model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash"));
           const effectiveSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
           const configObj: any = {
@@ -1184,7 +1184,7 @@ async function startServer() {
           ];
 
           const selectedModel = isSearchGrounding
-            ? "gemini-3.5-flash"
+            ? "gemini-3.8-flash"
             : (model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash"));
           const effectiveSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
           const configObj: any = {
@@ -1456,7 +1456,7 @@ async function startServer() {
           const chatSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
 
           const selectedModel = isSearchGrounding
-            ? "gemini-3.5-flash"
+            ? "gemini-3.8-flash"
             : (model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash"));
           const configObj: any = {
             systemInstruction: chatSystemInstruction,
@@ -1750,7 +1750,7 @@ async function startServer() {
         ];
 
         const selectedModel = isSearchGrounding
-          ? "gemini-3.5-flash"
+          ? "gemini-3.8-flash"
           : (model || ((isThinking || image) ? "gemini-3.1-pro-preview" : "gemini-3.8-flash"));
         const chatSystemInstruction = customSystemInstruction || (chatbotRole && ROLE_SYSTEM_INSTRUCTIONS[chatbotRole]) || SYSTEM_INSTRUCTION;
         const configObj: any = {
@@ -2062,12 +2062,17 @@ Yêu cầu cực kỳ nghiêm ngặt:
     }
   });
 
-  // API 3.6: So sánh đối chiếu cùng lúc nhiều tài liệu kỹ thuật sử dụng Gemini Files API / Text thô
+  // API 3.6: Tóm tắt tiêu chuẩn, tra cứu nhanh điều khoản hoặc đối chiếu tài liệu kỹ thuật
   app.post("/api/compare", async (req, res) => {
-    const { compareFiles, prompt, isCompliance, isDesignManager } = req.body; // array of { id, name, url, text, geminiFileUri, geminiFileName }
+    const { compareFiles, prompt, isCompliance, isDesignManager, isStandardSummary = true, summaryType } = req.body; // array of { id, name, url, text, geminiFileUri, geminiFileName }
 
-    if (!compareFiles || !Array.isArray(compareFiles) || compareFiles.length === 0) {
-      return res.status(400).json({ error: "Không tìm thấy danh sách tệp cần so sánh" });
+    // Cho phép nếu có compareFiles hoặc là yêu cầu tóm tắt tiêu chuẩn/tra cứu nhanh
+    const hasFiles = Array.isArray(compareFiles) && compareFiles.length > 0;
+    if (!hasFiles && (isCompliance || isDesignManager)) {
+      return res.status(400).json({ error: "Không tìm thấy danh sách tệp cần thẩm định" });
+    }
+    if (!hasFiles && !prompt) {
+      return res.status(400).json({ error: "Vui lòng chọn tài liệu hoặc nhập nội dung tiêu chuẩn cần tóm tắt." });
     }
     if (!process.env.GEMINI_API_KEY) {
       return res.status(500).json({ error: "GEMINI_API_KEY không được thiết lập." });
@@ -2077,70 +2082,113 @@ Yêu cầu cực kỳ nghiêm ngặt:
       const resolvedFiles: any[] = [];
       const newlyRegistered: { fileId: string; uri: string; name: string }[] = [];
 
-      // Phân tích và tải lên Gemini Files API nếu tệp chưa đăng ký hoặc hết hạn (> 40h)
-      for (const file of compareFiles) {
-        let uri = file.geminiFileUri;
-        let name = file.geminiFileName || file.name;
+      if (hasFiles) {
+        // Phân tích và tải lên Gemini Files API nếu tệp chưa đăng ký hoặc hết hạn (> 40h)
+        for (const file of compareFiles) {
+          let uri = file.geminiFileUri;
+          let name = file.geminiFileName || file.name;
 
-        const isExpired = file.uploadDate && (Date.now() - file.uploadDate > 40 * 60 * 60 * 1000);
-        if (uri && isExpired) {
-          console.log(`[Auto Self-Healing] Proactively detecting expired compare Gemini File for ${file.name}. Clearing stale URI to trigger refresh.`);
-          uri = undefined;
-        }
-
-        if (!uri && file.url) {
-          try {
-            console.log(`[On-The-Fly Compare Sync] Đang tải & đăng ký tệp "${file.name}" lên Gemini Files...`);
-            const fileResp = await fetch(file.url);
-            if (fileResp.ok) {
-              const fileBuffer = Buffer.from(await fileResp.arrayBuffer());
-              const uploadRes = await uploadToGeminiFilesAPI(fileBuffer, file.name);
-              uri = uploadRes.uri;
-              name = uploadRes.name;
-              newlyRegistered.push({
-                fileId: file.id,
-                uri: uploadRes.uri,
-                name: uploadRes.name
-              });
-              console.log(`[On-The-Fly Compare Sync] Đã đồng bộ xong tệp "${file.name}" -> ${uri}`);
-            }
-          } catch (syncErr: any) {
-            console.warn(`[On-The-Fly Compare Sync] Gặp lỗi khi đồng bộ tệp "${file.name}": ${syncErr.message || syncErr}`);
+          const isExpired = file.uploadDate && (Date.now() - file.uploadDate > 40 * 60 * 60 * 1000);
+          if (uri && isExpired) {
+            console.log(`[Auto Self-Healing] Proactively detecting expired compare Gemini File for ${file.name}. Clearing stale URI to trigger refresh.`);
+            uri = undefined;
           }
-        }
 
-        resolvedFiles.push({
-          id: file.id,
-          name: file.name,
-          text: file.text || "",
-          geminiFileUri: uri,
-          geminiFileName: name
-        });
+          if (!uri && file.url) {
+            try {
+              console.log(`[On-The-Fly Compare Sync] Đang tải & đăng ký tệp "${file.name}" lên Gemini Files...`);
+              const fileResp = await fetch(file.url);
+              if (fileResp.ok) {
+                const fileBuffer = Buffer.from(await fileResp.arrayBuffer());
+                const uploadRes = await uploadToGeminiFilesAPI(fileBuffer, file.name);
+                uri = uploadRes.uri;
+                name = uploadRes.name;
+                newlyRegistered.push({
+                  fileId: file.id,
+                  uri: uploadRes.uri,
+                  name: uploadRes.name
+                });
+                console.log(`[On-The-Fly Compare Sync] Đã đồng bộ xong tệp "${file.name}" -> ${uri}`);
+              }
+            } catch (syncErr: any) {
+              console.warn(`[On-The-Fly Compare Sync] Gặp lỗi khi đồng bộ tệp "${file.name}": ${syncErr.message || syncErr}`);
+            }
+          }
+
+          resolvedFiles.push({
+            id: file.id,
+            name: file.name,
+            text: file.text || "",
+            geminiFileUri: uri,
+            geminiFileName: name
+          });
+        }
       }
 
-      const fileDescriptions = resolvedFiles.map((file, index) => `Tài liệu ${index + 1}: "${file.name}"`).join(", ");
+      const fileDescriptions = resolvedFiles.length > 0 
+        ? resolvedFiles.map((file, index) => `Tài liệu ${index + 1}: "${file.name}"`).join(", ")
+        : "Cơ sở dữ liệu Quy chuẩn & Tiêu chuẩn Kỹ thuật Xây dựng Việt Nam (TCVN, QCVN)";
+
+      // System instruction tối ưu hóa chuyên sâu cho TÓM TẮT TIÊU CHUẨN & TRA CỨU NHANH
+      const standardSummarySystemInstruction = `# VAI TRÒ
+Bạn là CHUYÊN GIA BIÊN SOẠN & TÓM TẮT TIÊU CHUẨN XÂY DỰNG VIỆT NAM (StandardCloud AI Codes & Standards Summarizer).
+Vấn đề cốt lõi cần giải quyết: "Các tài liệu tiêu chuẩn kỹ thuật (TCVN, QCVN) rất dài, hàng trăm trang phức tạp khiến kỹ sư rất khó tra cứu và dễ nản lòng khi đọc. Nhiệm vụ của bạn là TÓM TẮT NGẮN GỌN, TRỰC DIỆN, ĐÚNG VÀ ĐỦ NỘI DUNG ĐIỀU KHOẢN CẦN THIẾT HOẶC CHỦ ĐỀ ĐƯỢC HỎI".
+
+# NGUYÊN TẮC TÓM TẮT & TRÍCH XUẤT:
+1. ĐI THẲNG VÀO TRỌNG TÂM CỦA ĐIỀU KHOẢN (ĐÚNG TIÊU CHUẨN & ĐIỀU KHOẢN):
+   - Khi có chủ đề/câu hỏi cụ thể (Ví dụ: "chiều dài nối thép", "chiều dày lớp bê tông bảo vệ", "độ võng giới hạn dầm sàn", "khoảng cách lối thoát nạn PCCC", "áp lực gió cơ bản", "mác bê tông và cấp độ bền B"...):
+     * Xác định CHÍNH XÁC Tiêu chuẩn/Quy chuẩn nào quy định (Số hiệu tiêu chuẩn, Mục/Khoản/Điều cụ thể, Bảng số mấy trong tiêu chuẩn).
+     * CHỈ ĐỌC VÀ TÓM TẮT NỘI DUNG ĐIỀU KHOẢN ĐÓ trong tiêu chuẩn, tuyệt đối không trích dẫn lan man những điều khoản không liên quan ngoài lề.
+   - Nếu người dùng yêu cầu tóm tắt toàn bộ tiêu chuẩn đã chọn: Hãy tóm tắt cô đọng (Phạm vi áp dụng, bảng thông số cốt lõi, công thức then chốt và các quy định bắt buộc/cấm).
+
+2. CÔNG THỨC TOÁN HỌC & HỆ SỐ TÍNH TOÁN (RÕ RÀNG):
+   - Mọi công thức tính toán thiết kế phải trình bày định dạng LaTeX chuẩn ($...$ trong dòng hoặc $$...$$ khối riêng).
+   - Nêu rõ ý nghĩa của từng biến số và hệ số (Ví dụ: $L_0, L_{lap}, \\alpha, R_b, R_s...$).
+
+3. BẢNG TRA CỨU NHANH SỐ LIỆU THỰC HÀNH:
+   - Hãy lập BẢNG TRA CỨU NHANH các con số thực hành phổ biến nhất mà kỹ sư thường dùng trên thực tế (Ví dụ: với chiều dài nối thép thì lập bảng tra chiều dài nối buộc theo dầm/cột tương ứng với đường kính cốt thép d16, d18, d20, d22, d25 và cấp bê tông B20, B25, B30...).
+
+4. CÁC ĐIỀU KIỆN RÀNG BUỘC & LƯU Ý KHI THI CÔNG:
+   - Liệt kê ngắn gọn 2-4 quy định then chốt bắt buộc phải tuân thủ (ví dụ: vị trí mối nối, tỷ lệ nối tối đa tại một mặt cắt không vượt quá 50%, khoảng cách giữa các mối nối so le, vùng nguy hiểm cấm nối...).
+
+5. CHỈ DẪN THỰC HÀNH TRÊN BẢN VẼ:
+   - Hướng dẫn cụ thể 1-2 điểm lưu ý giúp kỹ sư thể hiện đúng trên bản vẽ kết cấu/kiến trúc và ghi chú kỹ thuật chung (General Notes).
+
+# CẤU TRÚC BẢN TÓM TẮT TIÊU CHUẨN (MARKDOWN ĐẸP, KHOA HỌC):
+### 📌 1. TIÊU CHUẨN & ĐIỀU KHOẢN QUY ĐỊNH
+- **Tiêu chuẩn áp dụng:** [Tên & Số hiệu tiêu chuẩn]
+- **Điều / Khoản / Bảng:** [Vị trí chính xác trong tiêu chuẩn]
+
+### 📋 2. TÓM TẮT NỘI DUNG CỐT LÕI
+[Tóm tắt ngắn gọn, trực diện các yêu cầu kỹ thuật]
+
+### 📐 3. CÔNG THỨC TÍNH TOÁN & HỆ SỐ
+[Công thức LaTeX và giải thích biến số]
+
+### 📊 4. BẢNG TRA CỨU NHANH THÔNG SỐ THỰC TẾ
+[Bảng tra Markdown rõ ràng cho các mác/đường kính thông dụng]
+
+### ⚠️ 5. ĐIỀU KIỆN RÀNG BUỘC & CÁC LƯU Ý BẮT BUỘC
+- [Quy định về vị trí, tỷ lệ, điều kiện...]
+
+### 💡 6. CHỈ DẪN THỰC HÀNH TRÊN BẢN VẼ
+[Chỉ dẫn ngắn gọn cho kỹ sư thiết kế]`;
 
       const compareSystemInstruction = `# VAI TRÒ
 Bạn là một CHUYÊN GIA KỸ THUẬT VÀ PHÁP CHẾ XÂY DỰNG LÃO LUYỆN, có nhiệm vụ tổng hợp, chiết xuất thông tin quy chuẩn và đối chiếu đa tài liệu kỹ thuật một cách súc tích, mượt mà và khoa học theo phong cách học thuật của NotebookLM.
 
-# NGUYÊN TẮC TỔNG HỢP & ĐỐI CHIẾU (PHONG CÁCH NOTEBOOKLM)
-1. ĐÚNG VÀ ĐỦ: Phải chỉ ra điểm tương đồng, trích xuất tất cả các quy chuẩn liên quan đồng thời từ các tài liệu được chọn, làm nổi bật điểm khác biệt chi tiết, các mâu thuẫn tiêu chuẩn (nếu có). Trình bày cực kỳ chi tiết tất cả các ý, không được viết tóm tắt hay lược bỏ bớt dữ liệu quan trọng.
-2. TRÌNH BÀY DẠNG VĂN XUÔI & GIẢI THÍCH (BẢNG BIỂU CHUYỂN THÀNH CHỮ):
-   - TUYỆT ĐỐI KHÔNG sử dụng các đường kẻ bảng gạch gạch (| --- |) hay định dạng lưới Markdown Table vì chúng rất dễ bị lỗi hiển thị rách dòng rách cột và khó đọc trên giao diện.
-   - Thay vào đó, bạn phải chuyển hóa toàn bộ các bảng biểu số liệu, các cột con số phân cấp thành dạng văn xuôi (prose) kết hợp với danh sách đề mục (bullet points) phân tầng rõ ràng, trích xuất nguyên vẹn mọi thông số, giới hạn, sai số cho phép, đi kèm phân tích và giải thích ý nghĩa kỹ thuật chi tiết của từng con số đứng cạnh nhau để so sánh trực quan dưới dạng chữ.
-3. THỂ HIỆN CÔNG THỨC TÍNH TOÁN RÕ RÀNG (BẮT BUỘC):
-   - Khi tài liệu gốc đề cập đến các công thức tính toán thiết kế, phương pháp xác định các thông số kỹ thuật (Ví dụ: cách tính sức chịu tải của cọc, kiểm toán độ võng, tính toán chiều cao an toàn PCCC, độ bền, kết cấu...), bạn BẮT BUỘC phải trích dẫn và trình bày rõ ràng, chi tiết toàn bộ các công thức toán học/kỹ thuật đó.
-   - Công thức phải đưa vào định dạng LaTeX chuyên nghiệp sử dụng ký hiệu $...$ cho công thức nằm trong dòng và $$...$$ cho công thức độc lập.
-   - Phải giải thích chi tiết cặn kẽ ý nghĩa của từng biến số, hằng số và hệ số cấu thành công thức.
-4. CHI TIẾT NGUỒN TRÍCH DẪN: Phải ghi rõ thông số được lấy từ tài liệu nào, Điều mấy, Mục mấy, Trang mấy của tài liệu đó để các bên đối tác kiểm tra chéo được.
-   * Ví dụ: "- Chiều dày lớp bảo vệ bê tông cốt thép dầm chính là $30 mm$ [Theo Tiêu chuẩn A, Mục 5.1, Trang 24] so với $25 mm$ [Theo Tiêu chuẩn B, Mục 4.2, Trang 18]".
+# NGUYÊN TẮC TỔNG HỢP & ĐỐI CHIẾU
+1. ĐÚNG VÀ ĐỦ: Phải chỉ ra điểm tương đồng, trích xuất tất cả các quy chuẩn liên quan đồng thời từ các tài liệu được chọn, làm nổi bật điểm khác biệt chi tiết, các mâu thuẫn tiêu chuẩn (nếu có).
+2. TRÌNH BÀY SÚC TÍCH, DỄ HIỂU: Trình bày dạng văn xuôi kết hợp với danh sách đề mục (bullet points) phân tầng rõ ràng, trích xuất nguyên vẹn mọi thông số, giới hạn, sai số cho phép.
+3. THỂ HIỆN CÔNG THỨC TÍNH TOÁN RÕ RÀNG: Định dạng LaTeX chuyên nghiệp sử dụng ký hiệu $...$ hoặc $$...$$.
+4. CHI TIẾT NGUỒN TRÍCH DẪN: Ghi rõ Điều mấy, Mục mấy, Trang mấy của tài liệu.
 
-# BỐ CỤC BÀI TỔNG HỢP & ĐỐI CHIẾU CHUẨN MỰC
-- **1. Tổng quan các tài liệu được chọn**: Tên, xuất xứ, phạm vi cơ bản của từng tệp (${fileDescriptions}).
-- **2. Tổng hợp & đối chiếu thông số kỹ thuật cốt lõi (Viết xuôi & Giải thích chi tiết)**: So sánh trực diện các mục tiêu, thông số quan trọng nhất bằng văn bản xuôi kết hợp danh sách phân tích cực kỳ chi tiết, làm rõ sự tương đồng và khác biệt giữa các hệ thống quy định mà không dùng bảng lưới gạch gạch.
-- **3. Phân tích chi tiết quy chuẩn theo tiêu chí yêu cầu (Có kèm công thức tính toán cụ thể)**: Trình bày rõ ràng, chi tiết mọi công thức tính toán và giải thích thông số dưới dạng văn xuôi học thuật toàn bộ thông tin được trích xuất đồng thời.
-- **4. Phân tích chi tiết các điểm sai lệch, khác biệt hoặc mâu thuẫn (nếu có)**: Chỉ ra sự khác biệt lớn về yêu cầu kỹ thuật, giải pháp hoặc tính khắt khe của quy định. Có khuyến cáo cụ thể cho Kỹ sư thiết kế.
-- **5. Kết luận & Đề xuất hành động**: Đề xuất giải pháp áp dụng an toàn, tối ưu hoặc có tính pháp lý cao nhất dựa trên luật định.`;
+# BỐ CỤC BÀI TỔNG HỢP & ĐỐI CHIẾU
+- **1. Tổng quan các tài liệu được chọn**: (${fileDescriptions}).
+- **2. Tổng hợp & đối chiếu thông số kỹ thuật cốt lõi**: So sánh trực diện các mục tiêu, thông số quan trọng nhất.
+- **3. Phân tích chi tiết quy chuẩn theo tiêu chí yêu cầu**: Trình bày rõ ràng công thức tính toán và giải thích thông số.
+- **4. Phân tích các điểm sai lệch, khác biệt hoặc mâu thuẫn (nếu có)**.
+- **5. Kết luận & Đề xuất hành động**.`;
 
       const complianceSystemInstruction = `# VAI TRÒ
 Bạn là một GIÁM ĐỐC THẨM ĐỊNH VÀ KIỂM SOÁT THIẾT KẾ XÂY DỰNG CHUYÊN SÂU. Nhiệm vụ của bạn là thẩm định tính tuân thủ pháp lý và quy chuẩn kỹ thuật xây dựng Việt Nam (TCVN, QCVN) cho các bản vẽ thiết kế được chọn.
@@ -2181,24 +2229,28 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
       let response;
       const runCompareAI = async (filesToUse: any[]) => {
         const parts: any[] = [];
-        filesToUse.forEach((file, index) => {
-          parts.push({ text: `=== BẮT ĐẦU TÀI LIỆU ${index + 1}: ${file.name} ===` });
-          if (file.geminiFileUri) {
-            const dynamicMime = getMimeType(file.name);
-            parts.push({
-              fileData: {
-                fileUri: file.geminiFileUri,
-                mimeType: dynamicMime
-              }
-            });
-          } else if (file.text) {
-            parts.push({ text: `[NỘI DUNG VĂN BẢN TRÍCH XUẤT]:\n${file.text}` });
-          } else {
-            parts.push({ text: `[Tệp chưa được trích xuất dữ liệu chữ hoặc đăng ký với Cloud]` });
-          }
-          parts.push({ text: `=== KẾT THÚC TÀI LIỆU ${index + 1} ===\n` });
-        });
-        parts.push({ text: `[YÊU CẦU ĐỐI CHIẾU - SO SÁNH]\n${prompt || "Hãy thực hiện so sánh đối chiếu kỹ thuật chi tiết nhất giữa các tài liệu trên."}` });
+        if (filesToUse.length === 0) {
+          parts.push({ text: `[YÊU CẦU TÓM TẮT & TRA CỨU TIÊU CHUẨN XÂY DỰNG VIỆT NAM (TCVN, QCVN)]\n${prompt}\n\nVui lòng tra cứu trong hệ thống Tiêu chuẩn Xây dựng Việt Nam (TCVN) và Quy chuẩn kỹ thuật quốc gia (QCVN) hiện hành để xác định chính xác số hiệu tiêu chuẩn, điều khoản, tóm tắt nội dung quy định, công thức tính toán và lập bảng tra cứu số liệu thực hành theo đúng cấu trúc chuẩn mực.` });
+        } else {
+          filesToUse.forEach((file, index) => {
+            parts.push({ text: `=== BẮT ĐẦU TÀI LIỆU ${index + 1}: ${file.name} ===` });
+            if (file.geminiFileUri) {
+              const dynamicMime = getMimeType(file.name);
+              parts.push({
+                fileData: {
+                  fileUri: file.geminiFileUri,
+                  mimeType: dynamicMime
+                }
+              });
+            } else if (file.text) {
+              parts.push({ text: `[NỘI DUNG VĂN BẢN TRÍCH XUẤT]:\n${file.text}` });
+            } else {
+              parts.push({ text: `[Tệp chưa được trích xuất dữ liệu chữ hoặc đăng ký với Cloud]` });
+            }
+            parts.push({ text: `=== KẾT THÚC TÀI LIỆU ${index + 1} ===\n` });
+          });
+          parts.push({ text: `[YÊU CẦU TÓM TẮT NỘI DUNG TIÊU CHUẨN / ĐIỀU KHOẢN KỸ THUẬT]\n${prompt || "Hãy tóm tắt súc tích nội dung cốt lõi, các bảng thông số và công thức tính toán quan trọng nhất trong các tài liệu trên."}` });
+        }
 
         const contents = [
           {
@@ -2213,15 +2265,15 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
           config: {
             systemInstruction: isDesignManager 
               ? designManagerSystemInstruction 
-              : (isCompliance ? complianceSystemInstruction : compareSystemInstruction),
+              : (isCompliance ? complianceSystemInstruction : (isStandardSummary ? standardSummarySystemInstruction : compareSystemInstruction)),
             temperature: 0.1,
             topP: 0.95,
           },
-        }), "gemini-3.5-flash", 2);
+        }), "gemini-3.8-flash", 2);
       };
 
       try {
-        console.log(`[Compare Tool] Executing document synthesis and comparison for ${resolvedFiles.length} files using gemini-3.5-flash...`);
+        console.log(`[Compare Tool] Executing document synthesis and comparison for ${resolvedFiles.length} files using gemini-3.8-flash...`);
         response = await runCompareAI(resolvedFiles);
       } catch (proErr: any) {
         if (isUnrecoverableError(proErr)) {
@@ -2307,7 +2359,7 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
             }
           }
         } else {
-          console.warn("[Compare Tool] gemini-3.5-flash with fileUris failed. Falling back to plain text prompting with gemini-3.5-flash...", proErr.message || proErr);
+          console.warn("[Compare Tool] gemini-3.8-flash with fileUris failed. Falling back to plain text prompting with gemini-3.8-flash...", proErr.message || proErr);
           try {
             const textOnlyFiles = resolvedFiles.map(f => {
               const truncatedText = f.text && f.text.length > 150000 
@@ -2324,7 +2376,7 @@ Trình bày kết quả thành các thẻ tiêu đề (###) kèm bảng danh m�
       }
 
       res.json({
-        text: response.text,
+        text: response?.text || "",
         newlyRegistered
       });
     } catch (error: any) {
@@ -2761,7 +2813,7 @@ Yêu cầu xuất ra JSON theo đúng schema:
         ? text.substring(0, 300000) + "\n\n[LƯU Ý CỦA HỆ THỐNG: Phần sau của tài liệu đã được rút ngắn để khớp với giới hạn xử lý tối đa của AI]"
         : text;
 
-      const model = "gemini-3.5-flash";
+      const model = "gemini-3.8-flash";
       const promptText = `Nhiệm vụ: Hãy tóm tắt nội dung kỹ thuật dưới đây thành tối đa ${numBulletPoints} gạch đầu dòng cực kỳ ngắn gọn, cô đọng, súc tích và chính xác. Trực tiếp đi vào các số liệu kỹ thuật, quy định biên hoặc từ khóa cốt lõi, không rườm rà.
 Nếu nội dung có các thông tin quy định kỹ thuật/TCVN/QCVN quan trọng, hãy giữ nguyên và bôi đậm số hiệu (ví dụ: TCVN 5574:2018).
 Nội dung cần tóm tắt:
@@ -2807,7 +2859,7 @@ Hãy chỉ trả về duy nhất danh sách tóm tắt cực kỳ ngắn gọn d
     }
 
     try {
-      const model = "gemini-3.5-flash";
+      const model = "gemini-3.8-flash";
       const langName = targetLanguage === "en" ? "English (Tiếng Anh)" : "Korean (Tiếng Hàn)";
       const promptText = `Nhiệm vụ: Hãy dịch văn bản kỹ thuật/xây dựng dưới đây sang ${langName}.
 Yêu cầu:
@@ -2859,7 +2911,7 @@ Bản dịch chính xác:`;
         ? text.substring(0, 300000) + "\n\n[LƯU Ý CỦA HỆ THỐNG: Cắt bớt phần sau tệp do quá dài]"
         : text;
 
-      const model = "gemini-3.5-flash";
+      const model = "gemini-3.8-flash";
       
       let customInstruction = "";
       if (type === "technical") {

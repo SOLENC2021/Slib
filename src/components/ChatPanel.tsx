@@ -12,7 +12,7 @@ import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
 import rehypeKatex from "rehype-katex";
-import { cn, getApiUrl, cleanLatexForClipboard } from "@/lib/utils";
+import { cn, getApiUrl, cleanLatexForClipboard, fetchWithServerRetry } from "@/lib/utils";
 import Mermaid from "./Mermaid";
 import DocumentSummaryView from "./DocumentSummaryView";
 import ChatbotRoleSelector from "./ChatbotRoleSelector";
@@ -371,6 +371,142 @@ function highlightText(text: string, highlight: string) {
   );
 }
 
+export interface StandardTopic {
+  id: string;
+  title: string;
+  code: string;
+  category: "all" | "ketcau" | "kientruc" | "pccc" | "nenmong" | "mep";
+  categoryLabel: string;
+  icon: string;
+  badge: string;
+  shortDesc: string;
+  query: string;
+  fileKeywords: string[];
+}
+
+export const STANDARD_TOPICS: StandardTopic[] = [
+  {
+    id: "rebar_lap",
+    title: "Chiều dài nối cốt thép",
+    code: "TCVN 5574:2018",
+    category: "ketcau",
+    categoryLabel: "Kết cấu BTCT",
+    icon: "📏",
+    badge: "Phổ biến nhất",
+    shortDesc: "Công thức tính chiều dài nối buộc L_lap, hệ số alpha, bảng tra nối dầm/cột theo đường kính d và cấp độ bền bê tông B, quy định tỷ lệ nối ≤ 50%.",
+    query: "Hãy tra cứu và tóm tắt quy định về Chiều dài nối buộc cốt thép trong tiêu chuẩn TCVN 5574:2018 (hoặc tài liệu tiêu chuẩn liên quan). Trích xuất chính xác điều khoản, công thức tính toán chiều dài nối $L_{lap}$, hệ số $\\alpha$, lập bảng tra cứu nhanh chiều dài nối dầm và cột theo đường kính thép (d16-d25) và cấp độ bền bê tông (B20, B25, B30), các điều kiện bố trí vị trí nối (tỷ lệ <= 50%) và chỉ dẫn ghi chú thực tế trên bản vẽ thi công.",
+    fileKeywords: ["5574", "ket cau", "kết cấu", "be tong", "bê tông", "tcvn"]
+  },
+  {
+    id: "concrete_cover",
+    title: "Chiều dày lớp bê tông bảo vệ",
+    code: "TCVN 5574:2018",
+    category: "ketcau",
+    categoryLabel: "Kết cấu BTCT",
+    icon: "🛡️",
+    badge: "Quy định bắt buộc",
+    shortDesc: "Bảng tra chiều dày bảo vệ tối thiểu cho dầm, sàn, cột, móng, cọc trong môi trường tự nhiên, ngoài trời và vùng xâm thực.",
+    query: "Hãy tra cứu và tóm tắt quy định về Chiều dày lớp bê tông bảo vệ cốt thép theo TCVN 5574:2018. Lập bảng tra cứu nhanh chiều dày tối thiểu cho sàn, dầm, cột, móng có bê tông lót và móng không có bê tông lót trong môi trường khô ráo, ngoài trời và vùng xâm thực. Nêu các lưu ý định vị con kê khi thi công.",
+    fileKeywords: ["5574", "ket cau", "kết cấu", "be tong", "bê tông"]
+  },
+  {
+    id: "rebar_anchorage",
+    title: "Chiều dài neo cốt thép",
+    code: "TCVN 5574:2018",
+    category: "ketcau",
+    categoryLabel: "Kết cấu BTCT",
+    icon: "⚓",
+    badge: "Kiểm toán liên kết",
+    shortDesc: "Công thức tính chiều dài neo cơ bản L0,an và neo tính toán Lan cho vùng kéo và vùng nén, cấu tạo uốn móc tại nút khung.",
+    query: "Hãy tra cứu và tóm tắt quy định về Chiều dài neo cốt thép theo TCVN 5574:2018. Trình bày công thức tính chiều dài neo cơ bản $L_{0,an}$ và chiều dài neo tính toán $L_{an}$ cho cốt thép chịu kéo và chịu nén, bảng tra chiều dài neo thực tế và quy định móc neo, uốn cong cốt thép tại nút khung dầm - cột.",
+    fileKeywords: ["5574", "ket cau", "kết cấu"]
+  },
+  {
+    id: "deflection_crack",
+    title: "Độ võng & Khe nứt cho phép",
+    code: "TCVN 5574:2018",
+    category: "ketcau",
+    categoryLabel: "Trạng thái GH 2",
+    icon: "📐",
+    badge: "Kiểm toán sử dụng",
+    shortDesc: "Giới hạn độ võng tối đa dầm sàn theo nhịp (L/200, L/250, L/300) và bảng tra bề rộng khe nứt cho phép acrc ngắn hạn/dài hạn.",
+    query: "Hãy tra cứu và tóm tắt quy định kiểm toán Trạng thái giới hạn thứ 2 (Độ võng và Khe nứt) theo TCVN 5574:2018. Tóm tắt các giới hạn độ võng cho phép của dầm sàn theo nhịp ($L/200, L/250, L/300$) và bảng tra bề rộng khe nứt giới hạn $a_{crc}$ ngắn hạn, dài hạn để đảm bảo điều kiện sử dụng bình thường và chống ăn mòn.",
+    fileKeywords: ["5574", "ket cau", "kết cấu"]
+  },
+  {
+    id: "wind_load",
+    title: "Tải trọng gió & Phân vùng áp lực",
+    code: "TCVN 2737:2023",
+    category: "ketcau",
+    categoryLabel: "Tải trọng & tác động",
+    icon: "💨",
+    badge: "Tiêu chuẩn mới 2023",
+    shortDesc: "Bảng áp lực gió cơ bản W0 (vùng I-V), hệ số địa hình A, B, C theo độ cao và hệ số độ tin cậy tải trọng gió mới.",
+    query: "Hãy tra cứu và tóm tắt cách xác định Tải trọng gió theo tiêu chuẩn mới TCVN 2737:2023. Tóm tắt bảng phân vùng áp lực gió cơ bản $W_0$ (vùng I đến V), bảng hệ số $k$ thay đổi theo độ cao tương ứng dạng địa hình A, B, C, hệ số khí động $c$ và hệ số độ tin cậy $\\gamma_f = 2.1$ (chu kỳ lặp 50 năm sang 20 năm).",
+    fileKeywords: ["2737", "tai trong", "tải trọng", "ket cau"]
+  },
+  {
+    id: "fire_exit",
+    title: "Lối thoát nạn & Khoảng cách PCCC",
+    code: "QCVN 06:2022/BXD",
+    category: "pccc",
+    categoryLabel: "An toàn cháy PCCC",
+    icon: "🚒",
+    badge: "An toàn công trình",
+    shortDesc: "Khoảng cách thoát nạn tối đa, chiều rộng thông thủy hành lang/cửa/cầu thang, yêu cầu bậc chịu lửa công trình.",
+    query: "Hãy tra cứu và tóm tắt quy chuẩn an toàn cháy cho nhà và công trình theo QCVN 06:2022/BXD (và Sửa đổi 1:2023). Tóm tắt ngắn gọn các yêu cầu cốt lõi: Khoảng cách thoát nạn tối đa từ cửa phòng đến buồng thang bộ thoát nạn, chiều rộng thông thủy tối thiểu hành lang/cửa/cầu thang bộ, yêu cầu về ngăn cháy lan và bậc chịu lửa công trình.",
+    fileKeywords: ["06", "pccc", "chay", "qcvn"]
+  },
+  {
+    id: "setback_density",
+    title: "Mật độ xây dựng & Khoảng lùi",
+    code: "QCVN 01:2021/BXD",
+    category: "kientruc",
+    categoryLabel: "Quy hoạch & Kiến trúc",
+    icon: "🏢",
+    badge: "Pháp lý quy hoạch",
+    shortDesc: "Bảng tra mật độ xây dựng thuần tối đa theo chiều cao và diện tích lô đất, quy định khoảng lùi công trình theo lộ giới.",
+    query: "Hãy tra cứu và tóm tắt Quy chuẩn quy hoạch xây dựng theo QCVN 01:2021/BXD. Tóm tắt bảng tra Mật độ xây dựng thuần tối đa cho công trình nhà ở, thương mại dịch vụ theo chiều cao công trình (đến 46m và trên 46m) và diện tích lô đất, kèm quy định khoảng lùi tối thiểu công trình theo chiều rộng lộ giới đường đỏ.",
+    fileKeywords: ["01", "quy hoach", "quy chuẩn", "qcvn"]
+  },
+  {
+    id: "concrete_grade",
+    title: "Cấp độ bền bê tông (B) & Mác M",
+    code: "TCVN 5574:2018",
+    category: "ketcau",
+    categoryLabel: "Vật liệu kết cấu",
+    icon: "🧱",
+    badge: "Bảng tra quy đổi",
+    shortDesc: "Bảng chuyển đổi Mác M (M200-M400) sang Cấp B (B15-B30), cường độ tính toán chịu nén Rb, chịu kéo Rbt và mô đun Eb.",
+    query: "Hãy tra cứu và tóm tắt bảng quy đổi Cấp độ bền bê tông chịu nén (B15, B20, B25, B30, B35, B40...) và Mác bê tông tương ứng (M200, M250, M300, M350, M400...), kèm bảng tra các giá trị cường độ tính toán chịu nén $R_b$, chịu kéo $R_{bt}$ và mô đun đàn hồi $E_b$ theo TCVN 5574:2018.",
+    fileKeywords: ["5574", "be tong", "mác", "bê tông"]
+  },
+  {
+    id: "pile_capacity",
+    title: "Sức chịu tải cọc & Độ lún móng",
+    code: "TCVN 10304:2014",
+    category: "nenmong",
+    categoryLabel: "Nền móng & Địa chất",
+    icon: "🏗️",
+    badge: "Khảo sát & Móng",
+    shortDesc: "Công thức tính sức chịu tải của cọc theo đất nền và vật liệu cọc, hệ số an toàn tính toán, giới hạn lún cho phép.",
+    query: "Hãy tra cứu và tóm tắt quy chuẩn tính toán Móng cọc theo TCVN 10304:2014. Tóm tắt công thức xác định sức chịu tải của cọc đơn theo chỉ tiêu cơ lý đất nền và SPT (sức kháng mũi $q_b$ và ma sát bên $q_s$), hệ số an toàn tính toán $\\gamma_k$, và các quy định về độ lún giới hạn của móng cọc.",
+    fileKeywords: ["10304", "mong", "móng", "coc", "cọc"]
+  },
+  {
+    id: "lightning_earthing",
+    title: "Điện trở tiếp địa & Chống sét",
+    code: "TCVN 9385:2012",
+    category: "mep",
+    categoryLabel: "Cơ điện & An toàn",
+    icon: "⚡",
+    badge: "Tiêu chuẩn MEP",
+    shortDesc: "Trị số điện trở tiếp địa chống sét (≤ 10Ω), an toàn điện (≤ 4Ω), bán kính bảo vệ kim thu sét và khoảng cách ly.",
+    query: "Hãy tra cứu và tóm tắt quy chuẩn Chống sét cho công trình theo TCVN 9385:2012. Tóm tắt yêu cầu trị số điện trở nối đất chống sét tối đa (<= 10 Ohm) và tiếp địa an toàn điện (<= 4 Ohm), phương pháp xác định bán kính bảo vệ của kim thu sét (phương pháp góc bảo vệ hoặc quả cầu lăn) và khoảng cách cách ly an toàn.",
+    fileKeywords: ["9385", "chong set", "chống sét", "mep", "dien"]
+  }
+];
+
 export function ChatPanel({
   messages,
   generalMessages = [],
@@ -440,16 +576,12 @@ export function ChatPanel({
   const [attachedPdf, setAttachedPdf] = useState<{ name: string; text: string; geminiFileUri?: string } | null>(null);
   const [isUploadingPdf, setIsUploadingPdf] = useState<boolean>(false);
   const [uploadPdfError, setUploadPdfError] = useState<string | null>(null);
-  const [mode, setMode] = useState<"general_chat" | "chat" | "extract" | "mindmap" | "notes" | "compare" | "compliance" | "draw_compare" | "summary">("general_chat");
+  const [mode, setMode] = useState<"general_chat" | "chat" | "extract" | "mindmap" | "notes" | "compare" | "compliance" | "summary">("general_chat");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [selectedGeneralDocIds, setSelectedGeneralDocIds] = useState<string[]>([]);
   const [showDocSelectorInGeneral, setShowDocSelectorInGeneral] = useState(false);
-  const [compareDrawingSummary, setCompareDrawingSummary] = useState<string>("");
-  const [compareDrawingError, setCompareDrawingError] = useState<string | null>(null);
-  const [vipToolTab, setVipToolTab] = useState<"layers" | "alignment" | "boq">("layers");
-  const [isAligningAuto, setIsAligningAuto] = useState<boolean>(false);
 
   const [selectedChatbotRole, setSelectedChatbotRole] = useState<ChatbotRoleId>(() => {
     return (localStorage.getItem("preferred_chatbot_role") as ChatbotRoleId) || "compliance_expert";
@@ -481,17 +613,6 @@ export function ChatPanel({
       localStorage.setItem("custom_chatbot_instruction", val);
     } catch {}
   };
-
-
-
-  // Auto-toggle compareMode on the PDF viewer when switching tabs
-  useEffect(() => {
-    if (mode === "draw_compare") {
-      setCompareMode?.(true);
-    } else {
-      setCompareMode?.(false);
-    }
-  }, [mode, setCompareMode]);
 
   // Scrolling detection for input area fading effect
   const [isScrolled, setIsScrolled] = useState(false);
@@ -945,7 +1066,7 @@ export function ChatPanel({
   const [isFullscreenMindmap, setIsFullscreenMindmap] = useState<boolean>(false);
   const [mindmapTab, setMindmapTab] = useState<"visual" | "outline">("visual");
 
-  // Core Compare State
+  // Core Standards Summarization & Lookup State
   const [selectedCompareIds, setSelectedCompareIds] = useState<string[]>([]);
   const [comparePrompt, setComparePrompt] = useState<string>("");
   const [compareResult, setCompareResult] = useState<string | null>(null);
@@ -953,6 +1074,33 @@ export function ChatPanel({
   const [compareError, setCompareError] = useState<string | null>(null);
   const [compareStep, setCompareStep] = useState<number>(0); // 0: Idle, 1: Connecting, 2: Document Processing, 3: AI Analyzing
   const [compareSearch, setCompareSearch] = useState<string>("");
+  const [summaryScope, setSummaryScope] = useState<"topic" | "full">("topic");
+  const [selectedTopicId, setSelectedTopicId] = useState<string | null>(null);
+  const [topicCategoryFilter, setTopicCategoryFilter] = useState<string>("all");
+  const [isFilesListOpen, setIsFilesListOpen] = useState<boolean>(false);
+
+  const handleSelectTopic = (topic: StandardTopic) => {
+    setSelectedTopicId(topic.id);
+    setComparePrompt(topic.query);
+    setSummaryScope("topic");
+
+    // Automatically check allFiles for matching standards (e.g. 5574, 2737, 06, etc.)
+    if (allFiles && allFiles.length > 0) {
+      const matched = allFiles.filter(f => {
+        if (f.category === "Bản vẽ thiết kế") return false;
+        const lower = (f.name + " " + (f.category || "")).toLowerCase();
+        return topic.fileKeywords.some(kw => lower.includes(kw.toLowerCase()));
+      });
+      if (matched.length > 0) {
+        const matchedIds = matched.map(f => f.id);
+        setSelectedCompareIds(prev => Array.from(new Set([...prev, ...matchedIds])));
+      }
+    }
+
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
 
   // Core Compliance Audit State
   const [selectedComplianceDrawingId, setSelectedComplianceDrawingId] = useState<string>("");
@@ -1365,9 +1513,10 @@ export function ChatPanel({
     return result;
   };
 
-  const handleCompareExecution = async () => {
-    if (selectedCompareIds.length === 0) {
-      setCompareError("Vui lòng chọn ít nhất 1 tài liệu để tiến hành so sánh.");
+  const handleCompareExecution = async (overridePrompt?: string) => {
+    const activePrompt = (overridePrompt !== undefined ? overridePrompt : comparePrompt).trim();
+    if (selectedCompareIds.length === 0 && !activePrompt) {
+      setCompareError("Vui lòng chọn tài liệu tiêu chuẩn từ thư viện hoặc chọn/nhập chủ đề kỹ thuật cần tóm tắt (ví dụ: Chiều dài nối cốt thép).");
       return;
     }
     
@@ -1386,7 +1535,7 @@ export function ChatPanel({
       
       setCompareStep(2); // Docs Processing / OCR Check representation
 
-      const response = await fetch(getApiUrl("/api/compare"), {
+      const response = await fetchWithServerRetry("/api/compare", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -1403,22 +1552,27 @@ export function ChatPanel({
             category: f.category,
             text: f.text ? f.text.substring(0, 100000) : ""
           })),
-          prompt: comparePrompt || "Hãy thực hiện so sánh đối chiếu kỹ thuật chi tiết nhất giữa các tài liệu trên."
+          prompt: activePrompt || "Hãy tóm tắt súc tích nội dung cốt lõi, bảng tra cứu thông số và công thức tính toán quan trọng nhất trong tiêu chuẩn.",
+          isStandardSummary: true,
+          summaryType: summaryScope
         })
-      });
+      }, 3, 2000);
 
-      setCompareStep(3); // AI is writing detailed engineering comparison
+      setCompareStep(3); // AI is writing concise summary
 
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
         const errorHtml = await response.text().catch(() => "");
         console.error("Non-JSON Response from compare API:", errorHtml.substring(0, 500));
-        throw new Error(`AI Server phản hồi không đúng cấu trúc (Nhận HTML thay vì JSON). Có thể máy chủ đang khởi tạo lại hoặc gặp sự cố quá tải. Vui lòng thử lại sau 2-3 giây.`);
+        if (errorHtml.includes("Starting Server") || response.status === 502 || response.status === 503) {
+          throw new Error("Máy chủ AI đang trong quá trình khởi động lại hoặc đang quá tải tạm thời. Vui lòng bấm '⚡ Bắt đầu tóm tắt' lại sau 2 giây.");
+        }
+        throw new Error(`AI Server phản hồi không đúng cấu trúc (Nhận HTML thay vì JSON). Vui lòng thử lại sau giây lát.`);
       }
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Sự cố khi so sánh tài liệu (${response.status})`);
+        throw new Error(errorData.error || `Sự cố khi tóm tắt tiêu chuẩn (${response.status})`);
       }
 
       const data = await response.json();
@@ -1437,7 +1591,7 @@ export function ChatPanel({
       setCompareResult(data.text);
       setCompareStep(0);
     } catch (err: any) {
-      console.error("Lỗi khi so sánh tài liệu:", err);
+      console.error("Lỗi khi tóm tắt tiêu chuẩn:", err);
       
       const isPermError = 
         err.message?.includes("hết hạn lưu trữ") ||
@@ -1458,121 +1612,9 @@ export function ChatPanel({
 
       setCompareError(isPermError 
         ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
-        : (err.message || "Không thể thực hiện so sánh đối chiếu đa tài liệu. Vui lòng kiểm tra lại cấu hình kết nối."));
+        : (err.message || "Không thể thực hiện tóm tắt tiêu chuẩn. Vui lòng kiểm tra lại cấu hình kết nối."));
     } finally {
       setIsComparing(false);
-    }
-  };
-
-  const handleCompareDrawings = async () => {
-    if (!activeFile || !compareWithFileId) return;
-    
-    if (onCheckQuota) {
-      const allowed = await onCheckQuota();
-      if (!allowed) return;
-    }
-
-    setIsComparingAI?.(true);
-    setCompareDrawingError(null);
-    setCompareDrawingSummary("");
-    setDiffMarkers?.([]);
-
-    setCompareStage?.("Đang tải hai hồ sơ bản vẽ & phân tích cấu trúc...");
-    
-    try {
-      const refFile = allFiles.find(f => f.id === compareWithFileId);
-      if (!refFile) {
-        throw new Error("Không tìm thấy tệp bản vẽ tham chiếu.");
-      }
-
-      const parsePages = (rawText: string) => {
-        if (!rawText) return null;
-        const pageRegex = /--- TRANG (\d+) ---/g;
-        let match;
-        const pageIndices: { page: number; index: number }[] = [];
-        while ((match = pageRegex.exec(rawText)) !== null) {
-          pageIndices.push({ page: parseInt(match[1], 10), index: match.index });
-        }
-        if (pageIndices.length === 0) return null;
-        const result: { [page: number]: string } = {};
-        for (let i = 0; i < pageIndices.length; i++) {
-          const currentPageNum = pageIndices[i].page;
-          const startIndex = pageIndices[i].index;
-          const endIndex = i + 1 < pageIndices.length ? pageIndices[i + 1].index : rawText.length;
-          result[currentPageNum] = rawText.slice(startIndex, endIndex).replace(/--- TRANG \d+ ---/g, "").trim();
-        }
-        return result;
-      };
-
-      // We will prepare the payload
-      const file1Payload = {
-        id: activeFile.id,
-        name: activeFile.name,
-        url: activeFile.url,
-        text: activeFile.text || "",
-        pageTexts: parsePages(activeFile.text || ""),
-        geminiFileUri: activeFile.geminiFileUri,
-        geminiFileName: activeFile.geminiFileName,
-        uploadDate: activeFile.uploadDate
-      };
-
-      const file2Payload = {
-        id: refFile.id,
-        name: refFile.name,
-        url: refFile.url,
-        text: refFile.text || "",
-        pageTexts: parsePages(refFile.text || ""),
-        geminiFileUri: refFile.geminiFileUri,
-        geminiFileName: refFile.geminiFileName,
-        uploadDate: refFile.uploadDate
-      };
-
-      setCompareStage?.("Đang gửi dữ liệu đến Gemini để quét sai khác...");
-
-      const response = await fetch("/api/compare-drawings", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          file1: file1Payload,
-          file2: file2Payload
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `Lỗi từ máy chủ đối chiếu (${response.status})`);
-      }
-
-      setCompareStage?.("Đang giải mã kết quả phân tích & lập sơ đồ đánh dấu...");
-
-      const data = await response.json();
-
-      // Proactively sync newly registered files to parent
-      if (data.newlyRegistered && data.newlyRegistered.length > 0 && onUpdateFile) {
-        for (const reg of data.newlyRegistered) {
-          await onUpdateFile(reg.fileId, {
-            geminiFileUri: reg.uri,
-            geminiFileName: reg.name,
-            isAIReady: true
-          });
-        }
-      }
-
-      setCompareDrawingSummary(data.summary || "");
-      setDiffMarkers?.(data.diffMarkers || []);
-      setCompareMode?.(true);
-      if (!isPdfViewerOpen && onTogglePdfViewer) {
-        onTogglePdfViewer();
-      }
-
-    } catch (err: any) {
-      console.error("Lỗi khi đối chiếu bản vẽ:", err);
-      setCompareDrawingError(err.message || "Gặp sự cố kết nối trong quá trình so sánh bản vẽ.");
-    } finally {
-      setIsComparingAI?.(false);
-      setCompareStage?.("");
     }
   };
 
@@ -1707,7 +1749,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
 
       setComplianceStep(3); // AI Auditing drawing data
 
-      const response = await fetch(getApiUrl("/api/compare"), {
+      const response = await fetchWithServerRetry("/api/compare", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
@@ -1728,24 +1770,21 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           isCompliance: complianceRuleType !== "design_manager",
           isDesignManager: complianceRuleType === "design_manager"
         })
-      });
-
-      if (!response.ok) {
-        const contentType = response.headers.get("content-type") || "";
-        if (!contentType.includes("application/json")) {
-          const errorHtml = await response.text().catch(() => "");
-          console.error("Non-JSON error from compliance API:", errorHtml.substring(0, 500));
-          throw new Error(`AI Server gặp sự cố hệ thống (Trích xuất không đồng bộ). Vui lòng thử lại sau giây lát.`);
-        }
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.error || `Sự cố mạng phía AI Server (${response.status})`);
-      }
+      }, 3, 2000);
 
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
         const errorHtml = await response.text().catch(() => "");
-        console.error("Non-JSON Response from compliance API:", errorHtml.substring(0, 500));
-        throw new Error(`AI Server phản hồi không đúng cấu trúc (Nhận HTML thay vì JSON). Có thể máy chủ đang khởi động lại hoặc gặp sự cố quá tải. Vui lòng thử lại sau 2-3 giây.`);
+        console.error("Non-JSON error from compliance API:", errorHtml.substring(0, 500));
+        if (errorHtml.includes("Starting Server") || response.status === 502 || response.status === 503) {
+          throw new Error("Máy chủ AI đang trong quá trình khởi động lại hoặc đang quá tải tạm thời. Vui lòng thử lại sau 2-3 giây.");
+        }
+        throw new Error(`AI Server phản hồi không đúng cấu trúc (Nhận HTML thay vì JSON). Vui lòng thử lại sau giây lát.`);
+      }
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Sự cố mạng phía AI Server (${response.status})`);
       }
 
       const resData = await response.json();
@@ -2339,7 +2378,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           )}
         >
           <BookOpen className="w-3.5 h-3.5 text-current" />
-          <span>TRA CỨU & ĐỐI CHIẾU</span>
+          <span>TÓM TẮT TIÊU CHUẨN</span>
         </button>
         <button
           onClick={() => setMode("compliance")}
@@ -2352,18 +2391,6 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
         >
           <Scale className="w-3.5 h-3.5 text-current animate-pulse" />
           <span>KIỂM TRA THIẾT KẾ</span>
-        </button>
-        <button
-          onClick={() => setMode("draw_compare")}
-          className={cn(
-            "px-5 py-3 rounded-2xl text-[11px] sm:text-[12px] font-black uppercase tracking-widest transition-all shrink-0 flex items-center gap-2 border shadow-sm",
-            mode === "draw_compare" 
-              ? "bg-indigo-600 text-white border-indigo-600 shadow-[0_6px_16px_rgba(79,70,229,0.22)]" 
-              : "bg-white text-gray-500 hover:text-gray-900 border-gray-200/60"
-          )}
-        >
-          <ArrowLeftRight className="w-3.5 h-3.5 text-current" />
-          <span>ĐỐI CHIẾU BẢN VẼ</span>
         </button>
         <button
           onClick={() => setMode("notes")}
@@ -2381,12 +2408,11 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
       <div 
         ref={scrollRef}
         onScroll={(e) => {
-          const target = e.currentTarget;
-          setIsScrolled(target.scrollTop > 25);
+          setIsScrolled(e.currentTarget.scrollTop > 25);
         }}
         className="flex-1 overflow-y-auto px-6 pt-6 pb-40 space-y-6 no-scrollbar"
       >
-        {activeFile && mode !== "compare" && mode !== "compliance" && mode !== "general_chat" && mode !== "notes" && mode !== "draw_compare" && mode !== "summary" && (
+        {activeFile && mode !== "compare" && mode !== "compliance" && mode !== "general_chat" && mode !== "notes" && mode !== "summary" && (
           <div className="bg-white border border-gray-200/60 rounded-3xl p-6 shadow-[0_12px_32px_rgba(0,0,0,0.035),0_1px_3px_rgba(0,0,0,0.015)] space-y-4 animate-in fade-in duration-300">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -2817,895 +2843,344 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
               </div>
             )}
           </div>
-        ) : mode === "draw_compare" ? (
-          <div className="space-y-6 animate-in fade-in duration-500">
-            {/* Header */}
-            <div className="flex items-center gap-3 pb-2">
-              <div className="w-12 h-12 rounded-2xl bg-indigo-50 flex items-center justify-center shadow-md shadow-indigo-100">
-                <ArrowLeftRight className="w-6 h-6 text-indigo-600 animate-pulse" />
-              </div>
-              <div>
-                <h3 className="text-lg sm:text-lg font-black text-gray-900 uppercase tracking-widest leading-tight">
-                  Đối chiếu Bản vẽ Thiết kế
-                </h3>
-                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest mt-0.5">AI Visual Drawing Comparison</p>
-              </div>
-            </div>
-
-            {/* Check if activeFile is selected */}
-            {!activeFile ? (
-              <div className="bg-white border border-gray-100 rounded-[32px] p-8 shadow-sm text-center space-y-4">
-                <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto text-amber-500 text-2xl">
-                  📁
-                </div>
-                <h4 className="text-sm font-black text-gray-800 uppercase tracking-widest">CHƯA CHỌN BẢN VẼ CHÍNH</h4>
-                <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
-                  Vui lòng chọn hoặc click vào một bản vẽ thiết kế chính từ thanh điều hướng bên trái để kích hoạt tính năng đối chiếu sự sai khác.
-                </p>
-              </div>
-            ) : activeFile.category !== "Bản vẽ thiết kế" && !activeFile.name.toLowerCase().includes("bản vẽ") && !activeFile.name.toLowerCase().includes("mặt bằng") ? (
-              <div className="bg-white border border-gray-100 rounded-[32px] p-8 shadow-sm text-center space-y-4">
-                <div className="w-16 h-16 bg-amber-50 rounded-full flex items-center justify-center mx-auto text-amber-500 text-2xl">
-                  ⚠️
-                </div>
-                <h4 className="text-sm font-black text-gray-800 uppercase tracking-widest">ĐỊNH DẠNG TÀI LIỆU KHÔNG PHÙ HỢP</h4>
-                <p className="text-xs text-gray-500 max-w-sm mx-auto leading-relaxed">
-                  Tài liệu hiện tại <strong className="font-extrabold text-gray-700">{activeFile.name}</strong> không thuộc danh mục bản vẽ. Hãy chuyển đổi loại tệp sang <strong className="font-extrabold text-indigo-600">Bản vẽ thiết kế</strong> trong thuộc tính file hoặc chọn một bản vẽ khác.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                {/* Active Drawing Card */}
-                <div className="bg-white border border-gray-150/40 rounded-[28px] p-5 shadow-xs flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">📄</span>
-                    <div>
-                      <span className="text-[9px] font-black text-indigo-500 uppercase tracking-wider block">BẢN VẼ ĐANG CHỌN (MỚI):</span>
-                      <p className="text-xs font-black text-gray-850 uppercase tracking-wide truncate max-w-[200px]">{activeFile.name}</p>
-                    </div>
-                  </div>
-                  <span className="px-2.5 py-1 bg-emerald-50 text-emerald-600 border border-emerald-100 text-[8px] font-black uppercase tracking-wider rounded-md shrink-0">BẢN CHỈNH SỬA</span>
-                </div>
-
-                {/* Error Display if any */}
-                {compareDrawingError && (
-                  <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs font-semibold text-rose-800 leading-relaxed animate-in fade-in duration-300">
-                    ⚠️ {compareDrawingError}
-                  </div>
-                )}
-
-                {/* Setup or AI Compare trigger */}
-                {diffMarkers.length === 0 && !compareDrawingSummary && !isComparingAI && (
-                  <div className="bg-white border border-gray-100 rounded-[32px] p-6 shadow-sm space-y-5 animate-in fade-in duration-300">
-                    <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-[0.15em] mb-2">
-                        1. CHỌN BẢN VẼ GỐC ĐỂ ĐỐI CHIẾU
-                      </label>
-                      {allFiles.filter(f => f.id !== activeFile.id).length === 0 ? (
-                        <div className="p-4 bg-amber-50/50 border border-amber-200/50 rounded-2xl text-xs font-semibold text-amber-800 leading-relaxed">
-                          ⚠️ Hệ thống chưa tìm thấy bản vẽ khác để đối chiếu. Vui lòng tải lên thêm phiên bản gốc của bản vẽ này lên hệ thống để so sánh.
-                        </div>
-                      ) : (
-                        <select
-                          value={compareWithFileId}
-                          onChange={(e) => setCompareWithFileId?.(e.target.value)}
-                          className="w-full p-4 bg-[#f8f9fc] border border-gray-150 rounded-2xl text-[11px] font-black uppercase tracking-wide text-gray-800 focus:bg-white focus:ring-2 focus:ring-indigo-100 outline-none transition-all cursor-pointer"
-                        >
-                          <option value="">-- CLICK CHỌN BẢN VẼ GỐC --</option>
-                          {allFiles.filter(f => f.id !== activeFile.id).map(file => (
-                            <option key={file.id} value={file.id}>
-                              📄 {file.name.toUpperCase()} ({file.category || "Tài liệu"})
-                            </option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-
-                    <button
-                      onClick={handleCompareDrawings}
-                      disabled={!compareWithFileId}
-                      className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-4.5 rounded-[24px] font-black text-xs uppercase tracking-[0.2em] shadow-xl shadow-indigo-600/15 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-2.5 cursor-pointer"
-                    >
-                      <ArrowLeftRight className="w-5 h-5" />
-                      KHỞI CHẠY ĐỐI CHIẾU AI ✦
-                    </button>
-                  </div>
-                )}
-
-                {/* AI Comparison Loading Stage */}
-                {isComparingAI && (
-                  <div className="bg-white border border-gray-100 rounded-[32px] p-8 shadow-sm flex flex-col items-center justify-center text-center space-y-5 animate-pulse">
-                    <div className="relative w-16 h-16">
-                      <div className="absolute inset-0 rounded-full border-4 border-indigo-100 border-t-indigo-600 animate-spin" />
-                      <div className="absolute inset-2 rounded-full border-4 border-emerald-500/20 border-b-emerald-500 animate-spin" />
-                    </div>
-                    <div className="space-y-2">
-                      <span className="text-[10px] font-black uppercase text-indigo-600 tracking-widest block">AI ĐANG PHÂN TÍCH...</span>
-                      <h4 className="text-sm font-black text-gray-800 uppercase tracking-wider px-2">{compareStage}</h4>
-                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest leading-normal">Hệ thống đang đối chiếu từng nét vẽ, dầm thép, khoảng lùi</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Visual diff markers listed */}
-                {(diffMarkers.length > 0 || compareDrawingSummary) && !isComparingAI && (
-                  <div className="space-y-6 animate-in fade-in duration-500">
-                    {/* VIP Advanced Drawing Comparison Controller */}
-                    <div className="bg-[#141620] text-white border border-slate-800 rounded-[32px] p-5 shadow-2xl space-y-4">
-                      {/* Controller Header & Tabs */}
-                      <div className="flex items-center justify-between border-b border-white/10 pb-3">
-                        <div className="flex items-center gap-2">
-                          <Sparkles className="w-4 h-4 text-amber-400 animate-pulse" />
-                          <span className="text-[10px] font-black uppercase tracking-widest text-amber-300">BO CÔNG CỤ SO SÁNH VIP ✦</span>
-                        </div>
-                        <button
-                          onClick={() => {
-                            setDiffMarkers?.([]);
-                            setCompareWithFileId?.("");
-                            setCompareDrawingSummary("");
-                            setCompareDrawingError(null);
-                          }}
-                          className="text-[9px] font-black text-rose-400 hover:text-rose-300 uppercase tracking-widest bg-rose-500/10 border border-rose-500/20 px-2.5 py-1 rounded-lg transition-all"
-                        >
-                          Xóa đối chiếu
-                        </button>
-                      </div>
-
-                      {/* VIP Tool Sub-Tabs */}
-                      <div className="grid grid-cols-3 gap-1 bg-black/40 p-1 rounded-2xl border border-white/5">
-                        {[
-                          { id: "layers", label: "🎛️ Lớp & Rèm kéo", desc: "Tính năng 4" },
-                          { id: "alignment", label: "📐 Căn chỉnh Scale", desc: "Tính năng 2" },
-                          { id: "boq", label: "📊 Tác động BoQ", desc: "Tính năng 3" },
-                        ].map(tab => (
-                          <button
-                            key={tab.id}
-                            onClick={() => setVipToolTab(tab.id as any)}
-                            className={cn(
-                              "py-2 px-1 rounded-xl text-[9px] font-black uppercase tracking-wider text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5",
-                              vipToolTab === tab.id
-                                ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/30"
-                                : "text-gray-400 hover:text-white hover:bg-white/5"
-                            )}
-                          >
-                            <span>{tab.label}</span>
-                            <span className="text-[7.5px] font-bold opacity-60 tracking-normal">{tab.desc}</span>
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* TAB 1: LAYERS, SPLIT SLIDER & HEATMAP (Feature 4) */}
-                      {vipToolTab === "layers" && (
-                        <div className="space-y-4 pt-1 animate-in fade-in duration-300">
-                          {/* Layer controls */}
-                          <div className="space-y-1.5">
-                            <span className="text-[8px] font-black text-gray-400 uppercase tracking-wider block">CHỌN LỚP BẢN VẼ:</span>
-                            <div className="grid grid-cols-3 gap-1.5 bg-[#0b0c12] p-1.5 rounded-xl border border-white/5">
-                              {[
-                                { id: "overlay", label: "Chồng sai khác" },
-                                { id: "original", label: "Bản vẽ Gốc" },
-                                { id: "revised", label: "Bản vẽ Mới" }
-                              ].map(layer => (
-                                <button
-                                  key={layer.id}
-                                  onClick={() => setViewLayer?.(layer.id as any)}
-                                  className={cn(
-                                    "py-2 rounded-lg text-[9px] font-black uppercase tracking-wider text-center transition-colors cursor-pointer",
-                                    viewLayer === layer.id
-                                      ? "bg-indigo-600 text-white"
-                                      : "text-gray-400 hover:text-white"
-                                  )}
-                                >
-                                  {layer.label}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Split Slider Curtain View Switch */}
-                          <div className="bg-[#0b0c12] p-3 rounded-2xl border border-white/5 space-y-2.5">
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <span className="text-amber-400 text-xs">↔</span>
-                                <div>
-                                  <span className="text-[9px] font-black text-white uppercase tracking-wider block">RÈM KÉO SPLIT SLIDER (TÍNH NĂNG 4)</span>
-                                  <span className="text-[8px] text-gray-400 font-medium">Soi từng nửa bản vẽ Gốc & Mới thời gian thực</span>
-                                </div>
-                              </div>
-                              <button
-                                onClick={() => setIsSplitSliderActive?.(!isSplitSliderActive)}
-                                className={cn(
-                                  "px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer border",
-                                  isSplitSliderActive
-                                    ? "bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-600/20"
-                                    : "bg-white/5 text-gray-400 border-white/10 hover:text-white"
-                                )}
-                              >
-                                {isSplitSliderActive ? "BẬT ✦" : "TẮT"}
-                              </button>
-                            </div>
-
-                            {isSplitSliderActive && (
-                              <div className="space-y-1.5 pt-2 border-t border-white/5 animate-in fade-in duration-300">
-                                <div className="flex justify-between text-[8px] font-black text-gray-300 uppercase tracking-wider">
-                                  <span>VỊ TRÍ RÈM KÉO:</span>
-                                  <span className="text-emerald-400 font-mono">{splitSliderPos}%</span>
-                                </div>
-                                <input
-                                  type="range"
-                                  min="0"
-                                  max="100"
-                                  value={splitSliderPos}
-                                  onChange={(e) => setSplitSliderPos?.(parseInt(e.target.value))}
-                                  className="w-full accent-emerald-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
-                                />
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Heatmap Overlay Toggle */}
-                          <div className="bg-[#0b0c12] p-3 rounded-2xl border border-white/5 flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="text-rose-400 text-xs">🔥</span>
-                              <div>
-                                <span className="text-[9px] font-black text-white uppercase tracking-wider block">BẢN ĐỒ NHIỆT HEATMAP (TÍNH NĂNG 4)</span>
-                                <span className="text-[8px] text-gray-400 font-medium">Hào quang hiển thị vùng tập trung sai khác</span>
-                              </div>
-                            </div>
-                            <button
-                              onClick={() => setIsHeatmapActive?.(!isHeatmapActive)}
-                              className={cn(
-                                "px-3 py-1.5 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all cursor-pointer border",
-                                isHeatmapActive
-                                  ? "bg-rose-600 text-white border-rose-500 shadow-md shadow-rose-600/20"
-                                  : "bg-white/5 text-gray-400 border-white/10 hover:text-white"
-                              )}
-                            >
-                              {isHeatmapActive ? "BẬT 🔥" : "TẮT"}
-                            </button>
-                          </div>
-
-                          {/* Opacity slider */}
-                          {viewLayer === "overlay" && (
-                            <div className="space-y-1.5 pt-1">
-                              <div className="flex justify-between text-[8px] font-black text-gray-400 uppercase tracking-wider">
-                                <span>ĐỘ MỜ SAI KHÁC (OPACITY):</span>
-                                <span className="text-indigo-400">{markerOpacity}%</span>
-                              </div>
-                              <input
-                                type="range"
-                                min="0"
-                                max="100"
-                                value={markerOpacity}
-                                onChange={(e) => setMarkerOpacity?.(parseInt(e.target.value))}
-                                className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
-                              />
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* TAB 2: ALIGNMENT & SCALE CALIBRATION (Feature 2) */}
-                      {vipToolTab === "alignment" && (
-                        <div className="space-y-4 pt-1 animate-in fade-in duration-300">
-                          <div className="bg-[#0b0c12] p-3.5 rounded-2xl border border-white/5 space-y-3">
-                            <div className="flex items-center justify-between">
-                              <span className="text-[9px] font-black text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
-                                📐 CĂN CHỈNH TỶ LỆ SCALE & SNAP GRID
-                              </span>
-                              <button
-                                onClick={() => {
-                                  setIsAligningAuto(true);
-                                  setTimeout(() => {
-                                    setScaleOffset?.(0);
-                                    setRotationOffset?.(0);
-                                    setAlignOffsetX?.(0);
-                                    setAlignOffsetY?.(0);
-                                    setIsAligningAuto(false);
-                                  }, 800);
-                                }}
-                                disabled={isAligningAuto}
-                                className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-[8.5px] uppercase tracking-wider rounded-lg flex items-center gap-1 cursor-pointer transition-all active:scale-95 shadow-md shadow-indigo-600/20"
-                              >
-                                {isAligningAuto ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3 text-amber-300" />}
-                                TỰ ĐỘNG CĂN GRID
-                              </button>
-                            </div>
-
-                            {/* Scale Offset (-20% to +20%) */}
-                            <div className="space-y-1.5 pt-1 border-t border-white/5">
-                              <div className="flex justify-between text-[8px] font-black text-gray-300 uppercase tracking-wider">
-                                <span>ĐIỀU CHỈNH TỶ LỆ SCALE BẢN VẼ GỐC:</span>
-                                <span className="text-indigo-400 font-mono">{scaleOffset > 0 ? `+${scaleOffset}%` : `${scaleOffset}%`}</span>
-                              </div>
-                              <input
-                                type="range"
-                                min="-20"
-                                max="20"
-                                value={scaleOffset}
-                                onChange={(e) => setScaleOffset?.(parseInt(e.target.value))}
-                                className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
-                              />
-                            </div>
-
-                            {/* Rotation Angle (0, 90, 180, 270) */}
-                            <div className="space-y-1.5 pt-1">
-                              <span className="text-[8px] font-black text-gray-300 uppercase tracking-wider block">GÓC XOAY KHỔ GIẤY (ROTATION):</span>
-                              <div className="grid grid-cols-4 gap-1">
-                                {[0, 90, 180, 270].map(deg => (
-                                  <button
-                                    key={deg}
-                                    onClick={() => setRotationOffset?.(deg)}
-                                    className={cn(
-                                      "py-1.5 rounded-lg text-[8.5px] font-black uppercase transition-all cursor-pointer border",
-                                      rotationOffset === deg
-                                        ? "bg-indigo-600 text-white border-indigo-500 shadow-sm"
-                                        : "bg-white/5 text-gray-400 border-white/5 hover:text-white"
-                                    )}
-                                  >
-                                    {deg}°
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Offset X & Y */}
-                            <div className="grid grid-cols-2 gap-2 pt-1 border-t border-white/5">
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-[7.5px] font-black text-gray-400 uppercase">
-                                  <span>DỊCH CHUYỂN X:</span>
-                                  <span className="text-indigo-400">{alignOffsetX}px</span>
-                                </div>
-                                <input
-                                  type="range"
-                                  min="-50"
-                                  max="50"
-                                  value={alignOffsetX}
-                                  onChange={(e) => setAlignOffsetX?.(parseInt(e.target.value))}
-                                  className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
-                                />
-                              </div>
-
-                              <div className="space-y-1">
-                                <div className="flex justify-between text-[7.5px] font-black text-gray-400 uppercase">
-                                  <span>DỊCH CHUYỂN Y:</span>
-                                  <span className="text-indigo-400">{alignOffsetY}px</span>
-                                </div>
-                                <input
-                                  type="range"
-                                  min="-50"
-                                  max="50"
-                                  value={alignOffsetY}
-                                  onChange={(e) => setAlignOffsetY?.(parseInt(e.target.value))}
-                                  className="w-full accent-indigo-500 cursor-pointer h-1.5 bg-gray-800 rounded-lg outline-none"
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* TAB 3: IMPACT ANALYSIS & BOQ COST ESTIMATION (Feature 3) */}
-                      {vipToolTab === "boq" && (
-                        <div className="space-y-3 pt-1 animate-in fade-in duration-300">
-                          {/* Risk Level Matrix Summary */}
-                          <div className="bg-[#0b0c12] p-3.5 rounded-2xl border border-white/5 space-y-3">
-                            <span className="text-[9px] font-black text-amber-300 uppercase tracking-wider block">
-                              📊 MA TRẬN PHÂN TÍCH RỦI RO & DỰ TOÁN BOQ
-                            </span>
-
-                            {/* Risk Counts */}
-                            <div className="grid grid-cols-3 gap-2">
-                              <div className="bg-rose-500/10 border border-rose-500/20 p-2 rounded-xl text-center">
-                                <span className="text-[8px] font-black text-rose-400 uppercase block">🔴 RỦI RO CAO</span>
-                                <span className="text-base font-black text-white mt-0.5 block">
-                                  {diffMarkers.filter(m => m.impactLevel === "high").length || 2}
-                                </span>
-                              </div>
-                              <div className="bg-amber-500/10 border border-amber-500/20 p-2 rounded-xl text-center">
-                                <span className="text-[8px] font-black text-amber-400 uppercase block">🟡 TRUNG BÌNH</span>
-                                <span className="text-base font-black text-white mt-0.5 block">
-                                  {diffMarkers.filter(m => m.impactLevel === "medium").length || 1}
-                                </span>
-                              </div>
-                              <div className="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-xl text-center">
-                                <span className="text-[8px] font-black text-emerald-400 uppercase block">🟢 RỦI RO THẤP</span>
-                                <span className="text-base font-black text-white mt-0.5 block">
-                                  {diffMarkers.filter(m => m.impactLevel === "low").length || 1}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Estimated Cost Delta */}
-                            <div className="bg-indigo-950/40 border border-indigo-500/30 p-3 rounded-xl flex items-center justify-between">
-                              <div>
-                                <span className="text-[8px] font-black text-indigo-300 uppercase tracking-wider block">TỔNG CHÊNH LỆCH CHI PHÍ UỚC TÍNH:</span>
-                                <span className="text-xs font-black text-emerald-400 mt-0.5 block">+ 58,300,000 VNĐ</span>
-                              </div>
-                              <button
-                                onClick={() => {
-                                  const boqText = diffMarkers.map((m, idx) => `${idx + 1}. [${m.type.toUpperCase()}] ${m.title}\n   - Rủi ro: ${m.impactLevel || "medium"}\n   - Khối lượng BoQ: ${m.boqDelta || "Chưa xác định"}\n   - Chi phí: ${m.costEstimate || "N/A"}`).join("\n\n");
-                                  const blob = new Blob([`BÁO CÁO PHÂN TÍCH TÁC ĐỘNG BOQ VÀ SAI KHÁC BẢN VẼ\nNgày lập: ${new Date().toLocaleDateString('vi-VN')}\n\n${boqText}`], { type: "text/plain;charset=utf-8" });
-                                  const url = URL.createObjectURL(blob);
-                                  const a = document.createElement("a");
-                                  a.href = url;
-                                  a.download = `Bao_Cao_BoQ_Sai_Khac_${activeFile?.name || "Ban_Ve"}.txt`;
-                                  a.click();
-                                  URL.revokeObjectURL(url);
-                                }}
-                                className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-black text-[8.5px] uppercase tracking-wider flex items-center gap-1 cursor-pointer transition-all shadow-md shadow-emerald-600/20"
-                              >
-                                <Download className="w-3 h-3" />
-                                XUẤT BOQ
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* AI-Generated Comparison Summary Report */}
-                    {compareDrawingSummary && (
-                      <div className="bg-[#fcfdff] border border-indigo-100 rounded-[28px] p-5 shadow-xs space-y-3">
-                        <div className="flex items-center gap-2 pb-2 border-b border-indigo-50">
-                          <span className="text-base">📋</span>
-                          <span className="text-[10px] font-black uppercase text-indigo-950 tracking-wider">BÁO CÁO SAI KHÁC & ĐỊNH HƯỚNG KỸ THUẬT</span>
-                        </div>
-                        <div className="text-xs text-gray-700 leading-relaxed font-medium prose max-w-none markdown-body text-justify">
-                          <ReactMarkdown>
-                            {compareDrawingSummary}
-                          </ReactMarkdown>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Diff Filters */}
-                    <div className="bg-white border border-gray-150/40 rounded-2xl p-2.5 shadow-sm flex gap-1">
-                      {[
-                        { id: "all", label: "Tất cả", activeColor: "bg-indigo-600 text-white" },
-                        { id: "addition", label: "+ Thêm", activeColor: "bg-emerald-600 text-white" },
-                        { id: "modification", label: "Δ Sửa", activeColor: "bg-amber-600 text-white" },
-                        { id: "deletion", label: "- Xóa", activeColor: "bg-rose-600 text-white" }
-                      ].map(tab => {
-                        const count = tab.id === "all" ? diffMarkers.length : diffMarkers.filter(m => m.type === tab.id).length;
-                        return (
-                          <button
-                            key={tab.id}
-                            onClick={() => setSelectedDiffType?.(tab.id as any)}
-                            className={cn(
-                              "flex-1 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-wider text-center transition-all cursor-pointer flex flex-col items-center justify-center gap-0.5 border border-transparent shadow-3xs",
-                              selectedDiffType === tab.id
-                                ? `${tab.activeColor} shadow-md`
-                                : "bg-gray-50 text-gray-550 hover:text-gray-900 border-gray-100"
-                            )}
-                          >
-                            <span>{tab.label}</span>
-                            <span className="opacity-50 text-[8px] font-bold">{count} mục</span>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Diff List */}
-                    <div className="space-y-3.5">
-                      {diffMarkers
-                        .filter(m => selectedDiffType === "all" || m.type === selectedDiffType)
-                        .map(marker => {
-                          const isActive = activeMarkerId === marker.id;
-                          const isHovered = hoveredMarkerId === marker.id;
-
-                          return (
-                            <div
-                              key={marker.id}
-                              onClick={() => {
-                                setActiveMarkerId?.(marker.id);
-                                onSelectFile?.(activeFile.id, marker.page);
-                              }}
-                              onMouseEnter={() => setHoveredMarkerId?.(marker.id)}
-                              onMouseLeave={() => setHoveredMarkerId?.(null)}
-                              className={cn(
-                                "p-4.5 rounded-[24px] border transition-all cursor-pointer relative overflow-hidden group/item bg-white shadow-2xs",
-                                isActive
-                                  ? "border-indigo-500 ring-2 ring-indigo-500/10 shadow-md"
-                                  : isHovered
-                                    ? "border-gray-300 hover:bg-gray-50/50"
-                                    : "border-gray-200/60 hover:border-gray-300"
-                              )}
-                            >
-                              {/* Left stripe marker */}
-                              <div className={cn(
-                                "absolute left-0 top-0 bottom-0 w-1",
-                                marker.type === "addition" ? "bg-emerald-500" :
-                                marker.type === "deletion" ? "bg-rose-500" :
-                                "bg-amber-500"
-                              )} />
-
-                              {/* Title block */}
-                              <div className="flex items-center justify-between gap-2 mb-2 pl-1.5 flex-wrap">
-                                <div className="flex items-center gap-1.5 flex-wrap">
-                                  <span className={cn(
-                                    "text-[8.5px] font-black uppercase tracking-widest border px-2 py-0.5 rounded-md",
-                                    marker.type === "addition" ? "bg-emerald-50 border-emerald-100 text-emerald-600" :
-                                    marker.type === "deletion" ? "bg-rose-50 border-rose-100 text-rose-600" :
-                                    "bg-amber-50 border-amber-100 text-amber-600"
-                                  )}>
-                                    {marker.type === "addition" ? "Thêm mới" : marker.type === "deletion" ? "Loại bỏ" : "Thay đổi"}
-                                  </span>
-
-                                  {/* Risk level badge */}
-                                  <span className={cn(
-                                    "text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md border",
-                                    marker.impactLevel === "high" ? "bg-rose-50 border-rose-200 text-rose-700" :
-                                    marker.impactLevel === "medium" ? "bg-amber-50 border-amber-200 text-amber-700" :
-                                    "bg-emerald-50 border-emerald-200 text-emerald-700"
-                                  )}>
-                                    {marker.impactLevel === "high" ? "🔴 Rủi ro Cao" : marker.impactLevel === "medium" ? "🟡 Risk Vừa" : "🟢 Risk Thấp"}
-                                  </span>
-
-                                  {/* Discipline badge */}
-                                  {marker.discipline && (
-                                    <span className="text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-700">
-                                      🏢 {marker.discipline}
-                                    </span>
-                                  )}
-                                </div>
-
-                                <span className="text-[8.5px] font-black text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100 uppercase tracking-widest shrink-0">
-                                  TRANG {marker.page}
-                                </span>
-                              </div>
-
-                              <h4 className={cn(
-                                "text-[12.5px] font-black leading-snug pl-1.5 tracking-wide",
-                                isActive ? "text-indigo-600" : "text-gray-950 group-hover/item:text-indigo-600"
-                              )}>
-                                {marker.title}
-                              </h4>
-
-                              <p className="text-[11px] text-gray-500 leading-relaxed mt-2 pl-1.5 font-medium italic">
-                                {marker.description}
-                              </p>
-
-                              {/* Side-by-side original/revised values */}
-                              <div className="mt-3.5 bg-gray-50 rounded-2xl p-3 space-y-2 border border-gray-150/40 text-[10.5px] font-mono leading-relaxed">
-                                {marker.originalValue && (
-                                  <div className="flex items-start gap-1.5 text-red-650">
-                                    <span className="text-red-650 font-extrabold shrink-0">[-] Gốc:</span>
-                                    <span className="break-all font-semibold">{marker.originalValue}</span>
-                                  </div>
-                                )}
-                                {marker.revisedValue && (
-                                  <div className="flex items-start gap-1.5 text-emerald-700 pt-1.5 border-t border-gray-200/50">
-                                    <span className="text-emerald-600 font-extrabold shrink-0">[+] Mới:</span>
-                                    <span className="break-all font-semibold">{marker.revisedValue}</span>
-                                  </div>
-                                )}
-                                {(marker.boqDelta || marker.costEstimate) && (
-                                  <div className="pt-1.5 border-t border-gray-200/50 flex flex-wrap gap-2 text-[10px] font-sans">
-                                    {marker.boqDelta && (
-                                      <span className="font-extrabold text-indigo-700 bg-indigo-50/80 px-2 py-0.5 rounded border border-indigo-100">
-                                        📦 BoQ: {marker.boqDelta}
-                                      </span>
-                                    )}
-                                    {marker.costEstimate && (
-                                      <span className="font-black text-emerald-700 bg-emerald-50/80 px-2 py-0.5 rounded border border-emerald-100">
-                                        💰 Dự toán: {marker.costEstimate}
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Expansion panel details */}
-                              {isActive && (
-                                <div className="mt-4 pt-3.5 border-t border-gray-100 pl-1.5 space-y-3.5 animate-in fade-in duration-300">
-                                  {marker.ruleReference && (
-                                    <div className="space-y-1">
-                                      <span className="text-[8px] font-black uppercase text-indigo-500 tracking-wider block">TIÊU CHUẨN ĐỐI CHIẾU:</span>
-                                      <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-3 flex items-start gap-2 text-indigo-900 text-[11px] font-bold leading-normal shadow-3xs">
-                                        <Scale className="w-4 h-4 shrink-0 mt-0.5 text-indigo-500" />
-                                        <span>{marker.ruleReference}</span>
-                                      </div>
-                                    </div>
-                                  )}
-
-                                  <div className="flex gap-2">
-                                    <button
-                                      onClick={async (e) => {
-                                        e.stopPropagation();
-                                        setSavingId(marker.id);
-                                        if (onSaveNote) {
-                                          await onSaveNote(`### ĐỐI CHIẾU SAI KHÁC BẢN VẼ: ${marker.title}\n- **Phân loại**: ${marker.type.toUpperCase()}\n- **Trang**: ${marker.page}\n- **Gốc**: ${marker.originalValue}\n- **Mới**: ${marker.revisedValue}\n- **Tiêu chuẩn**: ${marker.ruleReference}\n- **Mô tả**: ${marker.description}`);
-                                        }
-                                        setSavingId(null);
-                                        setSavedIds(prev => [...prev, marker.id]);
-                                      }}
-                                      disabled={savingId === marker.id || savedIds.includes(marker.id)}
-                                      className="flex-1 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-black uppercase tracking-widest rounded-xl text-[9px] border border-indigo-100/50 transition-all flex items-center justify-center gap-1.5 shadow-3xs cursor-pointer"
-                                    >
-                                      {savingId === marker.id ? (
-                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      ) : savedIds.includes(marker.id) ? (
-                                        <Check className="w-3.5 h-3.5 text-emerald-500" />
-                                      ) : (
-                                        <Save className="w-3.5 h-3.5" />
-                                      )}
-                                      <span>{savedIds.includes(marker.id) ? "ĐÃ LƯU SỔ TAY" : "LƯU SỔ TAY"}</span>
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                    </div>
-
-                    {/* Text report export */}
-                    <button
-                      onClick={() => {
-                        const fileContent = diffMarkers.map((m, i) => `[Mục ${i+1}] ${m.title}\nTrang: ${m.page}\nLoại: ${m.type.toUpperCase()}\nGốc: ${m.originalValue || ""}\nMới: ${m.revisedValue || ""}\nTiêu chuẩn: ${m.ruleReference || ""}\nMô tả: ${m.description}\n---------------------\n`).join("\n");
-                        handleDownloadText(fileContent, `bao_cao_sai_khac_ban_ve_${activeFile.name.replace(/\.[^/.]+$/, "")}.txt`);
-                      }}
-                      className="w-full bg-[#f4f7fa] hover:bg-indigo-50 border border-gray-200 hover:border-indigo-200 text-gray-700 hover:text-indigo-700 py-3.5 rounded-2xl font-black text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 shadow-3xs cursor-pointer"
-                    >
-                      <Download className="w-4 h-4" />
-                      Xuất báo cáo sai khác (.txt)
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
         ) : mode === "compare" ? (
           <div className="space-y-6 animate-in fade-in duration-500">
             {/* Header */}
-            <div className="flex items-center gap-3 pb-2">
-              <div className="w-12 h-12 rounded-2xl bg-indigo-55 flex items-center justify-center shadow-md shadow-indigo-100">
-                <BookOpen className="w-6 h-6 text-indigo-600 animate-pulse" />
-              </div>
-              <div>
-                <h3 className="text-lg sm:text-xl font-black text-gray-900 uppercase tracking-widest">
-                  Tra cứu & Đối chiếu Tài liệu
-                </h3>
-                <p className="text-xs text-gray-400 font-bold uppercase tracking-widest mt-0.5">Multi-Document AI Lookup, Synthesizer & Cross-reference Engine</p>
+            <div className="flex items-start sm:items-center justify-between gap-4 pb-2 border-b border-gray-150">
+              <div className="flex items-center gap-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white shadow-md shadow-indigo-600/20 shrink-0">
+                  <BookOpen className="w-6 h-6 animate-pulse" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-lg sm:text-xl font-black text-gray-900 uppercase tracking-widest">
+                      Tóm tắt & Tra cứu Tiêu chuẩn
+                    </h3>
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200">
+                      TCVN • QCVN DIGEST
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500 font-medium mt-0.5">
+                    Trích xuất súc tích điều khoản cốt lõi, bảng tra cứu thông số và công thức áp dụng nhanh — không phải đọc hàng trăm trang tiêu chuẩn dài phức tạp.
+                  </p>
+                </div>
               </div>
             </div>
 
-            {/* Step 1: File Selection UI */}
+            {/* Input & Custom Query Box - ĐẶT LÊN ĐẦU */}
             <div className="bg-white border border-gray-100 rounded-[32px] p-6 shadow-sm space-y-4">
               <div className="flex items-center justify-between">
-                <h4 className="text-xs sm:text-[13px] font-black text-gray-500 uppercase tracking-[0.15em]">
-                  1. CLICK CHỌN CÁC FILE ĐỂ TRA CỨU & ĐỐI CHIẾU ({selectedCompareIds.length} đã chọn)
+                <h4 className="text-xs sm:text-[13px] font-black text-gray-800 uppercase tracking-[0.15em] flex items-center gap-2">
+                  <span>NỘI DUNG TRA CỨU HOẶC TIÊU CHUẨN CẦN TÓM TẮT</span>
                 </h4>
-                {selectedCompareIds.length > 0 && (
-                  <button 
-                    onClick={() => setSelectedCompareIds([])}
-                    className="text-xs font-black text-red-500 uppercase tracking-wider hover:text-red-700"
+                {comparePrompt && (
+                  <button
+                    onClick={() => {
+                      setComparePrompt("");
+                      setSelectedTopicId(null);
+                    }}
+                    className="text-xs text-gray-400 hover:text-red-500 font-bold cursor-pointer"
                   >
-                    Bỏ chọn tất cả
+                    Xóa nội dung
                   </button>
                 )}
               </div>
 
-              {/* Search in Compare List */}
-              <div className="relative">
-                <Search className="w-5 h-5 text-gray-400 absolute left-4 top-4" />
-                <input
-                  type="text"
-                  placeholder="Tìm nhanh file tài liệu..."
-                  value={compareSearch}
-                  onChange={(e) => setCompareSearch(e.target.value)}
-                  className="w-full bg-[#f8f9fc] border border-transparent rounded-xl py-4 pl-12 pr-4 text-sm sm:text-base outline-none text-gray-750 placeholder:text-gray-400 focus:border-indigo-100 focus:bg-white focus:ring-2 focus:ring-indigo-100/20 transition-all font-sans font-medium"
-                 />
-              </div>
-
-              {/* Scrollable tree list of files grouped by Folder */}
-              <div className="max-h-[380px] overflow-y-auto border border-gray-200/50 rounded-2xl p-4 bg-[#f8fafc] space-y-3 no-scrollbar shadow-inner mt-4">
-                {(() => {
-                  const FOLDER_CATEGORIES = [
-                    { id: "kientruc", label: "Kiến trúc", icon: "🏛️", categories: ["Kiến trúc"] },
-                    { id: "ketcau", label: "Kết cấu", icon: "🧱", categories: ["Kết cấu", "TCVN", "TCNN"] },
-                    { id: "mep", label: "MEP", icon: "⚡", categories: ["MEP"] },
-                    { id: "vatlieu", label: "Vật liệu", icon: "🏗️", categories: ["Vật liệu"] },
-                    { id: "qckt", label: "Quy chuẩn kỹ thuật", icon: "📒", categories: ["Quy chuẩn kỹ thuật"] },
-                    { id: "vbhh", label: "Văn bản hiện hành", icon: "📜", categories: ["Văn bản hiện hành"] },
-                  ];
-
-                  const getFilesInFolder = (folderCats: string[]) => {
-                    return allFiles.filter(item => {
-                      if (item.category === "Bản vẽ thiết kế") {
-                        return false;
-                      }
-                      if (compareSearch && !item.name.toLowerCase().includes(compareSearch.toLowerCase())) {
-                        return false;
-                      }
-                      const cat = item.category || "Văn bản hiện hành";
-                      if (folderCats.includes(cat)) return true;
-                      if (folderCats.includes("Văn bản hiện hành")) {
-                        const ALL_DEFINED_CATS = ["Bản vẽ thiết kế", "Kiến trúc", "Kết cấu", "TCVN", "TCNN", "MEP", "Quy chuẩn kỹ thuật", "Vật liệu"];
-                        if (!ALL_DEFINED_CATS.includes(cat)) {
-                          return true;
-                        }
-                      }
-                      return false;
-                    });
-                  };
-
-                  const totalFilteredCount = allFiles.filter(item => {
-                    if (item.category === "Bản vẽ thiết kế") return false;
-                    return item.name.toLowerCase().includes(compareSearch.toLowerCase());
-                  }).length;
-
-                  if (totalFilteredCount === 0) {
-                    return (
-                      <p className="text-center text-xs text-gray-450 py-8 uppercase tracking-widest font-black bg-white rounded-xl border border-gray-150">
-                        Không tìm thấy tài liệu phù hợp
-                      </p>
-                    );
-                  }
-
-                  return FOLDER_CATEGORIES.map(folder => {
-                    const filesInFolder = getFilesInFolder(folder.categories);
-
-                    const isExpanded = !!expandedFolders[folder.id];
-                    const selectedInFolder = filesInFolder.filter(f => selectedCompareIds.includes(f.id));
-                    const isAllSelected = filesInFolder.length > 0 && selectedInFolder.length === filesInFolder.length;
-
-                    const handleToggleFolderExpanded = () => {
-                      setExpandedFolders(prev => ({
-                        ...prev,
-                        [folder.id]: !prev[folder.id]
-                      }));
-                    };
-
-                    const handleSelectAllInFolder = (e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      const folderFileIds = filesInFolder.map(f => f.id);
-                      setSelectedCompareIds(prev => {
-                        const filtered = prev.filter(id => !folderFileIds.includes(id));
-                        return [...filtered, ...folderFileIds];
-                      });
-                    };
-
-                    const handleDeselectAllInFolder = (e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      const folderFileIds = filesInFolder.map(f => f.id);
-                      setSelectedCompareIds(prev => prev.filter(id => !folderFileIds.includes(id)));
-                    };
-
-                    return (
-                      <div key={folder.id} className="bg-white rounded-2xl border border-gray-150 overflow-hidden shadow-xs">
-                        {/* Folder Header */}
-                        <div 
-                          onClick={handleToggleFolderExpanded}
-                          className={cn(
-                            "flex items-center justify-between px-4 py-3.5 bg-gray-50/70 border-b border-gray-150 hover:bg-slate-100/50 cursor-pointer select-none transition-all",
-                            isExpanded ? "bg-slate-50/80" : "border-b-transparent"
-                          )}
-                        >
-                          <div className="flex items-center gap-2 min-w-0">
-                            {isExpanded ? (
-                              <ChevronDown className="w-4 h-4 text-gray-550 shrink-0" />
-                            ) : (
-                              <ChevronRight className="w-4 h-4 text-gray-550 shrink-0" />
-                            )}
-                            {isExpanded ? (
-                              <FolderOpen className="w-4.5 h-4.5 text-indigo-500 shrink-0" />
-                            ) : (
-                              <Folder className="w-4.5 h-4.5 text-indigo-400 shrink-0" />
-                            )}
-                            <span className="text-xs font-black text-gray-750 uppercase tracking-widest truncate">
-                              {folder.icon} {folder.label}
-                            </span>
-                            <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[9px] font-bold block shrink-0">
-                              {selectedInFolder.length}/{filesInFolder.length}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            {filesInFolder.length > 0 && (
-                              isAllSelected ? (
-                                <button
-                                  type="button"
-                                  onClick={handleDeselectAllInFolder}
-                                  className="text-[10px] font-black text-red-500 uppercase tracking-wider hover:text-red-700 bg-red-55 px-2 py-1 rounded"
-                                >
-                                  Bỏ chọn
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={handleSelectAllInFolder}
-                                  className="text-[10px] font-black text-indigo-600 uppercase tracking-wider hover:text-indigo-800 bg-indigo-55 px-2 py-1 rounded"
-                                >
-                                  Chọn hết
-                                </button>
-                              )
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Folder File List */}
-                        {isExpanded && (
-                          <div className="p-3 bg-white space-y-2 border-l-2 border-dashed border-gray-100 ml-6 mr-3 my-2">
-                            {filesInFolder.length === 0 ? (
-                              <p className="text-center text-[11px] text-gray-400 py-4 uppercase tracking-wider font-semibold">
-                                Không có tài liệu nào thuộc nhóm này
-                              </p>
-                            ) : (
-                              filesInFolder.map(item => {
-                                const isChecked = selectedCompareIds.includes(item.id);
-                                const handleToggle = () => {
-                                  setSelectedCompareIds(prev => {
-                                    if (prev.includes(item.id)) {
-                                      return prev.filter(id => id !== item.id);
-                                    } else {
-                                      return [...prev, item.id];
-                                    }
-                                  });
-                                };
-                                return (
-                                  <div
-                                    key={item.id}
-                                    onClick={handleToggle}
-                                    className={cn(
-                                      "flex items-center justify-between p-3 bg-[#fdfefe] rounded-xl border transition-all duration-200 cursor-pointer shadow-3xs hover:border-indigo-200",
-                                      isChecked ? "bg-indigo-50/20 border-indigo-300" : "border-gray-150 hover:bg-slate-50/30"
-                                    )}
-                                  >
-                                    <div className="flex items-center gap-3 min-w-0 flex-1 pr-3">
-                                      <input
-                                        type="checkbox"
-                                        checked={isChecked}
-                                        onChange={handleToggle}
-                                        onClick={(e) => e.stopPropagation()}
-                                        className="w-4.5 h-4.5 text-indigo-650 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer"
-                                      />
-                                      <div className="min-w-0">
-                                        <p className="text-xs font-black text-gray-800 truncate block uppercase tracking-wide">{item.name}</p>
-                                        <p className="text-[9px] text-gray-450 font-bold uppercase tracking-widest mt-0.5">
-                                          {item.category || "Kiến trúc"} • {item.size || "0 MB"}
-                                        </p>
-                                      </div>
-                                    </div>
-
-                                    <div className="flex items-center shrink-0">
-                                      {item.geminiFileUri ? (
-                                        <span className="px-2 py-0.5 bg-emerald-50 text-emerald-600 rounded text-[8px] font-black uppercase tracking-wider border border-emerald-100">CLOUD OK</span>
-                                      ) : (
-                                        <span className="px-2 py-0.5 bg-amber-50 text-amber-600 rounded text-[8px] font-black uppercase tracking-wider border border-amber-100">TEXT ONLY</span>
-                                      )}
-                                    </div>
-                                  </div>
-                                );
-                              })
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  });
-                })()}
-              </div>
-            </div>
-
-            {/* Step 2: Comparison Criteria Cards & Custom Input */}
-            <div className="bg-white border border-gray-100 rounded-[32px] p-6 shadow-sm space-y-4">
-              <h4 className="text-xs sm:text-[13px] font-black text-gray-500 uppercase tracking-[0.15em]">
-                2. NHẬP NỘI DUNG TRA CỨU HOẶC TIÊU CHÍ ĐỐI CHIẾU
-              </h4>
-
-              {/* Text Input area */}
               <div className="space-y-2">
                 <textarea
                   value={comparePrompt}
-                  onChange={(e) => setComparePrompt(e.target.value)}
-                  placeholder="Nhập nội dung bạn muốn tra cứu chính xác, hoặc câu hỏi so sánh đối chiếu giữa các tài liệu đã chọn..."
-                  className="w-full min-h-[120px] p-5 bg-[#f8f9fc] border border-transparent rounded-[20px] text-sm sm:text-base outline-none text-gray-750 placeholder:text-gray-400 focus:border-indigo-100 focus:bg-white focus:ring-2 focus:ring-indigo-100/20 transition-all font-sans font-semibold leading-relaxed resize-y"
+                  onChange={(e) => {
+                    setComparePrompt(e.target.value);
+                    if (selectedTopicId) setSelectedTopicId(null);
+                  }}
+                  placeholder="Nhập nội dung bạn muốn tra cứu và tóm tắt (ví dụ: Chiều dài nối cốt thép dầm sàn, Khoảng cách an toàn PCCC, Chiều dày lớp bảo vệ móng, Tải trọng gió khu vực Hà Nội, hoặc số hiệu tiêu chuẩn TCVN 5574:2018...)"
+                  className="w-full min-h-[110px] p-4 bg-[#f8f9fc] border border-transparent rounded-[20px] text-sm sm:text-base outline-none text-gray-800 placeholder:text-gray-400 focus:border-indigo-300 focus:bg-white focus:ring-2 focus:ring-indigo-100/20 transition-all font-sans font-medium leading-relaxed resize-y"
                 />
               </div>
 
-              {/* Compare Trigger button */}
+              {/* Scope Selection: Tóm tắt chuyên đề vs Toàn diện tiêu chuẩn */}
+              <div className="bg-gray-50/80 border border-gray-200/70 rounded-2xl p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-black text-gray-600 uppercase tracking-wider flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                    CHỌN PHƯƠNG THỨC TÓM TẮT
+                  </span>
+                  <span className="text-[10px] text-gray-400 font-medium">Tối ưu tốc độ thẩm tra & thiết kế</span>
+                </div>
+                
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setSummaryScope("topic")}
+                    className={cn(
+                      "p-3 rounded-xl border text-left transition-all flex items-start gap-2.5 cursor-pointer",
+                      summaryScope === "topic"
+                        ? "bg-white border-indigo-400 ring-2 ring-indigo-500/20 shadow-sm"
+                        : "bg-white/70 border-gray-200/70 hover:border-indigo-200 hover:bg-white"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5 font-bold text-xs",
+                      summaryScope === "topic" ? "bg-indigo-600 text-white" : "bg-gray-100 text-gray-600 border border-gray-200"
+                    )}>
+                      🎯
+                    </div>
+                    <div>
+                      <h4 className="text-[11.5px] font-black text-gray-900 uppercase tracking-wider">
+                        Trích xuất & Tóm tắt theo chủ đề
+                      </h4>
+                      <p className="text-[10.5px] text-gray-500 font-medium mt-0.5 leading-relaxed">
+                        Chỉ đọc và tóm tắt đúng quy định cần tra cứu (ví dụ: Chiều dài nối thép, Bê tông bảo vệ...), đưa ra công thức và bảng tra nhanh.
+                      </p>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setSummaryScope("full")}
+                    className={cn(
+                      "p-3 rounded-xl border text-left transition-all flex items-start gap-2.5 cursor-pointer",
+                      summaryScope === "full"
+                        ? "bg-white border-indigo-400 ring-2 ring-indigo-500/20 shadow-sm"
+                        : "bg-white/70 border-gray-200/70 hover:border-indigo-200 hover:bg-white"
+                    )}
+                  >
+                    <div className={cn(
+                      "w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5 font-bold text-xs",
+                      summaryScope === "full" ? "bg-indigo-600 text-white" : "bg-gray-100 text-gray-600 border border-gray-200"
+                    )}>
+                      📑
+                    </div>
+                    <div>
+                      <h4 className="text-[11.5px] font-black text-gray-900 uppercase tracking-wider">
+                        Tóm tắt toàn diện tiêu chuẩn
+                      </h4>
+                      <p className="text-[10.5px] text-gray-500 font-medium mt-0.5 leading-relaxed">
+                        Tóm tắt tổng quan toàn bộ tài liệu đã chọn: phạm vi áp dụng, bảng thông số cốt lõi, công thức then chốt và các quy định bắt buộc/cấm.
+                      </p>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Collapsible Library Standards Selector */}
+              <div className="border border-gray-200/70 rounded-2xl overflow-hidden bg-[#fbfcfe]">
+                <button
+                  type="button"
+                  onClick={() => setIsFilesListOpen(prev => !prev)}
+                  className="w-full px-4 py-3 bg-gray-50/80 hover:bg-gray-100/70 transition-colors flex items-center justify-between text-left select-none cursor-pointer"
+                >
+                  <div className="flex items-center gap-2.5">
+                    {isFilesListOpen ? (
+                      <ChevronDown className="w-4 h-4 text-gray-500 shrink-0" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-gray-500 shrink-0" />
+                    )}
+                    <span className="text-xs font-black text-gray-700 uppercase tracking-wider">
+                      📁 Chọn tệp tiêu chuẩn từ Thư viện ({selectedCompareIds.length} đã chọn)
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                      Tùy chọn
+                    </span>
+                  </div>
+                  {selectedCompareIds.length > 0 && (
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedCompareIds([]);
+                      }}
+                      className="text-[11px] font-bold text-red-500 hover:text-red-700 cursor-pointer"
+                    >
+                      Bỏ chọn ({selectedCompareIds.length})
+                    </span>
+                  )}
+                </button>
+
+                {isFilesListOpen && (
+                  <div className="p-4 space-y-3 border-t border-gray-200/50">
+                    <p className="text-[11px] text-gray-500 leading-relaxed font-medium">
+                      💡 <strong>Gợi ý:</strong> Bạn có thể chọn tài liệu PDF tiêu chuẩn từ danh sách dưới đây để AI đọc trực tiếp file của bạn. Nếu để trống, AI sẽ tự động trích xuất từ <strong>Cơ sở dữ liệu Tiêu chuẩn Xây dựng Việt Nam (TCVN & QCVN)</strong>.
+                    </p>
+
+                    {/* Quick Search in Library */}
+                    <div className="relative">
+                      <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-3.5" />
+                      <input
+                        type="text"
+                        placeholder="Tìm kiếm tài liệu tiêu chuẩn theo tên hoặc số hiệu (ví dụ: 5574, 2737, 06)..."
+                        value={compareSearch}
+                        onChange={(e) => setCompareSearch(e.target.value)}
+                        className="w-full bg-white border border-gray-200 rounded-xl py-2.5 pl-10 pr-4 text-xs outline-none text-gray-800 placeholder:text-gray-400 focus:border-indigo-300 focus:ring-1 focus:ring-indigo-200"
+                      />
+                    </div>
+
+                    {/* Scrollable tree list of files grouped by Folder */}
+                    <div className="max-h-[260px] overflow-y-auto border border-gray-200/60 rounded-xl p-3 bg-white space-y-2.5 no-scrollbar shadow-inner">
+                      {(() => {
+                        const FOLDER_CATEGORIES = [
+                          { id: "ketcau", label: "Kết cấu", icon: "🧱", categories: ["Kết cấu", "TCVN", "TCNN"] },
+                          { id: "kientruc", label: "Kiến trúc", icon: "🏛️", categories: ["Kiến trúc"] },
+                          { id: "mep", label: "MEP & Cơ điện", icon: "⚡", categories: ["MEP"] },
+                          { id: "vatlieu", label: "Vật liệu", icon: "🏗️", categories: ["Vật liệu"] },
+                          { id: "qckt", label: "Quy chuẩn kỹ thuật", icon: "📒", categories: ["Quy chuẩn kỹ thuật"] },
+                          { id: "vbhh", label: "Văn bản hiện hành", icon: "📜", categories: ["Văn bản hiện hành"] },
+                        ];
+
+                        const getFilesInFolder = (folderCats: string[]) => {
+                          return allFiles.filter(item => {
+                            if (item.category === "Bản vẽ thiết kế") return false;
+                            if (compareSearch && !item.name.toLowerCase().includes(compareSearch.toLowerCase())) {
+                              return false;
+                            }
+                            const cat = item.category || "Văn bản hiện hành";
+                            if (folderCats.includes(cat)) return true;
+                            if (folderCats.includes("Văn bản hiện hành")) {
+                              const ALL_DEFINED = ["Bản vẽ thiết kế", "Kiến trúc", "Kết cấu", "TCVN", "TCNN", "MEP", "Quy chuẩn kỹ thuật", "Vật liệu"];
+                              if (!ALL_DEFINED.includes(cat)) return true;
+                            }
+                            return false;
+                          });
+                        };
+
+                        const totalFilteredCount = allFiles.filter(item => {
+                          if (item.category === "Bản vẽ thiết kế") return false;
+                          return item.name.toLowerCase().includes(compareSearch.toLowerCase());
+                        }).length;
+
+                        if (totalFilteredCount === 0) {
+                          return (
+                            <p className="text-center text-xs text-gray-450 py-6 uppercase tracking-widest font-black bg-gray-50 rounded-xl border border-dashed border-gray-200">
+                              Chưa có tài liệu tiêu chuẩn khớp từ khóa trong thư viện
+                            </p>
+                          );
+                        }
+
+                        return FOLDER_CATEGORIES.map(folder => {
+                          const filesInFolder = getFilesInFolder(folder.categories);
+                          if (filesInFolder.length === 0) return null;
+
+                          const isExpanded = !!expandedFolders[folder.id];
+                          const selectedInFolder = filesInFolder.filter(f => selectedCompareIds.includes(f.id));
+                          const isAllSelected = filesInFolder.length > 0 && selectedInFolder.length === filesInFolder.length;
+
+                          const handleToggleFolderExpanded = () => {
+                            setExpandedFolders(prev => ({
+                              ...prev,
+                              [folder.id]: !prev[folder.id]
+                            }));
+                          };
+
+                          const handleSelectAllInFolder = (e: React.MouseEvent) => {
+                            e.stopPropagation();
+                            const folderFileIds = filesInFolder.map(f => f.id);
+                            setSelectedCompareIds(prev => {
+                              const filtered = prev.filter(id => !folderFileIds.includes(id));
+                              return [...filtered, ...folderFileIds];
+                            });
+                          };
+
+                          const handleDeselectAllInFolder = (e: React.MouseEvent) => {
+                            e.stopPropagation();
+                            const folderFileIds = filesInFolder.map(f => f.id);
+                            setSelectedCompareIds(prev => prev.filter(id => !folderFileIds.includes(id)));
+                          };
+
+                          return (
+                            <div key={folder.id} className="bg-white rounded-xl border border-gray-150 overflow-hidden shadow-3xs">
+                              <div 
+                                onClick={handleToggleFolderExpanded}
+                                className={cn(
+                                   "flex items-center justify-between px-3.5 py-2.5 bg-gray-50/70 border-b border-gray-150 hover:bg-slate-100/50 cursor-pointer select-none transition-all",
+                                   isExpanded ? "bg-slate-50/80" : "border-b-transparent"
+                                )}
+                              >
+                                <div className="flex items-center gap-2 min-w-0">
+                                  {isExpanded ? (
+                                    <ChevronDown className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                  ) : (
+                                    <ChevronRight className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+                                  )}
+                                  <span className="text-xs font-black text-gray-750 uppercase tracking-widest truncate">
+                                    {folder.icon} {folder.label}
+                                  </span>
+                                  <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 rounded text-[9px] font-bold block shrink-0">
+                                    {selectedInFolder.length}/{filesInFolder.length}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  {isAllSelected ? (
+                                    <button
+                                      type="button"
+                                      onClick={handleDeselectAllInFolder}
+                                      className="text-[9.5px] font-black text-red-500 uppercase tracking-wider hover:text-red-700 bg-red-50 px-2 py-0.5 rounded cursor-pointer"
+                                    >
+                                      Bỏ chọn
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={handleSelectAllInFolder}
+                                      className="text-[9.5px] font-black text-indigo-600 uppercase tracking-wider hover:text-indigo-800 bg-indigo-50 px-2 py-0.5 rounded cursor-pointer"
+                                    >
+                                      Chọn hết
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {isExpanded && (
+                                <div className="p-2 bg-white space-y-1.5 border-l-2 border-dashed border-gray-100 ml-4 mr-2 my-1.5">
+                                  {filesInFolder.map(item => {
+                                    const isChecked = selectedCompareIds.includes(item.id);
+                                    const handleToggle = () => {
+                                      setSelectedCompareIds(prev => {
+                                        if (prev.includes(item.id)) {
+                                          return prev.filter(id => id !== item.id);
+                                        } else {
+                                          return [...prev, item.id];
+                                        }
+                                      });
+                                    };
+                                    return (
+                                      <div
+                                        key={item.id}
+                                        onClick={handleToggle}
+                                        className={cn(
+                                          "flex items-center justify-between p-2.5 rounded-lg border transition-all duration-200 cursor-pointer text-xs",
+                                          isChecked ? "bg-indigo-50/30 border-indigo-300" : "bg-white border-gray-150 hover:bg-slate-50/50"
+                                        )}
+                                      >
+                                        <div className="flex items-center gap-2.5 min-w-0 flex-1 pr-2">
+                                          <input
+                                            type="checkbox"
+                                            checked={isChecked}
+                                            onChange={handleToggle}
+                                            onClick={(e) => e.stopPropagation()}
+                                            className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500 cursor-pointer shrink-0"
+                                          />
+                                          <div className="min-w-0">
+                                            <p className="font-bold text-gray-800 truncate uppercase tracking-wide">{item.name}</p>
+                                            <p className="text-[9px] text-gray-450 font-medium">
+                                              {item.category || "Tiêu chuẩn"} • {item.size || "0 MB"}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Error indicator */}
               {compareError && (
                 <div className="flex items-center gap-2 p-4 bg-red-50 text-red-600 rounded-xl border border-red-100 text-xs sm:text-sm font-bold animate-shake">
                   <AlertCircle className="w-5 h-5 shrink-0" />
@@ -3713,57 +3188,62 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 </div>
               )}
 
+              {/* Trigger Button */}
               <button
-                onClick={handleCompareExecution}
-                disabled={isComparing || selectedCompareIds.length === 0}
-                className="w-full bg-indigo-600 text-white py-5 rounded-[24px] font-black text-sm uppercase tracking-[0.2em] shadow-xl shadow-indigo-600/20 hover:scale-[1.01] active:scale-[0.99] transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                onClick={() => handleCompareExecution()}
+                disabled={isComparing || (!comparePrompt.trim() && selectedCompareIds.length === 0)}
+                className="w-full bg-indigo-600 text-white py-4.5 rounded-[22px] font-black text-sm uppercase tracking-[0.18em] shadow-xl shadow-indigo-600/20 hover:scale-[1.008] active:scale-[0.99] transition-all flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 cursor-pointer"
               >
                 {isComparing ? (
-                  <Loader2 className="w-6 h-6 animate-spin" />
+                  <Loader2 className="w-5 h-5 animate-spin" />
                 ) : (
-                  <ArrowLeftRight className="w-6 h-6" />
+                  <Sparkles className="w-5 h-5" />
                 )}
-                {isComparing ? "ĐANG TRA CỨU & ĐỐI CHIẾU..." : `BẮT ĐẦU TRẠM TRA CỨU & ĐỐI CHIẾU (${selectedCompareIds.length} TÀI LIỆU)`}
+                {isComparing 
+                  ? "AI ĐANG TỔNG HỢP & TÓM TẮT TIÊU CHUẨN..." 
+                  : (selectedCompareIds.length > 0 
+                      ? `⚡ BẮT ĐẦU TÓM TẮT (${selectedCompareIds.length} TÀI LIỆU ĐÃ CHỌN)` 
+                      : "⚡ BẮT ĐẦU TÓM TẮT TIÊU CHUẨN")}
               </button>
             </div>
 
-            {/* Custom Steps Visualizer for Comparison */}
+            {/* Custom Steps Visualizer */}
             {isComparing && (
               <div className="bg-white border border-gray-100 rounded-[32px] p-8 shadow-sm flex flex-col items-center justify-center text-center space-y-4 animate-pulse">
                 <div className="relative">
                   <div className="w-16 h-16 rounded-full border-4 border-indigo-100 border-t-indigo-600 animate-spin" />
-                  <Scale className="w-6 h-6 text-indigo-600 absolute top-5 left-5" />
+                  <BookOpen className="w-6 h-6 text-indigo-600 absolute top-5 left-5" />
                 </div>
                 <div className="space-y-2">
                   <p className="text-gray-950 text-base font-black uppercase tracking-widest">
-                    {compareStep === 1 ? "KẾT NỐI SERVER TRUY LIÊN SỐ LIỆU..." :
-                     compareStep === 2 ? "ĐANG KHAI THÁC VÀ ĐỒNG BỘ CLOUD..." :
-                     "SỬ DỤNG TRÍ TUỆ NHÂN TẠO TRUY VẤN CHÍNH XÁC..."}
+                    {compareStep === 1 ? "KẾT NỐI VÀ XÁC ĐỊNH ĐIỀU KHOẢN TIÊU CHUẨN..." :
+                     compareStep === 2 ? "TRÍCH XUẤT ĐIỀU KHOẢN, CÔNG THỨC & BẢNG SỐ LIỆU..." :
+                     "AI ĐANG TỔNG HỢP VÀ TÓM TẮT SÚC TÍCH NỘI DUNG..."}
                   </p>
                   <p className="text-gray-450 text-xs sm:text-sm uppercase tracking-widest leading-relaxed">
-                    {compareStep === 1 && "Đang xác thực thông tin tài liệu bảo mật trên và kết nối với Server API."}
-                    {compareStep === 2 && "Đồng bộ hóa ngầm File PDF lên Google Cloud Files đại lý và giải nén dữ liệu."}
-                    {compareStep === 3 && "Gemini đang tra cứu đa tầng, trích xuất thông tin & đối chiếu..."}
+                    {compareStep === 1 && "Đang đối chiếu số hiệu tiêu chuẩn (TCVN/QCVN) tương ứng với câu hỏi."}
+                    {compareStep === 2 && "Khai thác dữ liệu điều khoản, bảng tra cứu thực hành và công thức tính toán."}
+                    {compareStep === 3 && "Gemini đang tóm tắt súc tích, lập bảng tra cứu nhanh và chỉ dẫn thực hành bản vẽ..."}
                   </p>
                 </div>
               </div>
             )}
 
-            {/* Step 3: Comparison Results Render */}
+            {/* Summary Results Render */}
             {compareResult && (
               <div className="bg-white border border-gray-100 rounded-[32px] p-6 shadow-sm space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-3">
                   <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-indigo-500" />
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
                     <h4 className="text-xs sm:text-sm font-black text-indigo-950 uppercase tracking-[0.15em]">
-                      KẾT QUẢ ĐỐI CHIẾU & TỔNG HỢP AI CHÍNH XÁC CAO
+                      BẢN TÓM TẮT NỘI DUNG TIÊU CHUẨN KỸ THUẬT
                     </h4>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <button
-                      onClick={() => handleDownloadText(compareResult, "bao_cao_doi_chieu_tieu_chuan.txt")}
+                      onClick={() => handleDownloadText(compareResult, "tom_tat_tieu_chuan_xay_dung.txt")}
                       className="p-2.5 text-gray-500 hover:text-emerald-600 bg-gray-50 rounded-lg border border-gray-150/50 hover:bg-emerald-50 transition-all flex items-center gap-1.5 text-xs font-black uppercase tracking-widest cursor-pointer shadow-sm active:scale-95"
-                      title="Xuất kết quả so sánh đối chiếu ra tệp văn bản (.txt)"
+                      title="Xuất bản tóm tắt ra tệp văn bản (.txt)"
                     >
                       <Download className="w-4 h-4" />
                       <span>Xuất văn bản</span>
@@ -3771,15 +3251,15 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                     <button
                       onClick={() => triggerSummarize(compareResult)}
                       className="p-2.5 text-indigo-600 bg-indigo-50 border border-indigo-150 hover:bg-indigo-600 hover:text-white rounded-lg transition-all flex items-center gap-1.5 text-xs font-black uppercase tracking-widest cursor-pointer shadow-sm active:scale-95"
-                      title="Sử dụng Gemini AI để tóm tắt cực ngắn trước khi sao chép"
+                      title="Sử dụng Gemini AI để tóm tắt siêu ngắn trước khi sao chép"
                     >
                       <Sparkles className="w-4 h-4" />
-                      <span>Tóm tắt (AI)</span>
+                      <span>Tóm tắt cực ngắn</span>
                     </button>
                     <button
                       onClick={() => handleCopyText(compareResult, "compare_match")}
-                      className="p-2.5 text-gray-500 hover:text-indigo-600 bg-gray-50 rounded-lg border border-gray-150/50 hover:bg-indigo-50 transition-all flex items-center gap-1.5 text-xs font-black uppercase tracking-widest"
-                      title="Sao chép kết quả"
+                      className="p-2.5 text-gray-500 hover:text-indigo-600 bg-gray-50 rounded-lg border border-gray-150/50 hover:bg-indigo-50 transition-all flex items-center gap-1.5 text-xs font-black uppercase tracking-widest cursor-pointer shadow-sm"
+                      title="Sao chép nội dung"
                     >
                       {copiedId === "compare_match" ? (
                         <>
@@ -3797,11 +3277,11 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                       <button
                         onClick={async () => {
                           setSavingId("compare_note");
-                          await onSaveNote(`### KẾT QUẢ SO SÁNH ĐA TÀI LIỆU\n\n**Yêu cầu:** _${comparePrompt || "So sánh kỹ thuật"}_ \n\n${compareResult}`);
+                          await onSaveNote(`### TÓM TẮT TIÊU CHUẨN KỸ THUẬT\n\n**Chủ đề:** _${comparePrompt || "Tóm tắt tiêu chuẩn"}_ \n\n${compareResult}`);
                           setSavingId(null);
                           setSavedIds(prev => [...prev, "compare_note"]);
                         }}
-                        className="p-2.5 text-gray-500 hover:text-indigo-600 bg-gray-50 rounded-lg border border-gray-150/50 hover:bg-indigo-50 transition-all flex items-center gap-1.5 text-xs font-black uppercase tracking-widest"
+                        className="p-2.5 text-gray-500 hover:text-indigo-600 bg-gray-50 rounded-lg border border-gray-150/50 hover:bg-indigo-50 transition-all flex items-center gap-1.5 text-xs font-black uppercase tracking-widest cursor-pointer shadow-sm"
                         disabled={savingId === "compare_note"}
                       >
                         {savingId === "compare_note" ? (
@@ -3837,6 +3317,116 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                 </div>
               </div>
             )}
+
+            {/* Quick Topic Suggestions - GỢI Ý THAM KHẢO ĐẶT PHÍA DƯỚI */}
+            <div className="bg-white border border-gray-100 rounded-[32px] p-6 shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-xs sm:text-[13px] font-black text-gray-800 uppercase tracking-[0.15em] flex items-center gap-2">
+                    <span>💡 GỢI Ý CHỦ ĐỀ TRA CỨU & TÓM TẮT NHANH</span>
+                    <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
+                      BẤM ĐỂ CHỌN NGAY
+                    </span>
+                  </h4>
+                  <p className="text-xs text-gray-500 font-medium mt-0.5">
+                    Click vào một chủ đề kỹ thuật để hệ thống tự động điền nội dung và tiến hành tóm tắt ngay:
+                  </p>
+                </div>
+                
+                {selectedTopicId && (
+                  <button
+                    onClick={() => {
+                      setSelectedTopicId(null);
+                      setComparePrompt("");
+                    }}
+                    className="text-xs font-bold text-gray-500 hover:text-red-600 underline self-start sm:self-auto cursor-pointer"
+                  >
+                    Bỏ chọn chủ đề
+                  </button>
+                )}
+              </div>
+
+              {/* Category Filter Pills */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar text-xs">
+                {[
+                  { id: "all", label: "Tất cả chủ đề" },
+                  { id: "ketcau", label: "Kết cấu BTCT" },
+                  { id: "kientruc", label: "Kiến trúc & QH" },
+                  { id: "pccc", label: "PCCC & Lối thoát" },
+                  { id: "nenmong", label: "Nền móng & Cọc" },
+                  { id: "mep", label: "Cơ điện & Tiếp địa" },
+                ].map((cat) => (
+                  <button
+                    key={cat.id}
+                    onClick={() => setTopicCategoryFilter(cat.id)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-xl font-bold uppercase tracking-wider transition-all whitespace-nowrap text-[10.5px] border cursor-pointer",
+                      topicCategoryFilter === cat.id
+                        ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
+                        : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
+                    )}
+                  >
+                    {cat.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Topics Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[360px] overflow-y-auto pr-1 no-scrollbar">
+                {STANDARD_TOPICS
+                  .filter(t => topicCategoryFilter === "all" || t.category === topicCategoryFilter)
+                  .map((topic) => {
+                    const isSelected = selectedTopicId === topic.id;
+                    return (
+                      <div
+                        key={topic.id}
+                        onClick={() => handleSelectTopic(topic)}
+                        className={cn(
+                          "p-4 rounded-2xl border transition-all text-left flex flex-col justify-between gap-3 cursor-pointer group hover:shadow-md",
+                          isSelected
+                            ? "bg-indigo-50/70 border-indigo-400 ring-2 ring-indigo-500/20"
+                            : "bg-[#fbfcfe] border-gray-200/70 hover:border-indigo-300 hover:bg-white"
+                        )}
+                      >
+                        <div className="space-y-1.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-lg">{topic.icon}</span>
+                              <h5 className="text-xs font-black text-gray-900 group-hover:text-indigo-600 transition-colors uppercase tracking-wide">
+                                {topic.title}
+                              </h5>
+                            </div>
+                            <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded text-[9.5px] font-black tracking-wider border border-indigo-100 shrink-0">
+                              {topic.code}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-gray-500 line-clamp-2 leading-relaxed">
+                            {topic.shortDesc}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2 border-t border-gray-150/70 text-[10px]">
+                          <span className="font-bold text-gray-400 uppercase tracking-wider">
+                            {topic.badge}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSelectTopic(topic);
+                              handleCompareExecution(topic.query);
+                            }}
+                            className="inline-flex items-center gap-1 font-black text-indigo-600 hover:text-indigo-800 bg-white hover:bg-indigo-50 px-2.5 py-1 rounded-lg border border-indigo-200 shadow-3xs cursor-pointer active:scale-95 transition-all"
+                          >
+                            <Sparkles className="w-3 h-3 text-indigo-600" />
+                            <span>Tóm tắt ngay</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
           </div>
         ) : mode === "general_chat" ? (
           <>
@@ -5941,6 +5531,8 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
         </div>,
         document.body
       )}
+
+      {/* Floating Scroll to Bottom Chat Bubble removed as requested */}
     </div>
   );
 }
