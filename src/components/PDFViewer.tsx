@@ -10,7 +10,7 @@ import {
   Columns2, Link2, Unlink2, ArrowLeftRight, Check, Copy,
   ChevronDown, ChevronUp, FileDiff
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, fetchWithServerRetry } from "@/lib/utils";
 import { PDFFile } from "@/types";
 import * as pdfjs from "pdfjs-dist";
 
@@ -1075,11 +1075,20 @@ export function PDFViewer({
         }
       };
 
-      const resp = await fetch("/api/compare-drawings", {
+      const resp = await fetchWithServerRetry("/api/compare-drawings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
-      });
+      }, 5, 2000);
+
+      const contentType = resp.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const text = await resp.text().catch(() => "");
+        if (text.includes("Starting Server") || resp.status === 502 || resp.status === 503) {
+          throw new Error("Máy chủ AI đang khởi động (Cold Start). Vui lòng thử lại sau vài giây.");
+        }
+        throw new Error("Phản hồi từ máy chủ không hợp lệ. Vui lòng thử lại.");
+      }
 
       if (!resp.ok) {
         const errJson = await resp.json().catch(() => ({}));

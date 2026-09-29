@@ -1556,18 +1556,17 @@ export function ChatPanel({
           isStandardSummary: true,
           summaryType: summaryScope
         })
-      }, 3, 2000);
+      }, 5, 2000);
 
       setCompareStep(3); // AI is writing concise summary
 
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
         const errorHtml = await response.text().catch(() => "");
-        console.error("Non-JSON Response from compare API:", errorHtml.substring(0, 500));
         if (errorHtml.includes("Starting Server") || response.status === 502 || response.status === 503) {
-          throw new Error("Máy chủ AI đang trong quá trình khởi động lại hoặc đang quá tải tạm thời. Vui lòng bấm '⚡ Bắt đầu tóm tắt' lại sau 2 giây.");
+          throw new Error("Máy chủ AI đang trong quá trình khởi động lại hoặc khởi động nguội (Cold Start). Vui lòng bấm '⚡ Bắt đầu tóm tắt' lại sau vài giây.");
         }
-        throw new Error(`AI Server phản hồi không đúng cấu trúc (Nhận HTML thay vì JSON). Vui lòng thử lại sau giây lát.`);
+        throw new Error("Máy chủ AI đang bận hoặc nạp dữ liệu. Vui lòng bấm thử lại sau giây lát.");
       }
 
       if (!response.ok) {
@@ -1770,16 +1769,15 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
           isCompliance: complianceRuleType !== "design_manager",
           isDesignManager: complianceRuleType === "design_manager"
         })
-      }, 3, 2000);
+      }, 5, 2000);
 
       const contentType = response.headers.get("content-type") || "";
       if (!contentType.includes("application/json")) {
         const errorHtml = await response.text().catch(() => "");
-        console.error("Non-JSON error from compliance API:", errorHtml.substring(0, 500));
         if (errorHtml.includes("Starting Server") || response.status === 502 || response.status === 503) {
-          throw new Error("Máy chủ AI đang trong quá trình khởi động lại hoặc đang quá tải tạm thời. Vui lòng thử lại sau 2-3 giây.");
+          throw new Error("Máy chủ AI đang trong quá trình khởi động lại hoặc khởi động nguội (Cold Start). Vui lòng thử lại sau vài giây.");
         }
-        throw new Error(`AI Server phản hồi không đúng cấu trúc (Nhận HTML thay vì JSON). Vui lòng thử lại sau giây lát.`);
+        throw new Error("Máy chủ AI đang bận hoặc nạp dữ liệu. Vui lòng thử lại sau giây lát.");
       }
 
       if (!response.ok) {

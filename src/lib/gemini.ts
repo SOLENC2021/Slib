@@ -1,4 +1,4 @@
-import { getApiUrl } from "./utils";
+import { getApiUrl, fetchWithServerRetry } from "./utils";
 
 export interface ExtractionField {
   name: string;
@@ -27,7 +27,7 @@ export async function chatWithDocument(
   isSearchGrounding?: boolean
 ) {
   try {
-    const response = await fetch(getApiUrl("/api/chat"), {
+    const response = await fetchWithServerRetry("/api/chat", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -54,7 +54,7 @@ export async function chatWithDocument(
         chatbotRole,
         customSystemInstruction
       }),
-    });
+    }, 5, 2000);
 
     const contentType = response.headers.get("content-type");
     if (!response.ok) {
@@ -302,13 +302,13 @@ export async function extractDataFromText(
       required: fields.map(f => f.name),
     };
 
-    const response = await fetch(getApiUrl("/api/extract-fields"), {
+    const response = await fetchWithServerRetry("/api/extract-fields", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ text, schema, geminiFileUri, fileId, fileUrl, fileName }),
-    });
+    }, 5, 2000);
 
     const contentType = response.headers.get("content-type");
     if (!response.ok) {

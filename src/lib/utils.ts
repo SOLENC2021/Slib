@@ -196,7 +196,7 @@ export function getApiUrl(path: string): string {
 export async function fetchWithServerRetry(
   urlOrPath: string,
   options?: RequestInit,
-  maxRetries: number = 3,
+  maxRetries: number = 6,
   initialDelayMs: number = 1500
 ): Promise<Response> {
   const targetUrl = getApiUrl(urlOrPath);
@@ -210,7 +210,7 @@ export async function fetchWithServerRetry(
       const contentType = response.headers.get("content-type") || "";
       const isGatewayError = status === 502 || status === 503 || status === 504;
 
-      // Check for HTML response from an API endpoint
+      // Check for HTML response from an API endpoint (e.g. Cloud Run Starting Server...)
       if (isGatewayError || (contentType.includes("text/html") && targetUrl.includes("/api/"))) {
         const cloned = response.clone();
         const bodyText = await cloned.text().catch(() => "");
@@ -221,11 +221,16 @@ export async function fetchWithServerRetry(
           bodyText.includes("503 Service Temporarily Unavailable") ||
           bodyText.includes("504 Gateway Time-out");
 
-        if (attempt < maxRetries && (isStartingServer || isGatewayError)) {
-          console.warn(`[fetchWithServerRetry] Server starting up / warming up (Attempt ${attempt + 1}/${maxRetries + 1}). Retrying in ${delayMs}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delayMs));
-          delayMs = Math.floor(delayMs * 1.5);
-          continue;
+        if (isStartingServer || isGatewayError) {
+          if (attempt < maxRetries) {
+            console.warn(`[fetchWithServerRetry] Máy chủ AI đang khởi động / nạp tài nguyên (Lần thử ${attempt + 1}/${maxRetries + 1}). Tự động thử lại sau ${delayMs}ms...`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+            delayMs = Math.min(Math.floor(delayMs * 1.4), 4000);
+            continue;
+          } else {
+            // Retries exhausted and server is still in cold-start/HTML state: NEVER return HTML to API caller!
+            throw new Error("Máy chủ AI (Cloud Run) đang trong quá trình khởi động nguội (Cold Start). Quá trình này cần khoảng 10-15 giây. Vui lòng bấm thử lại sau giây lát!");
+          }
         }
       }
 
@@ -233,6 +238,12 @@ export async function fetchWithServerRetry(
     } catch (err: any) {
       lastError = err;
       const errMsg = err?.message || String(err);
+      
+      // If our own thrown Cold Start error, propagate it
+      if (errMsg.includes("Cold Start") || errMsg.includes("khởi động nguội")) {
+        throw err;
+      }
+
       const isNetworkTransient = 
         errMsg.includes("Failed to fetch") || 
         errMsg.includes("NetworkError") || 
@@ -240,9 +251,9 @@ export async function fetchWithServerRetry(
         errMsg.includes("Network request failed");
 
       if (attempt < maxRetries && isNetworkTransient) {
-        console.warn(`[fetchWithServerRetry] Network transient failure (Attempt ${attempt + 1}/${maxRetries + 1}). Retrying in ${delayMs}ms...`);
+        console.warn(`[fetchWithServerRetry] Lỗi mạng tạm thời (Lần thử ${attempt + 1}/${maxRetries + 1}). Thử lại sau ${delayMs}ms...`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
-        delayMs = Math.floor(delayMs * 1.5);
+        delayMs = Math.min(Math.floor(delayMs * 1.4), 4000);
         continue;
       }
       throw err;
