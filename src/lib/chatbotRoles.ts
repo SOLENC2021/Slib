@@ -25,8 +25,8 @@ export const GEMINI_MODELS: {
     icon: "Brain"
   },
   {
-    id: "gemini-3.5-flash",
-    name: "Gemini 3.5 Flash",
+    id: "gemini-flash-latest",
+    name: "Gemini Flash Latest",
     tag: "Tác vụ tổng quát & Hội thoại",
     description: "Mô hình toàn năng cho tác vụ tổng quát, tra cứu tiêu chuẩn, đối chiếu văn bản pháp lý và hội thoại đa lượt liên tục.",
     badgeColor: "bg-indigo-100 text-indigo-700 border-indigo-200",

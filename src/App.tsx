@@ -636,6 +636,7 @@ export default function App() {
 
       setGeneralMessages((prev) => [...prev, userMsg]);
       setIsProcessing(true);
+      const aiMsgId = (Date.now() + 1).toString();
 
       try {
         const history = generalMessages.map(m => ({
@@ -665,13 +666,12 @@ export default function App() {
             });
         }
 
-        const aiMsgId = (Date.now() + 1).toString();
         const placeholderMsg: Message = {
           id: aiMsgId,
           role: "ai",
           content: "",
           timestamp: Date.now(),
-          modelUsed: isSearchGrounding ? "gemini-3.5-flash" : model,
+          modelUsed: isSearchGrounding ? "gemini-3.8-flash" : model,
           roleUsed: chatbotRole as any,
           isSearchGrounding,
         };
@@ -699,7 +699,7 @@ export default function App() {
               prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText } : m))
             );
           },
-          isSearchGrounding ? "gemini-3.5-flash" : model,
+          isSearchGrounding ? "gemini-3.8-flash" : model,
           chatbotRole,
           customSystemInstruction,
           isSearchGrounding
@@ -708,6 +708,14 @@ export default function App() {
         if (result?.text) {
           accumulatedText = result.text;
         }
+
+        if (!accumulatedText.trim()) {
+          accumulatedText = "⚠️ Máy chủ AI chưa hoàn tất câu trả lời (hoặc đang khởi động lại). Vui lòng gửi lại câu hỏi hoặc thử lại sau 2-3 giây.";
+        }
+
+        setGeneralMessages((prev) =>
+          prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText, groundingSources: result?.groundingSources } : m))
+        );
 
         if (result?.groundingSources && result.groundingSources.length > 0) {
           setGeneralMessages((prev) =>
@@ -766,24 +774,41 @@ export default function App() {
           }
         }
 
-        const errorMsg: Message = {
-          id: (Date.now() + 1).toString(),
-          role: "ai",
-          content: isQuotaErr
-            ? "⚠️ Hệ thống đã HẾT HẠN MỨC (Quota) yêu cầu tới trí tuệ nhân tạo Gemini ngày hôm nay hoặc chưa cấu hình thanh toán. Vui lòng bấm vào thông báo nâng hạn mức hiển thị trên màn hình hoặc liên hệ Quản trị viên của bạn."
-            : isPermError 
-              ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
-              : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
-          timestamp: Date.now(),
-        };
-        setGeneralMessages((prev) => [...prev, errorMsg]);
+        const errorContent = isQuotaErr
+          ? "⚠️ Hệ thống đã HẾT HẠN MỨC (Quota) yêu cầu tới trí tuệ nhân tạo Gemini ngày hôm nay hoặc chưa cấu hình thanh toán. Vui lòng bấm vào thông báo nâng hạn mức hiển thị trên màn hình hoặc liên hệ Quản trị viên của bạn."
+          : isPermError 
+            ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
+            : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu máy chủ đang khởi động (Cold Start), vui lòng gửi lại câu hỏi sau vài giây.*`;
+
+        setGeneralMessages((prev) => {
+          const hasPlaceholder = prev.some(m => m.id === aiMsgId);
+          if (hasPlaceholder) {
+            return prev.map(m => m.id === aiMsgId ? { ...m, content: errorContent } : m);
+          }
+          return [...prev, { id: aiMsgId, role: "ai", content: errorContent, timestamp: Date.now() }];
+        });
       } finally {
         setIsProcessing(false);
       }
       return;
     }
 
-    if (!activeFile) return;
+    if (!activeFile) {
+      console.log("[Auto-Routing] Chưa chọn tệp tài liệu cụ thể -> tự động chuyển câu hỏi sang Hỏi Đáp Toàn Thư Viện...");
+      return handleSendMessage(
+        content,
+        image,
+        true,
+        undefined,
+        isThinking,
+        isImageGeneration,
+        attachedPdf,
+        model,
+        chatbotRole,
+        customSystemInstruction,
+        isSearchGrounding
+      );
+    }
 
     const userMsg: Message = {
       id: Date.now().toString(),
@@ -795,6 +820,7 @@ export default function App() {
 
     setMessages((prev) => [...prev, userMsg]);
     setIsProcessing(true);
+    const aiMsgId = (Date.now() + 1).toString();
 
     try {
       const history = messages.map(m => ({
@@ -827,13 +853,12 @@ export default function App() {
         }
       }
 
-      const aiMsgId = (Date.now() + 1).toString();
       const placeholderMsg: Message = {
         id: aiMsgId,
         role: "ai",
         content: "",
         timestamp: Date.now(),
-        modelUsed: isSearchGrounding ? "gemini-3.5-flash" : model,
+        modelUsed: isSearchGrounding ? "gemini-3.8-flash" : model,
         roleUsed: chatbotRole as any,
         isSearchGrounding,
       };
@@ -861,7 +886,7 @@ export default function App() {
             prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText } : m))
           );
         },
-        isSearchGrounding ? "gemini-3.5-flash" : model,
+        isSearchGrounding ? "gemini-3.8-flash" : model,
         chatbotRole,
         customSystemInstruction,
         isSearchGrounding
@@ -870,6 +895,14 @@ export default function App() {
       if (result?.text) {
         accumulatedText = result.text;
       }
+
+      if (!accumulatedText.trim()) {
+        accumulatedText = "⚠️ Máy chủ AI chưa hoàn tất câu trả lời (hoặc đang khởi động lại). Vui lòng gửi lại câu hỏi sau vài giây.";
+      }
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === aiMsgId ? { ...m, content: accumulatedText, groundingSources: result?.groundingSources } : m))
+      );
 
       if (result?.groundingSources && result.groundingSources.length > 0) {
         setMessages((prev) =>
@@ -919,17 +952,19 @@ export default function App() {
         setFiles(prev => prev.map(f => f.id === activeFile.id ? { ...f, geminiFileUri: undefined } : f));
       }
 
-      const errorMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "ai",
-        content: isQuotaErr
-          ? "⚠️ Hệ thống đã HẾT HẠN MỨC (Quota) yêu cầu tới trí tuệ nhân tạo Gemini ngày hôm nay hoặc chưa cấu hình thanh toán. Vui lòng bấm vào thông báo nâng hạn mức hiển thị trên màn hình hoặc liên hệ Quản trị viên của bạn."
-          : isPermError 
-            ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
-            : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu lỗi liên quan đến API Key, hãy kiểm tra bảng Secrets trong AI Studio.*`,
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      const errorContent = isQuotaErr
+        ? "⚠️ Hệ thống đã HẾT HẠN MỨC (Quota) yêu cầu tới trí tuệ nhân tạo Gemini ngày hôm nay hoặc chưa cấu hình thanh toán. Vui lòng bấm vào thông báo nâng hạn mức hiển thị trên màn hình hoặc liên hệ Quản trị viên của bạn."
+        : isPermError 
+          ? "⚠️ Liên kết đệm tạm của Google Gemini đối với tài liệu đã hết hạn (40 giờ). Hệ thống đang tự động khôi phục chạy ngầm từ cơ sở dữ liệu Firebase của bạn. Vui lòng thử lại sau 2-3 giây, bạn HOÀN TOÀN KHÔNG CẦN tải lại tệp từ máy tính."
+          : `❌ LỖI HỆ THỐNG: ${error.message || "Không thể kết nối với dịch vụ AI."}\n\n*Gợi ý: Nếu máy chủ đang khởi động (Cold Start), vui lòng thử lại sau vài giây.*`;
+
+      setMessages((prev) => {
+        const hasPlaceholder = prev.some(m => m.id === aiMsgId);
+        if (hasPlaceholder) {
+          return prev.map(m => m.id === aiMsgId ? { ...m, content: errorContent } : m);
+        }
+        return [...prev, { id: aiMsgId, role: "ai", content: errorContent, timestamp: Date.now() }];
+      });
     } finally {
       setIsProcessing(false);
     }

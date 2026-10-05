@@ -68,6 +68,10 @@ async function callAIWithRetry(
     }
   }
 
+  if (primaryModel === "gemini-3.5-flash") {
+    primaryModel = "gemini-3.8-flash";
+  }
+
   let lastError;
   const aiClient = getAIClient();
   let currentModel = primaryModel;
@@ -1376,10 +1380,10 @@ async function startServer() {
       if (isGeneral) {
         console.log("Processing general chat query using gemini-3.8-flash...");
         
-        const runGeneralChat = async (filesToAttach: any[], useFileUris = false, isCompact = false) => {
+        const runGeneralChat = async (filesToAttach: any[], useFileUris = false, isCompact = false, contextParam?: string) => {
           const userParts: any[] = [];
           
-          let safeContext = compiledContext;
+          let safeContext = contextParam !== undefined ? contextParam : (typeof compiledContext !== "undefined" ? compiledContext : "");
           const maxTextContextLength = isCompact ? 18000 : 45000;
           if (safeContext.length > maxTextContextLength) {
             safeContext = safeContext.substring(0, maxTextContextLength) + "\n...[Nội dung bối cảnh được rút gọn]";
@@ -1602,12 +1606,12 @@ async function startServer() {
         const attachableFiles = contextFilesToUse.filter(f => f.score > 0 || !compiledContext.trim().length);
 
         try {
-          response = await runGeneralChat(attachableFiles, false, false);
+          response = await runGeneralChat(attachableFiles, false, false, compiledContext);
         } catch (genErr: any) {
           if (isTokenLimitError(genErr)) {
             console.warn("[Auto Self-Healing] Token limit exceeded in general chat. Falling back to compact mode...");
             try {
-              response = await runGeneralChat(attachableFiles, false, true);
+              response = await runGeneralChat(attachableFiles, false, true, compiledContext);
             } catch (limitFallbackErr: any) {
               throw limitFallbackErr;
             }

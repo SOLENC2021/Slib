@@ -4,7 +4,7 @@ import {
   Send, Zap, ListFilter, Save, CheckCircle2, 
   AlertCircle, Loader2, Copy, Maximize2, Download,
   Plus, Trash2, Settings, Sparkles, X, LayoutGrid,
-  Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, Minimize2, BookOpen, FileText, Languages, Paperclip,
+  Check, Scale, Search, ArrowLeftRight, ZoomIn, ZoomOut, RotateCcw, RefreshCw, Minimize2, BookOpen, FileText, Languages, Paperclip,
   Presentation, ExternalLink, ChevronDown, ChevronRight, Folder, FolderOpen, List, Brain, Info, Bot, Globe
 } from "lucide-react";
 import pptxgen from "pptxgenjs";
@@ -617,29 +617,11 @@ export function ChatPanel({
   // Scrolling detection for input area fading effect
   const [isScrolled, setIsScrolled] = useState(false);
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
-  const [isComposerCollapsed, setIsComposerCollapsed] = useState(true);
+  const [isComposerCollapsed, setIsComposerCollapsed] = useState(false);
   const [aiMode, setAiMode] = useState<"standard" | "thinking" | "image">("standard");
   const [isSearchGrounding, setIsSearchGrounding] = useState<boolean>(false);
 
   const composerContainerRef = useRef<HTMLDivElement>(null);
-
-  // Auto-collapse when clicking outside the questioning box
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (isComposerCollapsed) return;
-      if (composerContainerRef.current && !composerContainerRef.current.contains(event.target as Node)) {
-        const target = event.target as HTMLElement;
-        if (target.closest('.composer-trigger-btn') || target.closest('[role="dialog"]') || target.tagName === 'INPUT') {
-          return;
-        }
-        setIsComposerCollapsed(true);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
-    };
-  }, [isComposerCollapsed]);
 
   const handleScrollToBottom = () => {
     if (scrollRef.current) {
@@ -3662,6 +3644,33 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 </div>
                               )}
                             </div>
+                          ) : (msg.role === "ai" && !msg.content) ? (
+                            isProcessing ? (
+                              <div className="flex items-center gap-3 py-2 text-indigo-700 font-semibold text-xs sm:text-sm animate-pulse">
+                                <Loader2 className="w-4 h-4 animate-spin text-indigo-600 shrink-0" />
+                                <span>Gemini đang tra cứu quy chuẩn & soạn thảo câu trả lời...</span>
+                              </div>
+                            ) : (
+                              <div className="py-2 text-amber-800 text-xs sm:text-sm flex flex-wrap items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                                  <span>Không nhận được phản hồi từ AI (Máy chủ đang khởi động hoặc gián đoạn mạng).</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const userMsg = generalMessages[generalMessages.findIndex(m => m.id === msg.id) - 1];
+                                    if (userMsg?.content) {
+                                      handleExecuteQuickPrompt(userMsg.content, true);
+                                    }
+                                  }}
+                                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5" />
+                                  <span>Thử lại câu hỏi</span>
+                                </button>
+                              </div>
+                            )
                           ) : (
                             <div className={cn(
                               "prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left",
@@ -4359,10 +4368,10 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                                 </span>
                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider bg-white text-gray-600 border border-gray-200/60 shadow-3xs">
                                   <Sparkles className="w-2.5 h-2.5 text-indigo-500" />
-                                  <span>{msg.isSearchGrounding ? "Gemini 3.5 Flash" : modelConfig.name}</span>
+                                  <span>{msg.isSearchGrounding ? "Gemini 3.8 Flash" : modelConfig.name}</span>
                                 </span>
                                 {(msg.isSearchGrounding || (msg.groundingSources && msg.groundingSources.length > 0)) && (
-                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider bg-blue-50 text-blue-700 border border-blue-200/80 shadow-3xs" title="Được hỗ trợ tra cứu trực tuyến với Google Search Grounding (gemini-3.5-flash)">
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider bg-blue-50 text-blue-700 border border-blue-200/80 shadow-3xs" title="Được hỗ trợ tra cứu trực tuyến với Google Search Grounding (gemini-3.8-flash)">
                                     <Globe className="w-2.5 h-2.5 text-blue-600" />
                                     <span>Google Search Grounding</span>
                                   </span>
@@ -4443,6 +4452,33 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           </div>
                         )}
                       </div>
+                    ) : (msg.role === "ai" && !msg.content) ? (
+                      isProcessing ? (
+                        <div className="flex items-center gap-3 py-2 text-indigo-700 font-semibold text-xs sm:text-sm animate-pulse">
+                          <Loader2 className="w-4 h-4 animate-spin text-indigo-600 shrink-0" />
+                          <span>Gemini đang đọc tài liệu & soạn thảo câu trả lời...</span>
+                        </div>
+                      ) : (
+                        <div className="py-2 text-amber-800 text-xs sm:text-sm flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span>Không nhận được phản hồi từ AI (Máy chủ đang khởi động hoặc gián đoạn mạng).</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const userMsg = messages[messages.findIndex(m => m.id === msg.id) - 1];
+                              if (userMsg?.content) {
+                                handleExecuteQuickPrompt(userMsg.content, true);
+                              }
+                            }}
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5" />
+                            <span>Thử lại câu hỏi</span>
+                          </button>
+                        </div>
+                      )
                     ) : (
                       <div className={cn(
                         "prose prose-base prose-indigo max-w-none break-words font-medium leading-relaxed prose-table:border-collapse prose-table:border prose-table:border-gray-200 prose-th:bg-gray-50 prose-th:p-2 prose-td:p-2 prose-td:border prose-td:border-gray-200 prose-headings:text-indigo-900 prose-headings:font-black text-left",
@@ -4907,7 +4943,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                   <div className="px-3 py-1.5 bg-blue-50 border-b border-blue-100 flex items-center justify-between text-[10.5px] text-blue-700 font-bold">
                     <div className="flex items-center gap-1.5">
                       <Globe className="w-3.5 h-3.5 text-blue-600 animate-pulse shrink-0" />
-                      <span>🌐 Google Search Grounding (gemini-3.5-flash): Đang kích hoạt tra cứu web trực tuyến theo thời gian thực kèm nguồn trích dẫn.</span>
+                      <span>🌐 Google Search Grounding (gemini-3.8-flash): Đang kích hoạt tra cứu web trực tuyến theo thời gian thực kèm nguồn trích dẫn.</span>
                     </div>
                     <button type="button" onClick={() => setIsSearchGrounding(false)} className="text-blue-400 hover:text-blue-700 font-extrabold cursor-pointer">✕</button>
                   </div>
@@ -4928,7 +4964,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           ? "Đang chỉnh sửa ảnh đính kèm (gemini-3.1-flash-image-preview). Nhập yêu cầu chỉnh sửa..."
                           : "Tạo phối cảnh & bản vẽ kỹ thuật (gemini-3.1-flash-image-preview). Nhập mô tả ảnh cần tạo...")
                       : isSearchGrounding
-                      ? "Google Search Grounding (gemini-3.5-flash): Nhập câu hỏi để tra cứu dữ liệu web cập nhật nhất..."
+                      ? "Google Search Grounding (gemini-3.8-flash): Nhập câu hỏi để tra cứu dữ liệu web cập nhật nhất..."
                       : "Đặt câu hỏi tra cứu, tìm thông số chuẩn..."
                   }
                   className="w-full bg-transparent border-none py-1.5 px-3 text-xs sm:text-sm font-semibold focus:outline-none focus:ring-0 transition-all resize-none h-10 text-gray-800 placeholder:text-gray-400 no-scrollbar overflow-y-auto leading-normal"
@@ -4958,7 +4994,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                             ? "bg-white text-indigo-700 shadow-sm border border-gray-200/50 font-black"
                             : "text-gray-500 hover:text-gray-800"
                         )}
-                        title="Gemini 3.5 Flash - Trả lời nhanh"
+                        title="Gemini 3.8 Flash - Trả lời nhanh"
                       >
                         <Zap className="w-3 h-3 text-amber-500" />
                         <span>Nhanh</span>
@@ -5003,7 +5039,7 @@ Hãy mô tả sơ đồ nhánh quyết định rà soát rủi ro hoặc cơ c�
                           ? "bg-blue-50 text-blue-700 border-blue-300 shadow-sm font-black"
                           : "bg-white text-gray-500 border-gray-200/80 hover:text-gray-800 hover:border-gray-300"
                       )}
-                      title="Google Search Grounding (gemini-3.5-flash) - Tra cứu dữ liệu trực tuyến thời gian thực"
+                      title="Google Search Grounding (gemini-3.8-flash) - Tra cứu dữ liệu trực tuyến thời gian thực"
                     >
                       <Globe className={cn("w-3 h-3", isSearchGrounding ? "text-blue-600 animate-pulse" : "text-gray-400")} />
                       <span>Search Grounding</span>

@@ -10,6 +10,14 @@ import { cn } from "@/lib/utils";
 import { PDFFile } from "@/types";
 import { useAuth } from "./FirebaseProvider";
 
+function removeVietnameseTones(str: string): string {
+  if (!str) return "";
+  let res = str.normalize("NFD");
+  res = res.replace(/[\u0300-\u036f]/g, "");
+  res = res.replace(/đ/g, "d").replace(/Đ/g, "D");
+  return res.toLowerCase();
+}
+
 function getSnippetAroundMatch(text: string, query: string, maxLength = 100): string | null {
   if (!text || !query || !query.trim()) return null;
   const lowerText = text.toLowerCase();
@@ -142,6 +150,21 @@ export function Sidebar({
 
   const categoryName = getCategoryName(selectedCategory);
 
+  const searchClean = removeVietnameseTones(searchLower);
+
+  const allMatchesCount = useMemo(() => {
+    if (!isSearching) return 0;
+    return files.filter(file => {
+      const fileNameLower = (file.name || "").toLowerCase();
+      const fileNameClean = removeVietnameseTones(fileNameLower);
+      const nameMatch = fileNameLower.includes(searchLower) || fileNameClean.includes(searchClean);
+
+      const fileText = typeof file.text === "string" ? file.text : "";
+      const textMatch = fileText.toLowerCase().includes(searchLower) || (fileText.length < 300000 && removeVietnameseTones(fileText).includes(searchClean));
+      return nameMatch || textMatch;
+    }).length;
+  }, [files, isSearching, searchLower, searchClean]);
+
   const displayedFiles = useMemo(() => {
     if (!isSearching) {
       if (selectedCategory === "ketcau") {
@@ -160,11 +183,15 @@ export function Sidebar({
         });
 
     return targetList.filter(file => {
-      const nameMatch = (file.name || "").toLowerCase().includes(searchLower);
-      const textMatch = typeof file.text === "string" && file.text.toLowerCase().includes(searchLower);
+      const fileNameLower = (file.name || "").toLowerCase();
+      const fileNameClean = removeVietnameseTones(fileNameLower);
+      const nameMatch = fileNameLower.includes(searchLower) || fileNameClean.includes(searchClean);
+
+      const fileText = typeof file.text === "string" ? file.text : "";
+      const textMatch = fileText.toLowerCase().includes(searchLower) || (fileText.length < 300000 && removeVietnameseTones(fileText).includes(searchClean));
       return nameMatch || textMatch;
     });
-  }, [files, isSearching, searchLower, searchScope, selectedCategory, categoryName]);
+  }, [files, isSearching, searchLower, searchClean, searchScope, selectedCategory, categoryName]);
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
@@ -563,102 +590,139 @@ export function Sidebar({
           </h2>
           
           <div className="space-y-2">
-            {displayedFiles.map((file) => (
-              <div
-                key={file.id}
-                onClick={() => onSelectFile(file)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    onSelectFile(file);
-                  }
-                }}
-                className={cn(
-                  "w-full relative p-2.5 rounded-xl border transition-all duration-300 text-left group overflow-hidden cursor-pointer outline-none shadow-xs",
-                  activeFileId === file.id
-                    ? "bg-white border-indigo-500 shadow-[0_8px_16px_rgba(79,70,229,0.03)] ring-1 ring-indigo-500/20 scale-[1.005]"
-                    : "bg-white border-gray-200/60 hover:border-indigo-350 hover:shadow-[0_6px_12px_-2px_rgba(0,0,0,0.02)]"
-                )}
-              >
-                <div className="flex items-start gap-2">
-                  <div className="relative shrink-0 mt-0.5">
-                    <div className={cn(
-                      "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
-                      activeFileId === file.id ? "bg-indigo-600 text-white" : "bg-indigo-50 text-indigo-600"
-                    )}>
-                      <FileText className="w-4 h-4" />
-                    </div>
-                    {/* Status Icon directly on file item */}
-                    {file.isAIReady ? (
-                      <div 
-                        className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center text-white shadow-xs"
-                        title="Đã phân tích AI thành công"
-                      >
-                        <CheckCircle2 className="w-2.5 h-2.5 stroke-[2.5]" />
-                      </div>
-                    ) : (
-                      <div 
-                        className="absolute -bottom-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center text-white shadow-xs"
-                        title="Chưa phân tích AI"
-                      >
-                        <Clock className="w-2.5 h-2.5 stroke-[2.5] animate-pulse" />
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[11.5px] font-extrabold text-gray-850 leading-normal break-words line-clamp-3 pr-4 group-hover:text-indigo-650 transition-colors">
-                      {file.name}
+            {displayedFiles.length === 0 ? (
+              isSearching ? (
+                allMatchesCount > 0 && searchScope === "category" ? (
+                  <div className="p-3.5 bg-indigo-50/70 border border-indigo-200/70 rounded-2xl text-center space-y-2 animate-in fade-in duration-200">
+                    <p className="text-[11px] text-indigo-950 font-bold leading-tight">
+                      Không có trong "{getCategoryName(selectedCategory)}"
                     </p>
-                    <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
-                      <span className="text-[9px] text-gray-400 font-bold tracking-wider">
-                        {file.size || "0 MB"}
-                      </span>
+                    <p className="text-[10px] text-gray-500 font-medium">
+                      Tìm thấy <strong className="text-indigo-600 font-bold">{allMatchesCount}</strong> tài liệu ở danh mục khác.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setSearchScope("all")}
+                      className="w-full py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10.5px] font-black uppercase tracking-wider transition-all shadow-xs cursor-pointer active:scale-95"
+                    >
+                      Xem tất cả ({allMatchesCount})
+                    </button>
+                  </div>
+                ) : (
+                  <div className="p-4 bg-gray-50/80 border border-dashed border-gray-200 rounded-2xl text-center space-y-1.5 animate-in fade-in duration-200">
+                    <Search className="w-5 h-5 text-gray-300 mx-auto" />
+                    <p className="text-xs font-bold text-gray-700">Không tìm thấy tài liệu</p>
+                    <p className="text-[10px] text-gray-400 leading-normal">
+                      Không có tệp nào khớp với từ khóa "{searchTerm}". Bạn có thể tải tài liệu này vào thư viện bằng nút "+ Tải tệp PDF mới" ở trên.
+                    </p>
+                  </div>
+                )
+              ) : (
+                <div className="p-4 bg-gray-50/70 border border-dashed border-gray-200 rounded-2xl text-center space-y-1">
+                  <p className="text-xs font-bold text-gray-600">Chưa có tài liệu</p>
+                  <p className="text-[10.5px] text-gray-400 leading-normal">
+                    Kéo thả hoặc bấm "+ Tải tệp PDF mới" để thêm tài liệu vào mục này.
+                  </p>
+                </div>
+              )
+            ) : (
+              displayedFiles.map((file) => (
+                <div
+                  key={file.id}
+                  onClick={() => onSelectFile(file)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      onSelectFile(file);
+                    }
+                  }}
+                  className={cn(
+                    "w-full relative p-2.5 rounded-xl border transition-all duration-300 text-left group overflow-hidden cursor-pointer outline-none shadow-xs",
+                    activeFileId === file.id
+                      ? "bg-white border-indigo-500 shadow-[0_8px_16px_rgba(79,70,229,0.03)] ring-1 ring-indigo-500/20 scale-[1.005]"
+                      : "bg-white border-gray-200/60 hover:border-indigo-350 hover:shadow-[0_6px_12px_-2px_rgba(0,0,0,0.02)]"
+                  )}
+                >
+                  <div className="flex items-start gap-2">
+                    <div className="relative shrink-0 mt-0.5">
+                      <div className={cn(
+                        "w-8 h-8 rounded-lg flex items-center justify-center transition-colors",
+                        activeFileId === file.id ? "bg-indigo-600 text-white" : "bg-indigo-50 text-indigo-600"
+                      )}>
+                        <FileText className="w-4 h-4" />
+                      </div>
+                      {/* Status Icon directly on file item */}
                       {file.isAIReady ? (
-                        <span className={cn(
-                          "inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide",
-                          file.extractionMethod === "gemini-ocr" 
-                            ? "bg-amber-500/10 text-amber-700 border border-amber-500/20" 
-                            : "bg-emerald-500/10 text-emerald-700 border border-emerald-500/20"
-                        )} title="Đã phân tích AI thành công">
-                          <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
-                          {file.extractionMethod === "gemini-ocr" ? "AI OCR READY" : "ĐÃ PHÂN TÍCH AI"}
-                        </span>
+                        <div 
+                          className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center text-white shadow-xs"
+                          title="Đã phân tích AI thành công"
+                        >
+                          <CheckCircle2 className="w-2.5 h-2.5 stroke-[2.5]" />
+                        </div>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide bg-amber-500/10 text-amber-700 border border-amber-500/20" title="Chưa phân tích AI">
-                          <Clock className="w-2.5 h-2.5 text-amber-600 animate-pulse shrink-0" />
-                          CHƯA PHÂN TÍCH AI
-                        </span>
+                        <div 
+                          className="absolute -bottom-1 -right-1 w-4 h-4 bg-amber-500 rounded-full border-2 border-white flex items-center justify-center text-white shadow-xs"
+                          title="Chưa phân tích AI"
+                        >
+                          <Clock className="w-2.5 h-2.5 stroke-[2.5] animate-pulse" />
+                        </div>
                       )}
                     </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11.5px] font-extrabold text-gray-850 leading-normal break-words line-clamp-3 pr-4 group-hover:text-indigo-650 transition-colors">
+                        {file.name}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-1.5 mt-0.5">
+                        <span className="text-[9px] text-gray-400 font-bold tracking-wider">
+                          {file.size || "0 MB"}
+                        </span>
+                        {file.isAIReady ? (
+                          <span className={cn(
+                            "inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide",
+                            file.extractionMethod === "gemini-ocr" 
+                              ? "bg-amber-500/10 text-amber-700 border border-amber-500/20" 
+                              : "bg-emerald-500/10 text-emerald-700 border border-emerald-500/20"
+                          )} title="Đã phân tích AI thành công">
+                            <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600 shrink-0" />
+                            {file.extractionMethod === "gemini-ocr" ? "AI OCR READY" : "ĐÃ PHÂN TÍCH AI"}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 rounded text-[8px] font-extrabold uppercase tracking-wide bg-amber-500/10 text-amber-700 border border-amber-500/20" title="Chưa phân tích AI">
+                            <Clock className="w-2.5 h-2.5 text-amber-600 animate-pulse shrink-0" />
+                            CHƯA PHÂN TÍCH AI
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* File Actions */}
+                  <div className="absolute right-2 bottom-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity translate-y-1 group-hover:translate-y-0 duration-300">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onEditFile(file);
+                      }}
+                      className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all shadow-xs"
+                      title="Chỉnh sửa tên"
+                    >
+                      <Edit3 className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteFile(file);
+                      }}
+                      className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-xs"
+                      title="Xóa tệp"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
                   </div>
                 </div>
-
-                {/* File Actions */}
-                <div className="absolute right-2 bottom-1.5 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity translate-y-1 group-hover:translate-y-0 duration-300">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onEditFile(file);
-                    }}
-                    className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-600 hover:text-white transition-all shadow-xs"
-                    title="Chỉnh sửa tên"
-                  >
-                    <Edit3 className="w-3 h-3" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteFile(file);
-                    }}
-                    className="p-1.5 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all shadow-xs"
-                    title="Xóa tệp"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
       </>

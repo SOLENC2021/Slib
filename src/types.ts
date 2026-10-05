@@ -22,6 +22,7 @@ export interface FirestoreErrorInfo {
 export type GeminiModelId = 
   | "gemini-3.8-flash"
   | "gemini-3.1-pro-preview" 
+  | "gemini-flash-latest"
   | "gemini-3.5-flash" 
   | "gemini-3.1-flash-lite";
 

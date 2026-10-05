@@ -101,7 +101,7 @@ export async function chatWithDocumentStream(
   isSearchGrounding?: boolean
 ) {
   try {
-    const response = await fetch(getApiUrl("/api/chat-stream"), {
+    const response = await fetchWithServerRetry("/api/chat-stream", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -128,7 +128,16 @@ export async function chatWithDocumentStream(
         chatbotRole,
         customSystemInstruction
       }),
-    });
+    }, 5, 2000);
+
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("text/html")) {
+      const errText = await response.text().catch(() => "");
+      if (errText.includes("Starting Server") || response.status === 502 || response.status === 503) {
+        throw new Error("Máy chủ AI đang trong quá trình khởi động nguội (Cold Start). Vui lòng thử lại sau vài giây.");
+      }
+      throw new Error("Máy chủ phản hồi HTML thay vì dữ liệu Stream. Đang tự động chuyển sang kênh phụ.");
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -219,6 +228,10 @@ export async function chatWithDocumentStream(
           }
         } catch (e) {}
       }
+    }
+
+    if (!fullText.trim()) {
+      throw new Error("Không nhận được dữ liệu phản hồi từ kênh Stream. Đang tự động chuyển sang kênh Standard API.");
     }
 
     return { text: fullText, upgradedFile, upgradedReferencedFiles, groundingSources };
