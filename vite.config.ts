@@ -15,17 +15,9 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, './src'),
       },
     },
-server: {
-      proxy: {
-        '/api': {
-          target: 'https://ais-pre-rcoaoicqj56hwshueq7jte-188256685519.asia-east1.run.app',
-          changeOrigin: true,
-          secure: false,
-        }
-      },
-      // Giữ lại cấu hình cũ của AI Studio bên dưới nếu cần:
-      hmr: process.env.DISABLE_HMR !== 'true',
-      watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    server: {
+      hmr: false,
+      watch: null,
     },
   };
 });

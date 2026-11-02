@@ -635,7 +635,16 @@ async function reRegisterFileWithGemini(fileUrl: string, fileName: string): Prom
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  let port = 3000;
+  if (process.env.PORT) {
+    port = parseInt(process.env.PORT, 10);
+  } else {
+    const portArgIndex = process.argv.indexOf("--port");
+    if (portArgIndex !== -1 && process.argv[portArgIndex + 1]) {
+      port = parseInt(process.argv[portArgIndex + 1], 10);
+    }
+  }
+  const PORT = isNaN(port) ? 3000 : port;
 
   // 1. Handcrafted manual CORS & Preflight middleware to guarantee headers are set and OPTIONS succeeds immediately
   app.use((req, res, next) => {
@@ -3003,7 +3012,10 @@ HƯỚNG DẪN CÚ PHÁP MERMAID MINDMAP PHẢI TUÂN THỦ:
   // Vite middleware setup
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);
@@ -3015,9 +3027,20 @@ HƯỚNG DẪN CÚ PHÁP MERMAID MINDMAP PHẢI TUÂN THỦ:
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server đang chạy tại http://localhost:${PORT}`);
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server đang chạy tại http://0.0.0.0:${PORT}`);
+  });
+
+  server.on("error", (err: any) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`[Server Error] Port ${PORT} đang được sử dụng (EADDRINUSE).`);
+    } else {
+      console.error("[Server Error]:", err);
+    }
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error("Lỗi nghiêm trọng khi khởi động server:", err);
+  process.exit(1);
+});
